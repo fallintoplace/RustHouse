@@ -10,7 +10,7 @@ pub(super) struct BoundExists {
     lookup: JoinExistsLookup,
 }
 
-fn integer(kind: &str) -> bool {
+pub(super) fn integer(kind: &str) -> bool {
     matches!(
         typed::base_type(kind),
         "UInt8"
@@ -26,7 +26,7 @@ fn integer(kind: &str) -> bool {
     )
 }
 
-fn key(value: &typed::Cell) -> Result<Option<JoinExistsKey>, ExecutionError> {
+pub(super) fn key(value: &typed::Cell) -> Result<Option<JoinExistsKey>, ExecutionError> {
     match value {
         typed::Cell::Null => Ok(None),
         typed::Cell::Numeric(super::super::Number::Unsigned(value)) => {

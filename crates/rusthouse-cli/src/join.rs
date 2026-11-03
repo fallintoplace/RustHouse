@@ -5,8 +5,9 @@ use crate::{
     sql_values, vertical,
 };
 use rusthouse_query::{
-    JoinCorrelatedExists, JoinSelect, Source, bind_join_having_subquery, bind_join_in_subquery,
-    execute_correlated_join, execute_join, execute_multi_join,
+    JoinCorrelatedAvg, JoinCorrelatedExists, JoinSelect, Source, bind_join_having_subquery,
+    bind_join_in_subquery, execute_correlated_avg, execute_correlated_join, execute_join,
+    execute_multi_join,
 };
 use std::path::{Path, PathBuf};
 
@@ -117,6 +118,51 @@ pub(super) fn run_correlated(
     let mut output = open_output(output_path.as_deref())?;
     let result = execute_formatted_join(
         |mut writer| execute_correlated_join(plan, &paths, &inner_paths, &mut writer),
+        format,
+        output.as_mut(),
+    );
+    if time {
+        eprintln!(
+            "Elapsed: {:.3} ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    if result.is_err() {
+        drop(output);
+        if let Some(path) = output_path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    result.map_err(|error| error.to_string())
+}
+
+pub(super) fn run_correlated_avg(
+    database: &Path,
+    plan: &JoinCorrelatedAvg,
+    format: SqlOutputFormat,
+    output_path: Option<PathBuf>,
+    time: bool,
+    read_lock: Option<rusthouse_storage::DatabaseLock>,
+) -> Result<(), String> {
+    let _lock = if read_lock.is_some() {
+        read_lock
+    } else if database.is_dir() {
+        Some(crate::database::read_lock(database)?)
+    } else {
+        None
+    };
+    let query = plan.outer();
+    let tables = [&query.left, &query.right]
+        .into_iter()
+        .chain(query.steps.iter().map(|step| &step.table));
+    let paths = tables
+        .map(|table| crate::database::select_source(database, table))
+        .collect::<Result<Vec<_>, _>>()?;
+    let inner = crate::database::select_source(database, &plan.table)?;
+    let started = std::time::Instant::now();
+    let mut output = open_output(output_path.as_deref())?;
+    let result = execute_formatted_join(
+        |mut writer| execute_correlated_avg(plan, &paths, &inner, &mut writer),
         format,
         output.as_mut(),
     );

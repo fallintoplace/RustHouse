@@ -80,6 +80,7 @@ struct OutputSpec<'a> {
     distinct_index: Option<usize>,
     row_filters: Option<&'a super::row_filters::RowFilters>,
     exists: &'a [super::exists::BoundExists],
+    avg: Option<&'a super::correlated_avg::BoundAvg>,
     offset: usize,
     limit: Option<usize>,
 }
@@ -151,6 +152,11 @@ fn visit<W: Write>(
         }
         for filter in spec.exists {
             if !filter.passes(row)? {
+                return Ok(());
+            }
+        }
+        if let Some(avg) = spec.avg {
+            if !avg.passes(row)? {
                 return Ok(());
             }
         }
@@ -334,6 +340,7 @@ pub(super) fn execute<W: Write>(
     distinct_index: Option<usize>,
     row_filters: Option<&super::row_filters::RowFilters>,
     exists: &[super::exists::BoundExists],
+    avg: Option<&super::correlated_avg::BoundAvg>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if relations[0].names.is_empty() {
@@ -364,6 +371,7 @@ pub(super) fn execute<W: Write>(
         distinct_index,
         row_filters,
         exists,
+        avg,
         group_indices: query
             .grouped_count
             .as_ref()
@@ -432,6 +440,10 @@ pub(super) fn execute<W: Write>(
         if let Some(index) = filter.inequality {
             referenced[index] = true;
         }
+    }
+    if let Some(avg) = avg {
+        referenced[avg.outer_key] = true;
+        referenced[avg.outer_value] = true;
     }
     let projections = relations
         .iter()
