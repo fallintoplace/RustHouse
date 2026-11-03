@@ -241,6 +241,9 @@ fn parse_atom(
     }
     let mut predicates = Vec::new();
     let prefix_not = parser.keyword("NOT");
+    if parser.keyword("EXISTS") {
+        return Err(ParseError("EXISTS and NOT EXISTS subqueries are not yet supported".into()));
+    }
     let column = parser.word()?;
     let postfix_not = parser.keyword("NOT");
     let negate_in = prefix_not ^ postfix_not;
@@ -794,5 +797,16 @@ mod asymmetric_between_tests {
             "SELECT * FROM numbers(10) WHERE number BETWEEN ASYMMETRIC 1"
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_where_subquery_diagnostic_8 {
+    use crate::parse_select;
+
+    #[test]
+    fn unsupported_subquery_has_specific_diagnostic() {
+        let err = parse_select("SELECT count(*) FROM orders WHERE EXISTS (SELECT * FROM lineitem WHERE l_orderkey = o_orderkey)").unwrap_err();
+        assert!(err.0.contains("EXISTS and NOT EXISTS subqueries"), "{err}");
     }
 }
