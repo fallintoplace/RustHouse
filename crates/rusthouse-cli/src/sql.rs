@@ -9,9 +9,9 @@ use crate::{
 };
 use rusthouse_query::{
     ParseError, Source, execute, explain_join, explain_select, has_explicit_join,
-    has_implicit_join, parse_correlated_exists, parse_ddl, parse_delete, parse_insert, parse_join,
-    parse_join_correlated_exists_with_schema, parse_join_with_schema, parse_select, parse_update,
-    split_clickhouse_format,
+    has_implicit_join, has_top_level_exists, parse_correlated_exists, parse_ddl, parse_delete,
+    parse_insert, parse_join, parse_join_correlated_exists_with_schema, parse_join_with_schema,
+    parse_select, parse_update, split_clickhouse_format,
 };
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -373,7 +373,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         return Err("--catalog is only supported for DDL statements".into());
     }
     let implicit = has_implicit_join(&query).map_err(|error| error.to_string())?;
-    let possible_join_exists = query.to_ascii_uppercase().contains("EXISTS")
+    let possible_join_exists = has_top_level_exists(&query).map_err(|error| error.to_string())?
         && (implicit || has_explicit_join(&query).map_err(|error| error.to_string())?);
     let implicit_lock = if implicit || possible_join_exists {
         match database.as_deref() {

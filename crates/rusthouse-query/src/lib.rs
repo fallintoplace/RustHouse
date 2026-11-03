@@ -34,7 +34,7 @@ pub use insert_select::{InsertSelect, parse_insert_select};
 pub use join::{
     JoinAggregate, JoinColumn, JoinCorrelatedExists, JoinExistsFilter, JoinExistsKey,
     JoinExistsLookup, JoinSelect, JoinStep, JoinType, explain_join, has_explicit_join,
-    has_implicit_join, parse_join, parse_join_correlated_exists_with_schema,
+    has_implicit_join, has_top_level_exists, parse_join, parse_join_correlated_exists_with_schema,
     parse_join_with_schema,
 };
 pub use multi_aggregate::AggregateItem;

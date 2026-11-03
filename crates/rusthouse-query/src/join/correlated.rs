@@ -265,6 +265,13 @@ mod tests {
     }
 
     #[test]
+    fn detects_only_top_level_exists_tokens() {
+        assert!(super::super::has_top_level_exists("SELECT * FROM a JOIN b ON a.id = b.id WHERE NOT EXISTS (SELECT * FROM c WHERE c.id = a.id)").unwrap());
+        assert!(!super::super::has_top_level_exists("SELECT * FROM a JOIN b ON a.id = b.id WHERE a.name = 'EXISTS' -- EXISTS\n ORDER BY a.id").unwrap());
+        assert!(!super::super::has_top_level_exists("SELECT * FROM a JOIN b ON a.id = b.id WHERE a.id IN (SELECT id FROM c WHERE EXISTS (SELECT * FROM d))").unwrap());
+    }
+
+    #[test]
     fn parses_tpch_q21_filters_and_preserves_outer_plan() {
         let sql = include_str!("../../../../bench/tpch/queries/q21.sql");
         let plan = parse_join_correlated_exists_with_schema(sql, schema)
