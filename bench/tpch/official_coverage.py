@@ -15,6 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from common import cli_sql, emit_json, file_change_time_ns
 from run import benchmark_one, summarize_coverage, query_fingerprint
+from canonical_integrity import verify as verify_canonical_sql
 
 MAX_REFERENCE_BYTES = 64 * 1024 * 1024
 MAX_QUERY_FILE_BYTES = 64 * 1024
@@ -63,13 +64,15 @@ def clean_sql(path):
     return text.rstrip(";").strip()
 
 def coverage(binary, database, query_dir, reference_dir=None, runs=3, warmups=1,
-             timeout=120, execute=None, jobs=1):
+             timeout=120, execute=None, jobs=1, require_canonical=False):
     if (type(runs) is not int or type(warmups) is not int
             or runs < 1 or warmups < 0
             or type(timeout) not in (int, float)
             or not math.isfinite(timeout) or timeout <= 0
             or type(jobs) is not int or not 1 <= jobs <= TPCH_QUERY_COUNT):
         raise ValueError("invalid timing parameters")
+    if require_canonical:
+        verify_canonical_sql(query_dir)
     if execute is None:
         execute = lambda sql: cli_sql(binary, database, sql, timeout)
     results = [None] * TPCH_QUERY_COUNT
@@ -146,6 +149,8 @@ def main(argv=None):
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--queries-dir", type=Path, required=True)
+    parser.add_argument("--require-canonical", action="store_true",
+                        help="Verify the pinned upstream Q1-Q22 SQL before execution")
     parser.add_argument("--reference-dir", type=Path)
     parser.add_argument("--runs", type=int, default=3)
     parser.add_argument("--jobs", type=int, default=1,
@@ -157,7 +162,8 @@ def main(argv=None):
     try:
         result = coverage(args.binary, args.database, args.queries_dir,
                           args.reference_dir, args.runs, args.warmups, args.timeout,
-                          jobs=args.jobs)
+                          jobs=args.jobs,
+                          require_canonical=args.require_canonical)
     except (OSError, ValueError) as error:
         parser.exit(1, f"TPC-H inventory failed: {error}\n")
     emit_json(result, args.output)
