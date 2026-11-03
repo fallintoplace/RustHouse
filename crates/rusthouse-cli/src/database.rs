@@ -28,11 +28,15 @@ pub(super) fn crash_if_requested(point: &str) {
 pub(super) fn crash_if_requested(_point: &str) {}
 
 fn lock(database: &Path) -> Result<DatabaseLock, String> {
-    acquire_database_lock(database, true)
+    let guard = acquire_database_lock(database, true)?;
+    rusthouse_storage::ensure_database_format_version(database)?;
+    Ok(guard)
 }
 
 pub(super) fn read_lock(database: &Path) -> Result<DatabaseLock, String> {
-    acquire_database_lock(database, false)
+    let guard = acquire_database_lock(database, false)?;
+    rusthouse_storage::ensure_database_format_version(database)?;
+    Ok(guard)
 }
 
 fn data_path(database: &Path, name: &str) -> PathBuf {
