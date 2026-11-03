@@ -76,6 +76,23 @@ impl CaseGroups {
     }
 }
 
+fn write_case_header<W: Write>(
+    query: &JoinSelect,
+    selected: &[(usize, String, Option<usize>)],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let name = &selected
+        .first()
+        .ok_or_else(|| invalid("JOIN group key missing"))?
+        .1;
+    write!(output, "{name}")?;
+    for (_, alias) in &query.grouped_case_counts {
+        write!(output, "\t{alias}")?;
+    }
+    writeln!(output)?;
+    Ok(())
+}
+
 // ALL INNER JOINs may discard dimension rows that fail a dimension-only
 // predicate before building the hash table. ANY must keep the first matching
 // key even if that row later fails the predicate.
@@ -490,6 +507,9 @@ pub(super) fn execute<W: Write>(
         case_selected.push((index, String::new(), None));
         case_metrics.push(CaseMetric { tests, all });
     }
+    if !query.grouped_case_counts.is_empty() && query.limit == Some(0) {
+        return write_case_header(query, selected, output);
+    }
     // Aggregates must not retain unused JOIN projection columns.
     let mut kept = if count_only {
         Vec::new()
@@ -557,11 +577,7 @@ pub(super) fn execute<W: Write>(
                 &mut std::io::sink(),
             )?;
         }
-        write!(output, "{}", selected[0].1)?;
-        for (_, alias) in &query.grouped_case_counts {
-            write!(output, "\t{alias}")?;
-        }
-        writeln!(output)?;
+        write_case_header(query, selected, output)?;
         let mut rows = groups.groups.into_values().collect::<Vec<_>>();
         if let Some((_, descending, nulls_first)) = query.order_by.first() {
             rows.sort_by(|a, b| typed::compare_order_cells(&a.0, &b.0, *descending, *nulls_first));
