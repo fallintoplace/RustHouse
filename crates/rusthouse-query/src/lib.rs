@@ -903,6 +903,43 @@ fn grouped_metric_column(
     parser.word()
 }
 
+// SUM(CASE WHEN ... THEN metric ELSE 0 END) is equivalent to a
+// conditional SUM of that metric. Reject other CASE shapes rather than
+// silently dropping a nonzero ELSE branch.
+fn grouped_metric_value(
+    parser: &mut Parser,
+    function: AggregateFunction,
+) -> Result<(String, Option<GroupedFilter>), ParseError> {
+    if !parser.keyword("CASE") {
+        return Ok((grouped_metric_column(parser, function)?, None));
+    }
+    if function != AggregateFunction::Sum || !parser.keyword("WHEN") {
+        return Err(ParseError("grouped CASE requires SUM(CASE WHEN ...)".into()));
+    }
+    let column = parser.bounded_word()?;
+    let operator = parser.operator()?;
+    if !matches!(operator, Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge) {
+        return Err(ParseError("grouped CASE requires a comparison condition".into()));
+    }
+    let literal = parser.literal()?;
+    if !parser.keyword("THEN") {
+        return Err(ParseError("grouped CASE requires THEN".into()));
+    }
+    let metric = parser.bounded_word()?;
+    if parser.keyword("ELSE") && !parser.keyword("NULL") {
+        let else_value = parser.literal()?;
+        if else_value != "0" && else_value != "0.0" {
+            return Err(ParseError(
+                "grouped SUM(CASE ...) requires ELSE 0 or NULL".into(),
+            ));
+        }
+    }
+    if !parser.keyword("END") {
+        return Err(ParseError("grouped CASE requires END".into()));
+    }
+    Ok((metric, Some(GroupedFilter::Comparison { column, operator, literal })))
+}
+
 fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     if !parser.keyword("SELECT") {
@@ -1211,7 +1248,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             "SUMIF" | "AVGIF" | "MINIF" | "MAXIF"));
                     parser.index += 1;
                     parser.take(Token::LParen);
-                    let value_column = grouped_metric_column(&mut parser, function)?;
+                    let (value_column, case_filter) = grouped_metric_value(&mut parser, function)?;
+                    if conditional && case_filter.is_some() {
+                        return Err(ParseError("SUMIF cannot nest a CASE filter".into()));
+                    }
                     let filter = if conditional {
                         if !parser.take(Token::Comma) {
                             return Err(ParseError(
@@ -1220,7 +1260,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         }
                         Some(grouped_metric_filter(&mut parser)?)
                     } else {
-                        None
+                        case_filter
                     };
                     if !parser.take(Token::RParen) {
                         return Err(ParseError("expected ')' after grouped aggregate".into()));
@@ -1273,7 +1313,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         if !parser.take(Token::LParen) {
                             return Err(ParseError("expected '(' after aggregate name".into()));
                         }
-                        let value_column = grouped_metric_column(&mut parser, function)?;
+                        let (value_column, case_filter) = grouped_metric_value(&mut parser, function)?;
+                        if conditional && case_filter.is_some() {
+                            return Err(ParseError("SUMIF cannot nest a CASE filter".into()));
+                        }
                         let filter = if conditional {
                             if !parser.take(Token::Comma) {
                                 return Err(ParseError(
@@ -1282,7 +1325,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             }
                             Some(grouped_metric_filter(&mut parser)?)
                         } else {
-                            None
+                            case_filter
                         };
                         if !parser.take(Token::RParen) {
                             return Err(ParseError("expected ')' after grouped aggregate".into()));
