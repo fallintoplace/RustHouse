@@ -44,12 +44,13 @@ fn add_group(
     value: &typed::Cell,
     group_count: &mut usize,
     bytes: &mut usize,
+    increment: bool,
 ) -> Result<(), ExecutionError> {
     match groups.entry(value.key()) {
         Entry::Occupied(mut occupied) => {
             let count = &mut occupied.get_mut().1;
             *count = count
-                .checked_add(1)
+                .checked_add(u64::from(increment))
                 .ok_or_else(|| invalid("JOIN grouped count overflow"))?;
         }
         Entry::Vacant(vacant) => {
@@ -66,7 +67,7 @@ fn add_group(
                 return Err(invalid("JOIN grouped hash memory budget exceeded"));
             }
             *group_count += 1;
-            vacant.insert((value.clone(), 1));
+            vacant.insert((value.clone(), u64::from(increment)));
         }
     }
     Ok(())
@@ -82,6 +83,7 @@ fn probe_grouped_left<F>(
     right_rows: &[Vec<typed::Cell>],
     hash: &HashMap<Vec<typed::Key>, Bucket>,
     group_index: usize,
+    count_index: Option<usize>,
     null_filter: Option<(usize, bool)>,
     comparison_filter: Option<(usize, crate::Operator, &typed::Cell)>,
     preserve_unmatched: bool,
@@ -89,12 +91,15 @@ fn probe_grouped_left<F>(
     mut emit: F,
 ) -> Result<(), ExecutionError>
 where
-    F: FnMut(&typed::Cell) -> Result<(), ExecutionError>,
+    F: FnMut(&typed::Cell, bool) -> Result<(), ExecutionError>,
 {
     let width = left_names.len();
     let mut retained = left_keys.to_vec();
     if group_index < width {
         retained.push(group_index);
+    }
+    if let Some(index) = count_index.filter(|index| *index < width) {
+        retained.push(index);
     }
     if let Some((column, _)) = null_filter {
         if column < width {
@@ -121,6 +126,11 @@ where
         retained
             .binary_search(&group_index)
             .expect("group key retained")
+    });
+    let count_batch = count_index.filter(|index| *index < width).map(|index| {
+        retained
+            .binary_search(&index)
+            .expect("count column retained")
     });
     let filter_batch = null_filter.and_then(|(column, _)| {
         (column < width).then(|| retained.binary_search(&column).expect("filter retained"))
@@ -165,7 +175,17 @@ where
                         } else {
                             &right_rows[right_index][group_index - width]
                         };
-                        emit(value)?;
+                        let increment = match count_index {
+                            None => true,
+                            Some(column) if column < width => {
+                                !typed::is_null_at(&batch[count_batch.expect("count batch")], row)
+                            }
+                            Some(column) => !matches!(
+                                right_rows[right_index][column - width],
+                                typed::Cell::Null
+                            ),
+                        };
+                        emit(value, increment)?;
                     }
                 }
             }
@@ -181,7 +201,14 @@ where
                         continue;
                     }
                 }
-                emit(left_group.as_ref().unwrap_or(&null))?;
+                let increment = match count_index {
+                    None => true,
+                    Some(column) if column < width => {
+                        !typed::is_null_at(&batch[count_batch.expect("count batch")], row)
+                    }
+                    Some(_) => false,
+                };
+                emit(left_group.as_ref().unwrap_or(&null), increment)?;
             }
         }
     }
@@ -434,6 +461,9 @@ pub(super) fn execute<W: Write>(
         .as_ref()
         .ok_or_else(|| invalid("JOIN group key missing"))?;
     if keys.len() > 1 {
+        if query.grouped_count_column.is_some() {
+            return Err(invalid("grouped COUNT(column) requires one group key"));
+        }
         return execute_multi(
             query,
             left_path,
@@ -449,6 +479,11 @@ pub(super) fn execute<W: Write>(
     let key_column = &keys[0];
     let width = left_names.len();
     let index = resolve(query, key_column, left_names, right_names)?;
+    let count_index = query
+        .grouped_count_column
+        .as_ref()
+        .map(|column| resolve(query, column, left_names, right_names))
+        .transpose()?;
     let group_type = if index < width {
         inspect_query_source(left_path)?.columns[index]
             .data_type
@@ -488,7 +523,12 @@ pub(super) fn execute<W: Write>(
     }
     let selected = [(index, group_name.clone(), None)];
     let right_meta = inspect_query_source(right_path)?;
-    let keep = retained_build_columns(right_names, right_keys, &selected, null_filter, width);
+    let mut keep = retained_build_columns(right_names, right_keys, &selected, null_filter, width);
+    if let Some(column) = count_index.filter(|index| *index >= width) {
+        keep.push(column - width);
+        keep.sort_unstable();
+        keep.dedup();
+    }
     let right_rows = read_projected_build_rows(
         right_path,
         right_names,
@@ -502,7 +542,7 @@ pub(super) fn execute<W: Write>(
     let mut groups: HashMap<typed::Key, (typed::Cell, u64)> = HashMap::new();
     let mut group_count = 0usize;
     let mut bytes = 0usize;
-    if query.kind == JoinType::Left || comparison_filter.is_some() {
+    if query.kind == JoinType::Left || comparison_filter.is_some() || count_index.is_some() {
         probe_grouped_left(
             left_path,
             left_names,
@@ -510,13 +550,16 @@ pub(super) fn execute<W: Write>(
             &right_rows,
             &hash,
             index,
+            count_index,
             null_filter,
             comparison_filter
                 .as_ref()
                 .map(|(column, operator, literal)| (*column, *operator, literal)),
             query.kind == JoinType::Left,
             query.any,
-            |value| add_group(&mut groups, value, &mut group_count, &mut bytes),
+            |value, increment| {
+                add_group(&mut groups, value, &mut group_count, &mut bytes, increment)
+            },
         )?;
     } else if !hash.is_empty() {
         probe_inner(
@@ -538,7 +581,7 @@ pub(super) fn execute<W: Write>(
                 } else {
                     &right[index - width]
                 };
-                add_group(&mut groups, value, &mut group_count, &mut bytes)
+                add_group(&mut groups, value, &mut group_count, &mut bytes, true)
             },
         )?;
     }

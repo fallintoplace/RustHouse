@@ -121,6 +121,8 @@ pub struct JoinSelect {
     pub aggregate_alias: Option<String>,
     /// Exactly one qualified GROUP BY key with COUNT(*) projected last.
     pub grouped_count: Option<Vec<JoinColumn>>,
+    /// Count non-NULL values of this column in grouped joins.
+    pub grouped_count_column: Option<JoinColumn>,
     /// Integer COUNT(DISTINCT column) grouped over INNER joins.
     pub grouped_distinct: Option<JoinColumn>,
     /// SUM(CASE WHEN ... THEN 1 ELSE 0 END) metrics for one grouped key.
@@ -796,6 +798,7 @@ fn parse_join_tokens(
         None
     };
     let mut grouped_count_projection = false;
+    let mut grouped_count_column = None;
     let mut grouped_distinct = None;
     let mut grouped_case_counts = Vec::new();
     let mut grouped_sum = None;
@@ -926,10 +929,17 @@ fn parse_join_tokens(
                     }
                     aggregate_alias = Some(format!("count(DISTINCT {})", column.display_name()));
                     grouped_distinct = Some(column);
-                } else if !parser.take(Token::Star) || !parser.take(Token::RParen) {
-                    return Err(ParseError(
-                        "grouped JOIN requires COUNT(*) or COUNT(DISTINCT column)".into(),
-                    ));
+                } else if parser.take(Token::Star) {
+                    if !parser.take(Token::RParen) {
+                        return Err(ParseError("grouped JOIN COUNT requires ')'".into()));
+                    }
+                } else {
+                    let column = projected(&mut parser)?;
+                    if column.name == "*" || !parser.take(Token::RParen) {
+                        return Err(ParseError("grouped JOIN COUNT requires one column".into()));
+                    }
+                    aggregate_alias = Some(format!("count({})", column.display_name()));
+                    grouped_count_column = Some(column);
                 }
                 grouped_count_projection = true;
                 if parser.keyword("AS") {
@@ -1460,6 +1470,7 @@ fn parse_join_tokens(
                 && grouped_case_counts.is_empty()
                 && grouped_sum.is_none()
                 && grouped_distinct.is_none()
+                && grouped_count_column.is_none()
                 && parser.keyword("COUNT")
             {
                 if !parser.take(Token::LParen)
@@ -1517,6 +1528,14 @@ fn parse_join_tokens(
             || relation == right_alias
             || steps.iter().any(|step| step.alias == relation)
     };
+    if let Some(column) = &grouped_count_column {
+        if !column.relation.is_empty() && !known_qualifier(&column.relation) {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
+        }
+    }
     if let Some(JoinAggregate::CountColumn(column) | JoinAggregate::Numeric { column, .. }) =
         &aggregate
     {
@@ -1719,6 +1738,15 @@ fn parse_join_tokens(
             "grouped COUNT DISTINCT requires INNER joins".into(),
         ));
     }
+    if grouped_count_column.is_some()
+        && (!steps.is_empty()
+            || !matches!(kind, JoinType::Inner | JoinType::Left)
+            || columns.as_ref().is_none_or(|columns| columns.len() != 1))
+    {
+        return Err(ParseError(
+            "grouped COUNT(column) requires one key and two INNER or LEFT inputs".into(),
+        ));
+    }
     if grouped_sum.is_some()
         && (kind != JoinType::Inner || steps.iter().any(|step| step.kind != JoinType::Inner))
     {
@@ -1840,6 +1868,7 @@ fn parse_join_tokens(
         aggregate,
         aggregate_alias,
         grouped_count,
+        grouped_count_column,
         grouped_distinct,
         grouped_case_counts,
         grouped_sum,
@@ -2093,6 +2122,11 @@ pub fn explain_join(query: &JoinSelect) -> String {
         } else if let Some(column) = &query.grouped_distinct {
             plan.push_str(&format!(
                 "\nAggregate: GROUP BY {keys} with COUNT(DISTINCT {})",
+                column.display_name()
+            ));
+        } else if let Some(column) = &query.grouped_count_column {
+            plan.push_str(&format!(
+                "\nAggregate: GROUP BY {keys} with COUNT({})",
                 column.display_name()
             ));
         } else if query.grouped_case_counts.is_empty() {
