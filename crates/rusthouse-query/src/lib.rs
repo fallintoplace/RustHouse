@@ -1675,7 +1675,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             Projection::GroupedCount { .. } | Projection::GroupedMultiCount { .. }
         ) {
             let using_alias = alias.as_ref().is_some_and(|value| {
-                matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word == value)
+                matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case(value))
             });
             if using_alias {
                 parser.index += 1;
