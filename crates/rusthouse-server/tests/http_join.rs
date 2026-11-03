@@ -15,6 +15,83 @@ fn table(database: &Path, name: &str, columns: &[Column], rows: &[Vec<Option<Str
 }
 
 #[test]
+fn sql_http_executes_tpch_q13() {
+    let database = std::env::temp_dir().join(format!("rusthouse-http-q13-{}", std::process::id()));
+    fs::create_dir_all(&database).unwrap();
+    let cols = |values: &[(&str, &str)]| {
+        values
+            .iter()
+            .map(|(name, kind)| Column {
+                name: (*name).into(),
+                data_type: (*kind).into(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let row = |values: &[&str]| {
+        values
+            .iter()
+            .map(|value| Some((*value).into()))
+            .collect::<Vec<_>>()
+    };
+    table(
+        &database,
+        "customer",
+        &cols(&[("c_custkey", "UInt64")]),
+        &[row(&["1"]), row(&["2"]), row(&["3"])],
+    );
+    table(
+        &database,
+        "orders",
+        &cols(&[
+            ("o_orderkey", "UInt64"),
+            ("o_custkey", "UInt64"),
+            ("o_comment", "String"),
+        ]),
+        &[
+            row(&["11", "1", "regular"]),
+            row(&["12", "1", "regular"]),
+            row(&["13", "1", "special requests"]),
+            row(&["21", "2", "regular"]),
+        ],
+    );
+    let config = Config {
+        database: Some(database.clone()),
+        part: None,
+        max_rows: 10,
+    };
+    let query = include_str!("../../../bench/tpch/queries/q13.sql");
+    let result = handle_request("POST", "/", query.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(result.body, b"c_count\tcustdist\n2\t1\n1\t1\n0\t1\n");
+    let limited = handle_request(
+        "POST",
+        "/?format=tsv-no-header",
+        query.as_bytes(),
+        &Config {
+            max_rows: 2,
+            ..config.clone()
+        },
+    );
+    assert_eq!(limited.status, "200 OK", "{:?}", limited.body);
+    assert_eq!(limited.body, b"2\t1\n1\t1\n");
+    let json = handle_request("POST", "/?format=json", query.as_bytes(), &config);
+    assert_eq!(json.status, "200 OK", "{:?}", json.body);
+    let json_text = String::from_utf8_lossy(&json.body);
+    for value in ["0", "1", "2"] {
+        assert!(
+            json_text.contains(&format!("\"c_count\":\"{value}\",\"custdist\":\"1\"")),
+            "{json_text}"
+        );
+    }
+    let invalid = query.replace("o_comment NOT LIKE", "o_orderkey NOT LIKE");
+    assert_eq!(
+        handle_request("POST", "/", invalid.as_bytes(), &config).status,
+        "400 Bad Request"
+    );
+    fs::remove_dir_all(database).unwrap();
+}
+
+#[test]
 fn sql_http_executes_tpch_q17() {
     let database = std::env::temp_dir().join(format!("rusthouse-http-q17-{}", std::process::id()));
     fs::create_dir_all(&database).unwrap();
