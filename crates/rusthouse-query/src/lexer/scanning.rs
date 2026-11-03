@@ -123,6 +123,7 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             (b'\\', Some(b'n')) => Some(b'\n'),
             (b'\\', Some(b'r')) => Some(b'\r'),
             (b'\\', Some(b't')) => Some(b'\t'),
+            (b'\\', Some(b'=')) => Some(b'='),
             (b'\\', Some(b'0')) => Some(0),
             (b'\\', Some(b'a')) => Some(7),
             (b'\\', Some(b'b')) => Some(8),
@@ -337,6 +338,22 @@ mod exponent_tests {
         for invalid in ["2e", "2e+", "2e-"] {
             assert!(scan_number(invalid, &mut 0).is_err());
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_escaped_equals_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_escaped_equals_without_changing_following_characters() {
+        let sql = r"'key\=value'";
+        let mut index = 0;
+        assert_eq!(
+            scan_string(sql, &mut index).unwrap(),
+            Token::String("key=value".into())
+        );
+        assert_eq!(index, sql.len());
     }
 }
 
