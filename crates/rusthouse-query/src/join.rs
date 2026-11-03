@@ -94,6 +94,8 @@ pub struct JoinSelect {
     pub where_comparison: Option<(JoinColumn, crate::Operator, String)>,
     /// Additional conjunctive literal comparisons for two-table INNER joins.
     pub where_comparisons_extra: Vec<(JoinColumn, crate::Operator, String)>,
+    /// Column-to-column comparisons for two-table INNER joins.
+    pub where_column_comparisons: Vec<(JoinColumn, crate::Operator, JoinColumn)>,
     /// Ordered key, descending flag, and optional explicit NULL placement.
     pub order_by: Vec<(JoinColumn, bool, Option<bool>)>,
     pub limit: Option<usize>,
@@ -487,68 +489,88 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             using_keys: step_using,
         });
     }
-    let (where_null, where_comparison) = if parser.keyword("WHERE") {
-        let column = projected(&mut parser)?;
-        if column.name == "*" {
-            return Err(ParseError("JOIN WHERE requires a column".into()));
-        }
-        if parser.keyword("IS") {
-            let not_null = parser.keyword("NOT");
-            if !parser.keyword("NULL") && !parser.keyword("UNKNOWN") {
-                return Err(ParseError(
-                    "JOIN WHERE requires IS [NOT] NULL or UNKNOWN".into(),
-                ));
-            }
-            (Some((column, not_null)), None)
-        } else {
-            let operator = parser.operator()?;
-            if !matches!(
-                operator,
-                crate::Operator::Eq
-                    | crate::Operator::Ne
-                    | crate::Operator::Lt
-                    | crate::Operator::Le
-                    | crate::Operator::Gt
-                    | crate::Operator::Ge
-            ) {
-                return Err(ParseError(
-                    "JOIN WHERE requires a comparison operator".into(),
-                ));
-            }
-            (None, Some((column, operator, parser.literal()?)))
-        }
-    } else {
-        (None, None)
-    };
+    let mut where_null = None;
+    let mut where_comparison = None;
     let mut where_comparisons_extra = Vec::new();
-    while parser.keyword("AND") {
-        if where_comparison.is_none() {
-            return Err(ParseError(
-                "JOIN cannot combine NULL filters with other predicates".into(),
-            ));
+    let mut where_column_comparisons = Vec::new();
+    if parser.keyword("WHERE") {
+        let mut count = 0;
+        loop {
+            count += 1;
+            if count > 16 {
+                return Err(ParseError("JOIN supports at most 16 comparisons".into()));
+            }
+            let column = projected(&mut parser)?;
+            if column.name == "*" {
+                return Err(ParseError("JOIN WHERE requires a column".into()));
+            }
+            if parser.keyword("IS") {
+                if count != 1 {
+                    return Err(ParseError(
+                        "JOIN cannot combine NULL filters with other predicates".into(),
+                    ));
+                }
+                let not_null = parser.keyword("NOT");
+                if !parser.keyword("NULL") && !parser.keyword("UNKNOWN") {
+                    return Err(ParseError(
+                        "JOIN WHERE requires IS [NOT] NULL or UNKNOWN".into(),
+                    ));
+                }
+                where_null = Some((column, not_null));
+            } else {
+                let operator = parser.operator()?;
+                if !matches!(
+                    operator,
+                    crate::Operator::Eq
+                        | crate::Operator::Ne
+                        | crate::Operator::Lt
+                        | crate::Operator::Le
+                        | crate::Operator::Gt
+                        | crate::Operator::Ge
+                ) {
+                    return Err(ParseError(
+                        "JOIN WHERE requires a comparison operator".into(),
+                    ));
+                }
+                let is_column = match parser.tokens.get(parser.index) {
+                    Some(Token::QuotedWord(_)) => true,
+                    Some(Token::Word(word)) => ![
+                        "CAST",
+                        "DATE",
+                        "TIMESTAMP",
+                        "NULL",
+                        "TRUE",
+                        "FALSE",
+                        "INTERVAL",
+                    ]
+                    .iter()
+                    .any(|kw| word.eq_ignore_ascii_case(kw)),
+                    _ => false,
+                };
+                if is_column {
+                    let other = projected(&mut parser)?;
+                    if other.name == "*" {
+                        return Err(ParseError("JOIN WHERE requires a column".into()));
+                    }
+                    where_column_comparisons.push((column, operator, other));
+                } else {
+                    let comparison = (column, operator, parser.literal()?);
+                    if where_comparison.is_none() {
+                        where_comparison = Some(comparison);
+                    } else {
+                        where_comparisons_extra.push(comparison);
+                    }
+                }
+            }
+            if !parser.keyword("AND") {
+                break;
+            }
+            if where_null.is_some() {
+                return Err(ParseError(
+                    "JOIN cannot combine NULL filters with other predicates".into(),
+                ));
+            }
         }
-        if where_comparisons_extra.len() >= 15 {
-            return Err(ParseError("JOIN supports at most 16 comparisons".into()));
-        }
-        let column = projected(&mut parser)?;
-        if column.name == "*" {
-            return Err(ParseError("JOIN WHERE requires a column".into()));
-        }
-        let operator = parser.operator()?;
-        if !matches!(
-            operator,
-            crate::Operator::Eq
-                | crate::Operator::Ne
-                | crate::Operator::Lt
-                | crate::Operator::Le
-                | crate::Operator::Gt
-                | crate::Operator::Ge
-        ) {
-            return Err(ParseError(
-                "JOIN WHERE requires a comparison operator".into(),
-            ));
-        }
-        where_comparisons_extra.push((column, operator, parser.literal()?));
     }
     let group_by = if parser.keyword("GROUP") {
         if !parser.keyword("BY") {
@@ -679,6 +701,16 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             )));
         }
     }
+    for (left, _, right) in &where_column_comparisons {
+        for column in [left, right] {
+            if !column.relation.is_empty() && !known_qualifier(&column.relation) {
+                return Err(ParseError(format!(
+                    "unknown JOIN qualifier: {}",
+                    column.relation
+                )));
+            }
+        }
+    }
     if let Some((column, _)) = &where_null {
         if !column.relation.is_empty() && !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
@@ -731,7 +763,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
-    if where_comparison.is_some()
+    if (where_comparison.is_some() || !where_column_comparisons.is_empty())
         && (kind != JoinType::Inner
             || !steps.is_empty()
             || (grouped_count_projection
@@ -749,7 +781,9 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
                 .into(),
         ));
     }
-    if grouped_count_projection && !where_comparisons_extra.is_empty() {
+    if grouped_count_projection
+        && (!where_comparisons_extra.is_empty() || !where_column_comparisons.is_empty())
+    {
         return Err(ParseError(
             "grouped JOIN supports one comparison filter".into(),
         ));
@@ -838,6 +872,7 @@ fn parse_join_tokens(tokens: Vec<Token>) -> Result<Option<JoinSelect>, ParseErro
         where_null,
         where_comparison,
         where_comparisons_extra,
+        where_column_comparisons,
         order_by,
         limit,
         offset,
@@ -971,6 +1006,14 @@ pub fn explain_join(query: &JoinSelect) -> String {
             column.display_name(),
             operator,
             value
+        ));
+    }
+    for (left, operator, right) in &query.where_column_comparisons {
+        plan.push_str(&format!(
+            "\nFilter: {} {:?} {}",
+            left.display_name(),
+            operator,
+            right.display_name()
         ));
     }
     if !query.order_by.is_empty() {

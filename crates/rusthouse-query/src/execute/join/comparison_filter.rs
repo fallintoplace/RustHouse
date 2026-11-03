@@ -4,10 +4,14 @@
 use super::*;
 use rusthouse_storage::TypedQueryReader;
 
+enum FilterTarget {
+    Literal(typed::Cell),
+    Column(usize),
+}
 struct BoundFilter {
     column: usize,
     operator: crate::Operator,
-    literal: typed::Cell,
+    target: FilterTarget,
 }
 
 // ALL INNER JOINs may discard dimension rows that fail a dimension-only
@@ -25,9 +29,13 @@ fn prefilter_dimension_rows(
                 .iter()
                 .filter(|filter| filter.column >= left_width)
                 .all(|filter| {
+                    let target = match &filter.target {
+                        FilterTarget::Literal(value) => value,
+                        FilterTarget::Column(index) => &row[*index - left_width],
+                    };
                     typed::matches_comparison(
                         &row[filter.column - left_width],
-                        &filter.literal,
+                        target,
                         filter.operator,
                     )
                 })
@@ -91,7 +99,12 @@ fn scan<W: Write>(
     let width = left_names.len();
     let filter_columns = filters
         .iter()
-        .map(|filter| filter.column)
+        .flat_map(|filter| {
+            std::iter::once(filter.column).chain(match filter.target {
+                FilterTarget::Column(index) => Some(index),
+                FilterTarget::Literal(_) => None,
+            })
+        })
         .collect::<Vec<_>>();
     let columns = fact_probe_columns(width, left_keys, &filter_columns, selected, emit);
     let mut source_to_batch = vec![usize::MAX; width];
@@ -132,7 +145,15 @@ fn scan<W: Write>(
                 .filter(|filter| filter.column < width)
                 .all(|filter| {
                     let candidate = typed::cell(&batch[source_to_batch[filter.column]], row_index);
-                    typed::matches_comparison(&candidate, &filter.literal, filter.operator)
+                    match &filter.target {
+                        FilterTarget::Literal(value) => {
+                            typed::matches_comparison(&candidate, value, filter.operator)
+                        }
+                        FilterTarget::Column(index) => {
+                            let target = typed::cell(&batch[source_to_batch[*index]], row_index);
+                            typed::matches_comparison(&candidate, &target, filter.operator)
+                        }
+                    }
                 })
             {
                 continue;
@@ -154,7 +175,11 @@ fn scan<W: Write>(
                     .filter(|filter| filter.column >= width)
                     .all(|filter| {
                         let candidate = &right_rows[right_index][filter.column - width];
-                        typed::matches_comparison(candidate, &filter.literal, filter.operator)
+                        let target = match &filter.target {
+                            FilterTarget::Literal(value) => value,
+                            FilterTarget::Column(index) => &right_rows[right_index][*index - width],
+                        };
+                        typed::matches_comparison(candidate, target, filter.operator)
                     })
                 {
                     continue;
@@ -224,7 +249,7 @@ pub(super) fn execute<W: Write>(
     let width = left_names.len();
     let left_meta = inspect_query_source(left_path)?;
     let right_meta = inspect_query_source(right_path)?;
-    let filters = query
+    let mut filters = query
         .where_comparison
         .iter()
         .chain(&query.where_comparisons_extra)
@@ -240,10 +265,52 @@ pub(super) fn execute<W: Write>(
             Ok(BoundFilter {
                 column: index,
                 operator: *operator,
-                literal,
+                target: FilterTarget::Literal(literal),
             })
         })
         .collect::<Result<Vec<_>, ExecutionError>>()?;
+    for (left, operator, right) in &query.where_column_comparisons {
+        let left_index = resolve(query, left, left_names, right_names)?;
+        let right_index = resolve(query, right, left_names, right_names)?;
+        if (left_index < width) != (right_index < width) {
+            return Err(invalid("JOIN column comparisons must use one input table"));
+        }
+        let (metadata, left_local, right_local) = if left_index < width {
+            (&left_meta, left_index, right_index)
+        } else {
+            (&right_meta, left_index - width, right_index - width)
+        };
+        let left_type = base_type(&metadata.columns[left_local].data_type);
+        let right_type = base_type(&metadata.columns[right_local].data_type);
+        let numeric = |kind: &str| {
+            matches!(
+                kind,
+                "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+                    | "Float32"
+                    | "Float64"
+                    | "Date"
+                    | "Date32"
+                    | "DateTime"
+            )
+        };
+        if left_type != right_type && !(numeric(left_type) && numeric(right_type)) {
+            return Err(invalid("JOIN column comparison requires compatible types"));
+        }
+        filters.push(BoundFilter {
+            column: left_index,
+            operator: *operator,
+            target: FilterTarget::Column(right_index),
+        });
+    }
     if filters.is_empty() {
         return Err(invalid("JOIN comparison filter missing"));
     }
@@ -278,6 +345,11 @@ pub(super) fn execute<W: Write>(
     for filter in &filters {
         if filter.column >= width {
             kept.push((filter.column, String::new(), None));
+        }
+        if let FilterTarget::Column(index) = filter.target {
+            if index >= width {
+                kept.push((index, String::new(), None));
+            }
         }
     }
     let columns = retained_build_columns(right_names, right_keys, &kept, None, width);
@@ -379,7 +451,7 @@ mod prefilter_right_comparison_tests {
         let filter = BoundFilter {
             column: 3,
             operator: crate::Operator::Gt,
-            literal: typed::Cell::Numeric(Number::Signed(10)),
+            target: FilterTarget::Literal(typed::Cell::Numeric(Number::Signed(10))),
         };
         let mut all = rows.clone();
         prefilter_dimension_rows(&mut all, std::slice::from_ref(&filter), 2, false);
