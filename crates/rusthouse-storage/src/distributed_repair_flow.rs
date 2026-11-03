@@ -10,6 +10,35 @@ pub struct CapacityLink {
     pub bytes_per_second: u64,
 }
 
+fn find_augmenting_path(
+    residual: &[Vec<u128>],
+    source: usize,
+    sink: usize,
+) -> Option<[usize; MAX_VERTICES]> {
+    // Each vertex enters the BFS queue at most once. Use bounded stack scratch.
+    let mut parent = [usize::MAX; MAX_VERTICES];
+    let mut queue = [0usize; MAX_VERTICES];
+    parent[source] = source;
+    queue[0] = source;
+    let mut head = 0usize;
+    let mut tail = 1usize;
+    while head < tail {
+        let from = queue[head];
+        head += 1;
+        for (to, &capacity) in residual[from].iter().enumerate() {
+            if capacity > 0 && parent[to] == usize::MAX {
+                parent[to] = from;
+                queue[tail] = to;
+                tail += 1;
+            }
+        }
+        if parent[sink] != usize::MAX {
+            break;
+        }
+    }
+    (parent[sink] != usize::MAX).then_some(parent)
+}
+
 /// Return the maximum aggregate source-to-sink capacity in bytes per second.
 /// Antiparallel and repeated links are allowed and combined without overflow.
 pub fn maximum_replica_flow(
@@ -43,31 +72,9 @@ pub fn maximum_replica_flow(
 
     let mut total_flow = 0u64;
     loop {
-        // Each vertex enters the BFS queue at most once. Reuse bounded
-        // stack scratch across augmenting paths instead of allocating twice.
-        let mut parent = [usize::MAX; MAX_VERTICES];
-        let mut queue = [0usize; MAX_VERTICES];
-        parent[source] = source;
-        queue[0] = source;
-        let mut head = 0usize;
-        let mut tail = 1usize;
-        while head < tail {
-            let from = queue[head];
-            head += 1;
-            for (to, &capacity) in residual[from].iter().enumerate() {
-                if capacity > 0 && parent[to] == usize::MAX {
-                    parent[to] = from;
-                    queue[tail] = to;
-                    tail += 1;
-                }
-            }
-            if parent[sink] != usize::MAX {
-                break;
-            }
-        }
-        if parent[sink] == usize::MAX {
+        let Some(parent) = find_augmenting_path(&residual, source, sink) else {
             return Ok(total_flow);
-        }
+        };
         let mut bottleneck = u128::MAX;
         let mut cursor = sink;
         while cursor != source {
