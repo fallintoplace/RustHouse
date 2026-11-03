@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 
 #[test]
-fn q19_boolean_filters_match_each_row_once() {
+fn q19_boolean_filters_and_comma_join_match_each_row_once() {
     let db = std::env::temp_dir().join(format!("rusthouse-tpch-q19-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
@@ -20,12 +20,24 @@ fn q19_boolean_filters_match_each_row_once() {
         let result = sql(statement);
         assert!(result.status.success(), "{statement}: {result:?}");
     }
-    let query = include_str!("../../../bench/tpch/queries/q19.sql").replace(
-        "lineitem,\n    part",
-        "lineitem JOIN part ON lineitem.l_partkey = part.p_partkey",
-    );
-    let result = sql(&query);
+    let query = include_str!("../../../bench/tpch/queries/q19.sql");
+    let result = sql(query);
     assert!(result.status.success(), "{result:?}");
     assert_eq!(result.stdout, b"revenue\n290\n");
+    for statement in [
+        "CREATE TABLE left_rows (a_id Nullable(UInt64), amount UInt64)",
+        "CREATE TABLE right_rows (b_id Nullable(UInt64), tag String)",
+        "INSERT INTO left_rows VALUES (1, 10), (NULL, 1000)",
+        "INSERT INTO right_rows VALUES (1, 'a'), (1, 'b'), (NULL, 'a')",
+    ] {
+        let result = sql(statement);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let overlap = "SELECT SUM(amount * 1) AS total FROM left_rows, right_rows WHERE (a_id = b_id AND tag = 'a') OR (b_id = a_id AND amount >= 0)";
+    let result = sql(overlap);
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(result.stdout, b"total\n20\n");
+    let no_common_key = "SELECT SUM(amount * 1) AS total FROM left_rows, right_rows WHERE (a_id = b_id AND tag = 'a') OR tag = 'b'";
+    assert!(!sql(no_common_key).status.success());
     fs::remove_dir_all(db).unwrap();
 }
