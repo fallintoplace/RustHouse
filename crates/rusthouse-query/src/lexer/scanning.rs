@@ -127,6 +127,7 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             (b'\\', Some(b'a')) => Some(7),
             (b'\\', Some(b'b')) => Some(8),
             (b'\\', Some(b'f')) => Some(12),
+            (b'\\', Some(b'\x60')) => Some(b'\x60'),
             (b'\\', Some(b'v')) => Some(11),
             (b'\'', Some(b'\'')) => Some(b'\''),
             _ => None,
@@ -415,6 +416,22 @@ mod plain_string_literal_fast_path_tests {
             let mut cursor = 0;
             assert!(scan_string(sql, &mut cursor).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_escaped_backtick_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_escaped_backticks_without_changing_plain_text() {
+        let sql = "'a\\\x60b'";
+        let mut index = 0;
+        assert_eq!(
+            scan_string(sql, &mut index).unwrap(),
+            Token::String("a\x60b".into())
+        );
+        assert_eq!(index, sql.len());
     }
 }
 
