@@ -54,6 +54,7 @@ use std::io::{self, BufWriter, Write};
 use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
+mod cte_max_join;
 mod derived_join_count;
 mod grouped_distinct;
 mod grouped_filter;
@@ -67,6 +68,7 @@ mod multi_join;
 mod predicates;
 mod sort;
 mod typed;
+pub use cte_max_join::execute_cte_max_join;
 pub use derived_join_count::execute_derived_join_count;
 pub use join::execute_join;
 pub use multi_join::{

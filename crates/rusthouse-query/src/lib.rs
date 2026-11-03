@@ -1,5 +1,6 @@
 mod copy;
 mod correlated_exists;
+mod cte_max;
 mod date_scalar;
 mod ddl;
 mod delete;
@@ -21,12 +22,13 @@ mod update;
 mod where_parser;
 pub use copy::{CopyFormat, CopyFrom, parse_copy_from};
 pub use correlated_exists::{CorrelatedExists, parse_correlated_exists};
+pub use cte_max::{CteMaxJoin, has_cte_max_join, parse_cte_max_join};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
 pub use execute::{
     ExecutionError, RowPredicate, bind_join_having_subquery, bind_join_in_subquery, execute,
-    execute_correlated_avg, execute_correlated_join, execute_derived_join_count, execute_join,
-    execute_multi_join, merge_uniq_states,
+    execute_correlated_avg, execute_correlated_join, execute_cte_max_join,
+    execute_derived_join_count, execute_join, execute_multi_join, merge_uniq_states,
 };
 pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};
