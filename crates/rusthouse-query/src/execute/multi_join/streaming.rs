@@ -3,7 +3,6 @@
 
 use super::*;
 use rusthouse_storage::TypedQueryReader;
-use std::collections::hash_map::Entry;
 
 use super::super::join::read_projected_build_rows;
 
