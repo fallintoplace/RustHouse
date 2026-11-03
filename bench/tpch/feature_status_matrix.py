@@ -2,6 +2,7 @@
 """Cross-reference TPC-H SQL features and verified execution, without inferring support."""
 import argparse
 import json
+import re
 from collections import defaultdict
 from pathlib import Path
 
@@ -9,6 +10,7 @@ from feature_gaps import KNOWN_STATUSES, load_report
 
 EXPECTED_QUERY_IDS = frozenset(range(1, 23))
 ALLOWED_STATUSES = KNOWN_STATUSES | {"error"}
+FINGERPRINT = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def _index(report, *, is_feature):
@@ -40,6 +42,13 @@ def summarize(feature_report, execution_report):
     """Features co-occur, so this is a descriptive inventory, not a feature support score."""
     queries = _index(feature_report, is_feature=True)
     executions = _index(execution_report, is_feature=False)
+    feature_hash = feature_report.get("query_sha256")
+    execution_hash = execution_report.get("query_sha256")
+    if (feature_hash is not None or execution_hash is not None) and (
+        not isinstance(feature_hash, str) or not isinstance(execution_hash, str)
+        or not FINGERPRINT.fullmatch(feature_hash) or feature_hash != execution_hash
+    ):
+        raise ValueError("TPC-H feature matrix requires matching SQL fingerprints")
     grouped = defaultdict(list)
     for number, record in sorted(queries.items()):
         for feature in record["features"]:
