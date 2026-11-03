@@ -81,6 +81,101 @@ pub(super) fn has_comma(tokens: &[Token]) -> Result<bool, ParseError> {
     Ok(from_bounds(tokens)?.is_some())
 }
 
+// A shared equality in every OR branch can be used as a join key without
+// changing which rows the original WHERE expression accepts.
+fn rewrite_disjunctive(
+    tokens: &[Token],
+    from: usize,
+    end: usize,
+    pred_end: usize,
+    tables: &[(String, String)],
+    resolver: Option<SchemaResolver<'_>>,
+) -> Result<Vec<Token>, ParseError> {
+    if tables.len() != 2 {
+        return Err(ParseError("OR comma joins require two tables".into()));
+    }
+    let resolver =
+        resolver.ok_or_else(|| ParseError("OR comma joins require schema resolution".into()))?;
+    let schemas = tables
+        .iter()
+        .map(|(table, _)| resolver(table))
+        .collect::<Result<Vec<_>, _>>()?;
+    let mut parser = Parser {
+        tokens: tokens[end + 1..pred_end].to_vec(),
+        index: 0,
+    };
+    let branches = crate::where_parser::parse_where(&mut parser)?;
+    if parser.index != parser.tokens.len() || branches.is_empty() {
+        return Err(ParseError(
+            "OR comma join requires complete predicates".into(),
+        ));
+    }
+    let lookup = |column: &str| -> Result<Option<usize>, ParseError> {
+        let found = schemas
+            .iter()
+            .enumerate()
+            .filter_map(|(i, cols)| cols.iter().any(|name| name == column).then_some(i))
+            .collect::<Vec<_>>();
+        if found.len() > 1 {
+            return Err(ParseError(format!("ambiguous JOIN column: {column}")));
+        }
+        Ok(found.first().copied())
+    };
+    let mut key = None;
+    for predicate in &branches[0] {
+        let crate::Predicate::ColumnComparison {
+            column,
+            operator: Operator::Eq,
+            other,
+        } = predicate
+        else {
+            continue;
+        };
+        let (Some(left), Some(right)) = (lookup(column)?, lookup(other)?) else {
+            continue;
+        };
+        if left == right {
+            continue;
+        }
+        let shared = branches.iter().all(|branch| branch.iter().any(|entry| {
+            matches!(entry, crate::Predicate::ColumnComparison { column: a, operator: Operator::Eq, other: b }
+                if (a == column && b == other) || (a == other && b == column))
+        }));
+        if shared {
+            key = Some(if left == 0 {
+                (column.clone(), other.clone())
+            } else {
+                (other.clone(), column.clone())
+            });
+            break;
+        }
+    }
+    let (left_key, right_key) =
+        key.ok_or_else(|| ParseError("OR comma join requires a shared equality key".into()))?;
+    let word = |s: &str| Token::Word(s.to_owned());
+    let mut result = tokens[..from + 1].to_vec();
+    result.extend([
+        word(&tables[0].0),
+        word("AS"),
+        word(&tables[0].1),
+        word("JOIN"),
+        word(&tables[1].0),
+        word("AS"),
+        word(&tables[1].1),
+        word("ON"),
+        word(&tables[0].1),
+        Token::Dot,
+        word(&left_key),
+        Token::Operator(Operator::Eq),
+        word(&tables[1].1),
+        Token::Dot,
+        word(&right_key),
+        word("WHERE"),
+    ]);
+    result.extend_from_slice(&tokens[end + 1..]);
+    Ok(result)
+}
+
 /// Rewrite AND-connected comma joins into existing inner join plans.
 pub(super) fn rewrite(
     tokens: Vec<Token>,
@@ -127,7 +222,7 @@ pub(super) fn rewrite(
     }
     let predicates = &tokens[end + 1..pred_end];
     if predicates.iter().any(|t| keyword(t, "OR")) {
-        return Err(ParseError("comma join with OR is not yet supported".into()));
+        return rewrite_disjunctive(&tokens, from, end, pred_end, &tables, resolve);
     }
     let mut pieces = Vec::<Vec<Token>>::new();
     let mut depth = 0usize;
@@ -300,6 +395,25 @@ pub(super) fn rewrite(
 #[cfg(test)]
 mod tests {
     use super::super::parse_join;
+    #[test]
+    fn or_comma_join_requires_a_shared_equality_in_every_branch() {
+        let schema = |table: &str| {
+            Ok(match table {
+                "first" => vec!["a_id".into(), "amount".into()],
+                "second" => vec!["b_id".into(), "kind".into()],
+                _ => vec![],
+            })
+        };
+        let good = "SELECT SUM(amount * 1) FROM first, second WHERE (a_id = b_id AND kind = 'a') OR (b_id = a_id AND kind = 'b')";
+        assert!(
+            super::super::parse_join_with_schema(good, schema)
+                .unwrap()
+                .is_some()
+        );
+        let unsafe_query = "SELECT SUM(amount * 1) FROM first, second WHERE (a_id = b_id AND kind = 'a') OR kind = 'b'";
+        assert!(super::super::parse_join_with_schema(unsafe_query, schema).is_err());
+    }
+
     #[test]
     fn qualified_join_does_not_require_schema_resolution() {
         let parsed = super::super::parse_join_with_schema(
