@@ -2051,15 +2051,20 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         {
             1
         } else {
+            let parenthesized = parser.take(Token::LParen);
             let value = parser.number()?;
             if !value.bytes().all(|byte| byte.is_ascii_digit()) {
                 return Err(ParseError(
                     "FETCH count must be a non-negative integer".into(),
                 ));
             }
-            value
+            let count = value
                 .parse::<usize>()
-                .map_err(|_| ParseError("FETCH count is too large".into()))?
+                .map_err(|_| ParseError("FETCH count is too large".into()))?;
+            if parenthesized && !parser.take(Token::RParen) {
+                return Err(ParseError("FETCH count requires closing ')'".into()));
+            }
+            count
         };
         if !parser.keyword("ROWS") && !parser.keyword("ROW") {
             return Err(ParseError("FETCH requires ROW or ROWS".into()));
