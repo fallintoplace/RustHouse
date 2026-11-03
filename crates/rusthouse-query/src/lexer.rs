@@ -43,11 +43,7 @@ fn skip_line_comment(bytes: &[u8], index: &mut usize) {
         .unwrap_or(remaining.len());
 }
 
-fn scan_negative_radix_number(
-    sql: &str,
-    index: &mut usize,
-    radix: u32,
-) -> Result<Token, ParseError> {
+fn scan_negative_radix_number(sql: &str, index: &mut usize, radix: u32) -> Result<Token, ParseError> {
     // A unary minus applies to the same magnitude that the unsigned scanner
     // already validates, but the signed result must fit in Int64.
     *index += 1;
@@ -626,7 +622,12 @@ mod signed_radix_literal_tests {
                 Token::Number("15".into()),
             ]
         );
-        for invalid in ["-0x", "-0b2", "-0x8000000000000001", "-0b10000000000000000000000000000000000000000000000000000000000000000"] {
+        for invalid in [
+            "-0x",
+            "-0b2",
+            "-0x8000000000000001",
+            "-0b10000000000000000000000000000000000000000000000000000000000000000",
+        ] {
             assert!(tokenize(invalid).is_err(), "{invalid}");
         }
     }
