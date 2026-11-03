@@ -932,7 +932,7 @@ fn parse_join_tokens(
                         "JOIN EXTRACT YEAR requires a column and alias".into(),
                     ));
                 }
-                let alias = parser.bounded_word()?;
+                let alias = parser.output_alias_word()?;
                 grouped_year = Some((columns.len(), alias));
                 columns.push(column);
             } else {
@@ -1074,7 +1074,7 @@ fn parse_join_tokens(
                         ));
                     }
                     grouped_case_counts
-                        .push((filter.expect("CASE filter checked"), parser.bounded_word()?));
+                        .push((filter.expect("CASE filter checked"), parser.output_alias_word()?));
                     if !parser.take(Token::Comma) {
                         break;
                     }
@@ -1731,7 +1731,7 @@ fn parse_join_tokens(
             }
             let next_is_count_alias = grouped_count_projection
                 && grouped_case_counts.is_empty()
-                && matches!(parser.tokens.get(parser.index), Some(Token::Word(name))
+                && matches!(parser.tokens.get(parser.index), Some(Token::Word(name) | Token::QuotedAlias(name))
                     if name.eq_ignore_ascii_case(aggregate_alias.as_deref().unwrap_or("count")))
                 && !matches!(
                     parser.tokens.get(parser.index + 1),
