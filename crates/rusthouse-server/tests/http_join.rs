@@ -15,6 +15,93 @@ fn table(database: &Path, name: &str, columns: &[Column], rows: &[Vec<Option<Str
 }
 
 #[test]
+fn sql_http_executes_tpch_q15() {
+    let database = std::env::temp_dir().join(format!("rusthouse-http-q15-{}", std::process::id()));
+    fs::create_dir_all(&database).unwrap();
+    let cols = |values: &[(&str, &str)]| {
+        values
+            .iter()
+            .map(|(name, kind)| Column {
+                name: (*name).into(),
+                data_type: (*kind).into(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let row = |values: &[&str]| {
+        values
+            .iter()
+            .map(|value| Some((*value).into()))
+            .collect::<Vec<_>>()
+    };
+    table(
+        &database,
+        "supplier",
+        &cols(&[
+            ("s_suppkey", "UInt64"),
+            ("s_name", "String"),
+            ("s_address", "String"),
+            ("s_phone", "String"),
+        ]),
+        &[row(&["1", "A", "one", "11"]), row(&["2", "B", "two", "22"])],
+    );
+    table(
+        &database,
+        "lineitem",
+        &cols(&[
+            ("l_suppkey", "UInt64"),
+            ("l_extendedprice", "Float64"),
+            ("l_discount", "Float64"),
+            ("l_shipdate", "Date"),
+        ]),
+        &[
+            row(&["1", "100", "0", "1996-01-01"]),
+            row(&["2", "100", "0", "1996-02-01"]),
+        ],
+    );
+    let config = Config {
+        database: Some(database.clone()),
+        part: None,
+        max_rows: 10,
+    };
+    let query = include_str!("../../../bench/tpch/queries/q15.sql");
+    let result = handle_request("POST", "/", query.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(result.body, b"s_suppkey\ts_name\ts_address\ts_phone\ttotal_revenue\n1\tA\tone\t11\t100\n2\tB\ttwo\t22\t100\n");
+    let limited = handle_request(
+        "POST",
+        "/?format=tsv-no-header",
+        query.as_bytes(),
+        &Config {
+            max_rows: 1,
+            ..config.clone()
+        },
+    );
+    assert_eq!(limited.status, "200 OK", "{:?}", limited.body);
+    assert_eq!(limited.body, b"1\tA\tone\t11\t100\n");
+    let json = handle_request("POST", "/?format=json", query.as_bytes(), &config);
+    assert_eq!(json.status, "200 OK", "{:?}", json.body);
+    let text = String::from_utf8_lossy(&json.body);
+    assert!(
+        text.contains(
+            "\"s_name\":\"A\",\"s_address\":\"one\",\"s_phone\":\"11\",\"total_revenue\":\"100\""
+        ),
+        "{text}"
+    );
+    assert!(
+        text.contains(
+            "\"s_name\":\"B\",\"s_address\":\"two\",\"s_phone\":\"22\",\"total_revenue\":\"100\""
+        ),
+        "{text}"
+    );
+    let invalid = query.replace("max(total_revenue)", "min(total_revenue)");
+    assert_eq!(
+        handle_request("POST", "/", invalid.as_bytes(), &config).status,
+        "400 Bad Request"
+    );
+    fs::remove_dir_all(database).unwrap();
+}
+
+#[test]
 fn sql_http_executes_tpch_q13() {
     let database = std::env::temp_dir().join(format!("rusthouse-http-q13-{}", std::process::id()));
     fs::create_dir_all(&database).unwrap();

@@ -3,9 +3,61 @@
 use super::*;
 use rusthouse_query::{
     ExecutionError, JoinSelect, Source, bind_join_having_subquery, bind_join_in_subquery,
-    execute_correlated_avg, execute_correlated_join, execute_derived_join_count, execute_join,
-    execute_multi_join, explain_join,
+    execute_correlated_avg, execute_correlated_join, execute_cte_max_join,
+    execute_derived_join_count, execute_join, execute_multi_join, explain_join,
 };
+
+pub(super) fn try_cte_max(
+    sql: &str,
+    explain: bool,
+    format: QueryFormat,
+    config: &Config,
+) -> Option<Response> {
+    match rusthouse_query::has_cte_max_join(sql) {
+        Ok(true) => {}
+        Ok(false) => return None,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    }
+    if config.part.is_some() && config.database.is_some() {
+        return Some(Response::text(
+            "400 Bad Request",
+            "choose --part or --database, not both\n",
+        ));
+    }
+    let Some(database) = config.database.as_deref() else {
+        return Some(Response::text(
+            "400 Bad Request",
+            "CTE JOIN requires a database\n",
+        ));
+    };
+    let mut plan = match rusthouse_query::parse_cte_max_join(sql) {
+        Ok(Some(plan)) => plan,
+        Ok(None) => return None,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    };
+    if explain {
+        return Some(Response::text(
+            "400 Bad Request",
+            "CTE JOIN cannot use --explain yet\n",
+        ));
+    }
+    plan.cap_rows(config.max_rows.min(250_000));
+    let _lock = match rusthouse_storage::acquire_database_lock(database, false) {
+        Ok(lock) => lock,
+        Err(error) => return Some(Response::text("409 Conflict", &format!("{error}\n"))),
+    };
+    let inner = match resolve_database_table(database, plan.inner_table()) {
+        Ok(path) => path,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    };
+    let outer = match resolve_database_table(database, plan.outer_table()) {
+        Ok(path) => path,
+        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
+    };
+    Some(format_response(format, |mut output| {
+        execute_cte_max_join(&plan, &inner, &outer, &mut output)
+    }))
+}
 
 pub(super) fn try_derived_count(
     sql: &str,
