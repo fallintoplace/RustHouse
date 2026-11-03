@@ -858,8 +858,38 @@ pub(super) fn execute<W: Write>(
         write_group_header(query, &selected, output)?;
         let mut write_group = |values: &[typed::Cell],
                                count: u64,
-                               sum: Option<super::super::Number>|
+                               sum: Option<super::super::Number>,
+                               averages: Option<&[(Option<super::super::Number>, u64)]>|
          -> Result<(), ExecutionError> {
+            if !query.grouped_avg_metrics.is_empty() {
+                let averages = averages.expect("grouped AVG states allocated");
+                for (index, value) in values.iter().enumerate() {
+                    if index > 0 {
+                        output.write_all(b"\t")?;
+                    }
+                    let source = selected[index].0;
+                    typed::write_typed_value(output, value, spec.types[source])?;
+                }
+                for &(sum, observations) in averages {
+                    output.write_all(b"\t")?;
+                    let value = match (sum, observations) {
+                        (Some(sum), count) if count > 0 => {
+                            let numeric = match sum {
+                                super::super::Number::Unsigned(value) => value as f64,
+                                super::super::Number::Signed(value) => value as f64,
+                                super::super::Number::Float(value) => value,
+                            };
+                            typed::Cell::Numeric(super::super::Number::Float(
+                                numeric / count as f64,
+                            ))
+                        }
+                        _ => typed::Cell::Null,
+                    };
+                    typed::write_value(output, &value)?;
+                }
+                writeln!(output)?;
+                return Ok(());
+            }
             let metric = query.grouped_sum_position.unwrap_or(values.len());
             for index in 0..=values.len() {
                 if index > 0 {
@@ -889,17 +919,17 @@ pub(super) fn execute<W: Write>(
         };
         if let Some(positions) = bounded {
             for index in positions.into_iter().skip(query.offset) {
-                let (values, count, sum, _, _) = &rows[index];
-                write_group(values, *count, *sum)?;
+                let (values, count, sum, _, _, avgs) = &rows[index];
+                write_group(values, *count, *sum, avgs.as_deref())?;
             }
         } else {
             rows.sort_by(compare);
-            for (values, count, sum, _, _) in rows
+            for (values, count, sum, _, _, avgs) in rows
                 .iter()
                 .skip(query.offset)
                 .take(query.limit.unwrap_or(usize::MAX))
             {
-                write_group(values, *count, *sum)?;
+                write_group(values, *count, *sum, avgs.as_deref())?;
             }
         }
     }
