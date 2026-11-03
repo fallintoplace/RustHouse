@@ -250,33 +250,37 @@ pub(super) fn execute<W: Write>(
                     )
                 })
                 .transpose()?;
-            if !groups.contains_key(&key) {
-                if groups.len() >= MAX_GROUPS {
-                    return Err(ExecutionError::Invalid(
-                        "REGEXP grouping exceeds 200000 groups".into(),
-                    ));
-                }
-                let bytes = 192usize
-                    .checked_add(key.as_ref().map_or(0, Vec::len))
-                    .and_then(|n| n.checked_add(value.map_or(0, <[u8]>::len)))
-                    .ok_or_else(|| {
-                        ExecutionError::Invalid("REGEXP group memory overflow".into())
-                    })?;
-                retained = retained
-                    .checked_add(bytes)
-                    .filter(|&n| n <= MAX_GROUP_BYTES)
-                    .ok_or_else(|| ExecutionError::Invalid("REGEXP groups exceed 64 MiB".into()))?;
-                groups.insert(
-                    key.clone(),
-                    Group {
+            // Probe the key once. A new group takes ownership of the
+            // computed key instead of cloning its possibly large payload.
+            let group_count = groups.len();
+            let group = match groups.entry(key) {
+                std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    if group_count >= MAX_GROUPS {
+                        return Err(ExecutionError::Invalid(
+                            "REGEXP grouping exceeds 200000 groups".into(),
+                        ));
+                    }
+                    let bytes = 192usize
+                        .checked_add(entry.key().as_ref().map_or(0, Vec::len))
+                        .and_then(|n| n.checked_add(value.map_or(0, <[u8]>::len)))
+                        .ok_or_else(|| {
+                            ExecutionError::Invalid("REGEXP group memory overflow".into())
+                        })?;
+                    retained = retained
+                        .checked_add(bytes)
+                        .filter(|&n| n <= MAX_GROUP_BYTES)
+                        .ok_or_else(|| {
+                            ExecutionError::Invalid("REGEXP groups exceed 64 MiB".into())
+                        })?;
+                    entry.insert(Group {
                         count: 0,
                         length_count: 0,
                         total_length: 0,
                         minimum: value.map(<[u8]>::to_vec),
-                    },
-                );
-            }
-            let group = groups.get_mut(&key).expect("group inserted");
+                    })
+                }
+            };
             group.count = group
                 .count
                 .checked_add(1)
