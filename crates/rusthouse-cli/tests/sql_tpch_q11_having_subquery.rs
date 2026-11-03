@@ -60,5 +60,17 @@ fn q11_compares_grouped_sum_to_scalar_join_subquery() {
         result.stdout,
         b"outer_a.id\ttotal\n1\t1000000000000000100\n"
     );
+    for statement in [
+        "CREATE TABLE x (x_id UInt64, amount UInt64)",
+        "CREATE TABLE y (y_id UInt64)",
+        "INSERT INTO x VALUES (1, 2), (2, 4)",
+        "INSERT INTO y VALUES (1), (2)",
+    ] {
+        assert!(sql(statement).status.success(), "{statement}");
+    }
+    let nested_comma = "SELECT x.x_id, SUM(x.amount) AS total FROM x JOIN y ON x.x_id = y.y_id GROUP BY x.x_id HAVING total > (SELECT SUM(amount * 0.5) FROM x, y WHERE x_id = y_id) ORDER BY x.x_id";
+    let result = sql(nested_comma);
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(result.stdout, b"x.x_id\ttotal\n2\t4\n");
     fs::remove_dir_all(db).unwrap();
 }
