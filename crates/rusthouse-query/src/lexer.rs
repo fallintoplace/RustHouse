@@ -587,35 +587,6 @@ mod bulk_comment_span_tests {
 
 
 #[cfg(test)]
-mod radix_literal_tests {
-    use super::*;
-
-    #[test]
-    fn tokenizes_hexadecimal_and_binary_integer_literals() {
-        assert_eq!(
-            tokenize("SELECT 0xFF, 0X10, 0b1010, 0B11").unwrap(),
-            vec![
-                Token::Word("SELECT".into()),
-                Token::Number("255".into()),
-                Token::Comma,
-                Token::Number("16".into()),
-                Token::Comma,
-                Token::Number("10".into()),
-                Token::Comma,
-                Token::Number("3".into()),
-            ]
-        );
-        assert_eq!(
-            tokenize("0xffffffffffffffff").unwrap(),
-            vec![Token::Number(u64::MAX.to_string())],
-        );
-        for invalid in ["0x", "0b", "0x10000000000000000", "0b2"] {
-            assert!(tokenize(invalid).is_err(), "{invalid}");
-        }
-    }
-}
-
-#[cfg(test)]
 mod positive_radix_literal_tests {
     use super::*;
 
@@ -654,3 +625,33 @@ mod positive_radix_literal_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod radix_literal_tests {
+    use super::*;
+
+    #[test]
+    fn tokenizes_hexadecimal_and_binary_integer_literals() {
+        assert_eq!(
+            tokenize("SELECT 0xFF, 0X10, 0b1010, 0B11").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("255".into()),
+                Token::Comma,
+                Token::Number("16".into()),
+                Token::Comma,
+                Token::Number("10".into()),
+                Token::Comma,
+                Token::Number("3".into()),
+            ]
+        );
+        assert_eq!(
+            tokenize("0xffffffffffffffff").unwrap(),
+            vec![Token::Number(u64::MAX.to_string())],
+        );
+        for invalid in ["0x", "0b", "0x10000000000000000", "0b2"] {
+            assert!(tokenize(invalid).is_err(), "{invalid}");
+        }
+    }
+}
+
