@@ -53,7 +53,7 @@ pub(super) fn handle(config: &Config, format: QueryFormat, table: &str) -> Respo
             } else {
                 JsonArraySink::new(&mut writer)
             };
-            emit(&mut JsonlWriter::new(&mut array)).and_then(|()| array.finish())
+            emit(&mut JsonlWriter::new(&mut array)).and_then(|()| array.finish().map(|_| ()))
         }
     };
     match result {
