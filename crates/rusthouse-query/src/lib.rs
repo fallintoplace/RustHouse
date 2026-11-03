@@ -388,6 +388,8 @@ pub struct Select {
     pub projection: Projection,
     /// Computed arguments aligned with grouped aggregate metrics, when present.
     pub grouped_expressions: Vec<Option<ScalarExpr>>,
+    /// Whether the grouped metric is used only for HAVING.
+    pub hidden_aggregate: bool,
     pub alias: Option<String>,
     /// One wildcard column rename. Applies to query output only.
     pub rename: Option<(String, String)>,
@@ -652,13 +654,20 @@ impl Parser {
             _ => Err(ParseError("expected a comparison operator".into())),
         }
     }
-    fn order_term(&mut self, projection: &Projection) -> Result<OrderBy, ParseError> {
+    fn order_term(
+        &mut self,
+        projection: &Projection,
+        hidden_aggregate: bool,
+    ) -> Result<OrderBy, ParseError> {
         // Positions are 1-based and refer to projected columns.
         let column = if matches!(self.tokens.get(self.index), Some(Token::Number(_))) {
             let position = self
                 .number()?
                 .parse::<usize>()
                 .map_err(|_| ParseError("ORDER BY position is too large".into()))?;
+            if hidden_aggregate && position != 1 {
+                return Err(ParseError("ORDER BY position is out of range".into()));
+            }
             match projection {
                 Projection::Columns(columns) => position
                     .checked_sub(1)
@@ -1175,7 +1184,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
 
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
     let mut grouped_expressions = Vec::new();
-    let projection = if let Some(items) = multiple {
+    let mut projection = if let Some(items) = multiple {
         Projection::MultipleAggregates(items)
     } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("LENGTH"))
         && parser.tokens.get(parser.index + 1) == Some(&Token::LParen)
@@ -1960,6 +1969,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     let predicates = branches.next().unwrap_or_default();
     let or_predicates = branches.collect();
 
+    let mut hidden_aggregate = false;
     if parser.keyword("GROUP") {
         if !parser.keyword("BY") {
             return Err(ParseError("expected BY after GROUP".into()));
@@ -2038,6 +2048,32 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 });
                 if trailing {
                     break;
+                }
+            }
+            // A grouped key may be selected without projecting the SUM used by HAVING.
+            if let Projection::Columns(columns) = &projection {
+                let key_matches = columns.len() == 1
+                    && group_columns.len() == 1
+                    && columns[0].eq_ignore_ascii_case(&group_columns[0]);
+                let tokens = &parser.tokens[parser.index..];
+                if key_matches
+                    && matches!(tokens, [Token::Word(having), Token::Word(sum), Token::LParen, Token::Word(_), Token::RParen, ..] if having.eq_ignore_ascii_case("HAVING") && sum.eq_ignore_ascii_case("SUM"))
+                {
+                    if !matches!(source, Some(Source::Table(_))) {
+                        return Err(ParseError(
+                            "unprojected HAVING SUM requires a stored table".into(),
+                        ));
+                    }
+                    let value_column = match &tokens[3] {
+                        Token::Word(name) => name.clone(),
+                        _ => unreachable!(),
+                    };
+                    projection = Projection::GroupedAggregate {
+                        column: columns[0].clone(),
+                        function: AggregateFunction::Sum,
+                        value_column,
+                    };
+                    hidden_aggregate = true;
                 }
             }
             match &projection {
@@ -2233,7 +2269,14 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             return Err(ParseError("expected BY after ORDER".into()));
         }
         if parser.keyword("ALL") {
-            let columns = order_by_all_columns(&projection)?;
+            let columns = if hidden_aggregate {
+                match &projection {
+                    Projection::GroupedAggregate { column, .. } => vec![column.clone()],
+                    _ => unreachable!(),
+                }
+            } else {
+                order_by_all_columns(&projection)?
+            };
             let descending = if parser.keyword("DESC") {
                 true
             } else {
@@ -2260,7 +2303,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             order_by_extra.extend(terms);
             Some(first)
         } else {
-            let first = parser.order_term(&projection)?;
+            let first = parser.order_term(&projection, hidden_aggregate)?;
             while parser.take(Token::Comma) {
                 let trailing = parser.tokens.get(parser.index).is_none_or(|token| {
                     matches!(token, Token::Semicolon)
@@ -2275,7 +2318,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 if order_by_extra.len() >= 7 {
                     return Err(ParseError("ORDER BY supports at most 8 columns".into()));
                 }
-                order_by_extra.push(parser.order_term(&projection)?);
+                order_by_extra.push(parser.order_term(&projection, hidden_aggregate)?);
             }
             Some(first)
         }
@@ -2340,6 +2383,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
     }
     if let Projection::GroupedAggregate { column, .. } = &projection {
+        if hidden_aggregate {
+            if let Some(alias) = alias.as_deref() {
+                for term in order_by.iter_mut().chain(order_by_extra.iter_mut()) {
+                    if term.column.eq_ignore_ascii_case(alias) {
+                        term.column = column.clone();
+                    }
+                }
+            }
+        }
         if order_by
             .iter()
             .chain(order_by_extra.iter())
@@ -2497,6 +2549,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     Ok(Select {
         projection,
         grouped_expressions,
+        hidden_aggregate,
         alias,
         rename,
         distinct,

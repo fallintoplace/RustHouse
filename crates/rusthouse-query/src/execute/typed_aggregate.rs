@@ -492,7 +492,11 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
         .find(|candidate| candidate.name == *column)
         .map(|candidate| candidate.data_type.as_str())
         .ok_or_else(|| ExecutionError::Invalid("unknown group column".into()))?;
-    writeln!(output, "{column}\t{}({value_column})", function.name())?;
+    if query.hidden_aggregate {
+        writeln!(output, "{}", query.alias.as_deref().unwrap_or(column))?;
+    } else {
+        writeln!(output, "{column}\t{}({value_column})", function.name())?;
+    }
     if query.limit == Some(0) {
         return Ok(());
     }
@@ -696,6 +700,10 @@ pub(super) fn execute_grouped_aggregate<W: Write>(
     let write_group =
         |key: &Cell, state: &AggregateState, output: &mut W| -> Result<(), ExecutionError> {
             typed::write_typed_value(output, key, group_type)?;
+            if query.hidden_aggregate {
+                writeln!(output)?;
+                return Ok(());
+            }
             let value = if matches!(function, AggregateFunction::Min | AggregateFunction::Max) {
                 typed::format_temporal_aggregate(state.render(), &selected.data_type)
             } else {
