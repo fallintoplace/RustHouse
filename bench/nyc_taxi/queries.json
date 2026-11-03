@@ -1,0 +1,52 @@
+[
+  {
+    "id": 1,
+    "name": "Daily trip counts",
+    "sql": "SELECT pickup_day, COUNT(*) AS n\nFROM trips\nGROUP BY pickup_day\nORDER BY pickup_day;"
+  },
+  {
+    "id": 2,
+    "name": "Average distance and count by passenger count",
+    "sql": "SELECT passenger_count, AVG(distance_milli) AS avg_distance, COUNT(*) AS n\nFROM trips\nGROUP BY passenger_count\nORDER BY passenger_count;"
+  },
+  {
+    "id": 3,
+    "name": "Total fare and count by passenger count",
+    "sql": "SELECT passenger_count, SUM(fare_cents) AS revenue, COUNT(*) AS n\nFROM trips\nGROUP BY passenger_count\nORDER BY passenger_count;"
+  },
+  {
+    "id": 4,
+    "name": "Popular routes by day",
+    "sql": "SELECT pickup_day, pickup_zone, dropoff_zone, COUNT(*) AS n\nFROM trips\nWHERE fare_cents >= 5000 AND distance_milli >= 10000\nGROUP BY pickup_day, pickup_zone, dropoff_zone\nHAVING COUNT(*) >= 3\nORDER BY n DESC, pickup_day, pickup_zone, dropoff_zone\nLIMIT 20;"
+  },
+  {
+    "id": 5,
+    "name": "Distinct destinations by day",
+    "sql": "SELECT pickup_day, COUNT(DISTINCT dropoff_zone) AS n\nFROM trips\nGROUP BY pickup_day\nORDER BY pickup_day;"
+  },
+  {
+    "id": 6,
+    "name": "Revenue from payment type 1 by passenger count",
+    "sql": "SELECT passenger_count, SUM(CASE WHEN payment_type = 1 THEN fare_cents ELSE 0 END) AS revenue\nFROM trips\nGROUP BY passenger_count\nORDER BY passenger_count;"
+  },
+  {
+    "id": 7,
+    "name": "Trip count by pickup borough",
+    "sql": "SELECT z.borough, COUNT(*) AS n\nFROM trips t\nJOIN zones z ON t.pickup_zone = z.zone_id\nGROUP BY z.borough\nORDER BY z.borough;"
+  },
+  {
+    "id": 8,
+    "name": "Expensive trip count by pickup borough",
+    "sql": "SELECT z.borough, COUNT(*) AS n\nFROM trips t\nJOIN zones z ON t.pickup_zone = z.zone_id\nWHERE t.fare_cents > 2000\nGROUP BY z.borough\nORDER BY z.borough;"
+  },
+  {
+    "id": 9,
+    "name": "Most popular routes between boroughs",
+    "sql": "SELECT p.borough, d.borough, COUNT(*) AS n\nFROM trips t\nJOIN zones p ON t.pickup_zone = p.zone_id\nJOIN zones d ON t.dropoff_zone = d.zone_id\nGROUP BY p.borough, d.borough\nORDER BY n DESC, p.borough, d.borough\nLIMIT 10;"
+  },
+  {
+    "id": 10,
+    "name": "Longest expensive trips",
+    "sql": "SELECT pickup_day, pickup_zone, dropoff_zone, distance_milli\nFROM trips\nWHERE fare_cents > 5000 AND distance_milli > 5000\nORDER BY distance_milli DESC, pickup_day, pickup_zone, dropoff_zone\nLIMIT 20;"
+  }
+]
