@@ -138,6 +138,9 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
             if !parser.take(Token::Comma) {
                 break;
             }
+            if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+                break;
+            }
         }
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after row values".into()));
@@ -295,5 +298,25 @@ mod boolean_values_tests {
             vec![vec![Some("1".into()), Some("0".into()), None]]
         );
         assert!(parse_insert("INSERT INTO flags VALUES (TRUTH)").is_err());
+    }
+}
+
+#[cfg(test)]
+mod insert_values_trailing_comma_tests {
+    use super::*;
+
+    #[test]
+    fn trailing_commas_keep_insert_row_widths() {
+        let query = parse_insert("INSERT INTO events (id, name) VALUES (1, 'a',), (2, 'b',)")
+            .unwrap().unwrap();
+        assert_eq!(query.rows.len(), 2);
+        assert_eq!(query.rows[0], vec![Some("1".into()), Some("a".into())]);
+        assert_eq!(query.rows[1], vec![Some("2".into()), Some("b".into())]);
+        for sql in [
+            "INSERT INTO events VALUES (,)",
+            "INSERT INTO events VALUES (1,,)",
+        ] {
+            assert!(parse_insert(sql).is_err(), "{sql}");
+        }
     }
 }
