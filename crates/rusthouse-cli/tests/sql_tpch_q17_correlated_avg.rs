@@ -26,6 +26,13 @@ fn q17_filters_by_per_part_average() {
     let result = sql(query);
     assert!(result.status.success(), "{result:?}");
     assert_eq!(result.stdout, b"avg_yearly\n10\n");
+    let explicit = query.replace(
+        "lineitem,\n    part",
+        "lineitem JOIN part ON lineitem.l_partkey = part.p_partkey",
+    );
+    let result = sql(&explicit);
+    assert!(result.status.success(), "{result:?}");
+    assert_eq!(result.stdout, b"avg_yearly\n10\n");
     let more = query.replace("0.2 * avg", "2 * avg");
     let result = sql(&more);
     assert!(result.status.success(), "{result:?}");

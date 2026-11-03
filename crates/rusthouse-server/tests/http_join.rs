@@ -15,6 +15,69 @@ fn table(database: &Path, name: &str, columns: &[Column], rows: &[Vec<Option<Str
 }
 
 #[test]
+fn sql_http_executes_tpch_q17() {
+    let database = std::env::temp_dir().join(format!("rusthouse-http-q17-{}", std::process::id()));
+    fs::create_dir_all(&database).unwrap();
+    let cols = |values: &[(&str, &str)]| {
+        values
+            .iter()
+            .map(|(name, kind)| Column {
+                name: (*name).into(),
+                data_type: (*kind).into(),
+            })
+            .collect::<Vec<_>>()
+    };
+    let row = |values: &[&str]| {
+        values
+            .iter()
+            .map(|value| Some((*value).into()))
+            .collect::<Vec<_>>()
+    };
+    table(
+        &database,
+        "part",
+        &cols(&[
+            ("p_partkey", "UInt64"),
+            ("p_brand", "String"),
+            ("p_container", "String"),
+        ]),
+        &[row(&["1", "Brand#23", "MED BOX"])],
+    );
+    table(
+        &database,
+        "lineitem",
+        &cols(&[
+            ("l_partkey", "UInt64"),
+            ("l_quantity", "Float64"),
+            ("l_extendedprice", "Float64"),
+        ]),
+        &[
+            row(&["1", "1", "70"]),
+            row(&["1", "20", "14"]),
+            row(&["1", "30", "21"]),
+        ],
+    );
+    let config = Config {
+        database: Some(database.clone()),
+        part: None,
+        max_rows: 10,
+    };
+    let query = include_str!("../../../bench/tpch/queries/q17.sql");
+    let result = handle_request("POST", "/", query.as_bytes(), &config);
+    assert_eq!(result.status, "200 OK", "{:?}", result.body);
+    assert_eq!(result.body, b"avg_yearly\n10\n");
+    let no_header = handle_request("POST", "/?format=tsv-no-header", query.as_bytes(), &config);
+    assert_eq!(no_header.status, "200 OK", "{:?}", no_header.body);
+    assert_eq!(no_header.body, b"10\n");
+    let invalid = query.replace("l_partkey = p_partkey)", "l_partkey = missing)");
+    assert_eq!(
+        handle_request("POST", "/", invalid.as_bytes(), &config).status,
+        "400 Bad Request"
+    );
+    fs::remove_dir_all(database).unwrap();
+}
+
+#[test]
 fn sql_http_executes_tpch_q21() {
     let database = std::env::temp_dir().join(format!("rusthouse-http-q21-{}", std::process::id()));
     fs::create_dir_all(&database).unwrap();
