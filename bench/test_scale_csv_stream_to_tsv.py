@@ -53,6 +53,7 @@ class CsvToTsvTests(unittest.TestCase):
             self.assertFalse(output.exists())
 
     def test_same_size_source_rewrites_abort_without_publishing_output(self):
+        import os
         from unittest.mock import patch
         from bench.scale import csv_stream_to_tsv as module
         with tempfile.TemporaryDirectory() as folder:
@@ -60,12 +61,15 @@ class CsvToTsvTests(unittest.TestCase):
             source = root / "source.csv"
             target = root / "out.tsv"
             source.write_bytes(b"1,hello\n")
+            initial_mtime_ns = source.stat().st_mtime_ns
             original_reader = module.csv.reader
 
             def mutate_during_stream(stream, **kwargs):
                 for row in original_reader(stream, **kwargs):
                     yield row
                     source.write_bytes(b"2,hello\n")
+                    # A rapid rewrite can share the original timestamp on Windows.
+                    os.utime(source, ns=(initial_mtime_ns, initial_mtime_ns + 2_000_000_000))
 
             with patch.object(module.csv, "reader", mutate_during_stream):
                 with self.assertRaisesRegex(ValueError, "changed"):
