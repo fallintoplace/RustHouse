@@ -183,6 +183,144 @@ where
     Ok(())
 }
 
+// Count multiple qualified grouping keys without retaining JOIN pairs.
+// Keep a reusable hash probe for the large fact input.
+#[allow(clippy::too_many_arguments)]
+fn execute_multi<W: Write>(
+    query: &JoinSelect,
+    left_path: &Path,
+    right_path: &Path,
+    left_names: &[String],
+    right_names: &[String],
+    left_keys: &[usize],
+    right_keys: &[usize],
+    null_filter: Option<(usize, bool)>,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let columns = query.grouped_count.as_ref().ok_or_else(|| invalid("JOIN group keys missing"))?;
+    if columns.len() < 2 || query.kind != JoinType::Inner || query.where_comparison.is_some() {
+        return Err(invalid("multi-key grouped JOIN requires a two-table INNER JOIN without comparison WHERE"));
+    }
+    let width = left_names.len();
+    let left_meta = inspect_query_source(left_path)?;
+    let right_meta = inspect_query_source(right_path)?;
+    let indices = columns.iter()
+        .map(|column| resolve(query, column, left_names, right_names))
+        .collect::<Result<Vec<_>, _>>()?;
+    let data_types = indices.iter().map(|&index| {
+        if index < width {
+            left_meta.columns[index].data_type.as_str()
+        } else {
+            right_meta.columns[index - width].data_type.as_str()
+        }
+    }).collect::<Vec<_>>();
+    let names = columns.iter().map(|column| format!("{}.{}", column.relation, column.name)).collect::<Vec<_>>();
+    let selected = indices.iter().zip(&names).map(|(&index, name)| (index, name.clone(), None)).collect::<Vec<_>>();
+    let keep = retained_build_columns(right_names, right_keys, &selected, null_filter, width);
+    let right_rows = read_projected_build_rows(
+        right_path,
+        right_names,
+        &keep,
+        right_meta.rows,
+        MAX_STREAM_BUILD_ROWS,
+        MAX_STREAM_BUILD_BYTES,
+    )?;
+    let hash = build_grouped_join_hash(&right_rows, right_keys, query.any);
+    let left_columns = indices.iter().filter(|&&index| index < width).copied().collect::<Vec<_>>();
+    let mut groups: HashMap<Vec<typed::Key>, (Vec<typed::Cell>, u64)> = HashMap::new();
+    let mut probe_key = Vec::with_capacity(indices.len());
+    let mut retained = 0usize;
+
+    if query.limit != Some(0) && !hash.is_empty() {
+        probe_inner_projected(
+            left_path,
+            left_names,
+            left_keys,
+            &right_rows,
+            &hash,
+            ProbeOptions {
+                materialize_rows: !left_columns.is_empty(),
+                materialize_after: 0,
+                stop_after: Some(usize::MAX),
+                any: query.any,
+                null_filter,
+            },
+            Some(&left_columns),
+            |left, right| {
+                probe_key.clear();
+                let values = indices.iter().map(|&index| {
+                    if index < width { &left[index] } else { &right[index - width] }
+                }).collect::<Vec<_>>();
+                for value in &values {
+                    probe_key.push(value.key());
+                }
+                if let Some(group) = groups.get_mut(probe_key.as_slice()) {
+                    group.1 = group.1.checked_add(1)
+                        .ok_or_else(|| invalid("grouped JOIN count overflow"))?;
+                } else {
+                    if groups.len() >= MAX_JOIN_GROUPS {
+                        return Err(invalid("too many JOIN groups"));
+                    }
+                    let variable = values.iter().try_fold(0usize, |used, value| {
+                        used.checked_add(group_value_bytes(value))
+                            .ok_or_else(|| invalid("JOIN group key size overflow"))
+                    })?;
+                    retained = retained.checked_add(
+                        std::mem::size_of::<(Vec<typed::Key>, Vec<typed::Cell>, u64)>()
+                            .saturating_add(indices.len().saturating_mul(
+                                std::mem::size_of::<typed::Key>() + std::mem::size_of::<typed::Cell>()
+                            )).saturating_add(variable)
+                    ).ok_or_else(|| invalid("JOIN group memory overflow"))?;
+                    if retained > MAX_JOIN_GROUP_BYTES {
+                        return Err(invalid("JOIN grouped hash memory budget exceeded"));
+                    }
+                    groups.insert(probe_key.clone(), (values.into_iter().cloned().collect(), 1));
+                }
+                Ok(())
+            },
+        )?;
+    }
+
+    let ordering = if query.order_by.is_empty() {
+        (0..indices.len()).map(|index| (index, false, Some(false))).collect::<Vec<_>>()
+    } else {
+        query.order_by.iter().map(|(column, descending, nulls)| {
+            let index = columns.iter().position(|key| key == column)
+                .ok_or_else(|| invalid("JOIN ORDER BY must use a group key"))?;
+            Ok((index, *descending, *nulls))
+        }).collect::<Result<Vec<_>, ExecutionError>>()?
+    };
+    let mut rows = groups.into_values().collect::<Vec<_>>();
+    rows.sort_by(|left, right| {
+        for &(index, descending, nulls_first) in &ordering {
+            let order = typed::compare_order_cells(
+                &left.0[index], &right.0[index], descending, nulls_first,
+            );
+            if !order.is_eq() {
+                return order;
+            }
+        }
+        std::cmp::Ordering::Equal
+    });
+    for (index, name) in names.iter().enumerate() {
+        if index != 0 {
+            output.write_all(b"\t")?;
+        }
+        output.write_all(name.as_bytes())?;
+    }
+    writeln!(output, "\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+    for (values, count) in rows.iter().skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
+        for (index, value) in values.iter().enumerate() {
+            if index != 0 {
+                output.write_all(b"\t")?;
+            }
+            typed::write_typed_value(output, value, data_types[index])?;
+        }
+        writeln!(output, "\t{count}")?;
+    }
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn execute<W: Write>(
     query: &JoinSelect,
@@ -195,10 +333,14 @@ pub(super) fn execute<W: Write>(
     null_filter: Option<(usize, bool)>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    let key_column = query
+    let keys = query
         .grouped_count
         .as_ref()
         .ok_or_else(|| invalid("JOIN group key missing"))?;
+    if keys.len() > 1 {
+        return execute_multi(query, left_path, right_path, left_names, right_names, left_keys, right_keys, null_filter, output);
+    }
+    let key_column = &keys[0];
     let width = left_names.len();
     let index = resolve(query, key_column, left_names, right_names)?;
     let group_type = if index < width {
