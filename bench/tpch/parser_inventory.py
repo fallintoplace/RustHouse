@@ -12,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 from official_coverage import TPCH_QUERY_COUNT, clean_sql
+from canonical_integrity import verify as verify_canonical_sql
 
 MAX_AST_BYTES = 2 * 1024 * 1024
 
@@ -37,8 +38,10 @@ def parse_statement(binary, sql, timeout=10):
         return True, None
 
 
-def inventory(binary, queries_dir, *, parse=None):
+def inventory(binary, queries_dir, *, parse=None, require_canonical=False):
     """Inventory all 22 canonical files; never report a missing query as parsed."""
+    if require_canonical:
+        verify_canonical_sql(queries_dir)
     if parse is None:
         parse = lambda sql: parse_statement(binary, sql)
     results = []
@@ -71,9 +74,12 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--binary", type=Path, required=True)
     parser.add_argument("--queries-dir", type=Path, default=Path(__file__).parent / "queries")
+    parser.add_argument("--require-canonical", action="store_true",
+                        help="Verify all 22 files match pinned upstream SQL")
     parser.add_argument("--output", type=Path)
     args = parser.parse_args(argv)
-    report = inventory(args.binary, args.queries_dir)
+    report = inventory(args.binary, args.queries_dir,
+                       require_canonical=args.require_canonical)
     rendered = json.dumps(report, indent=2) + "\n"
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")
