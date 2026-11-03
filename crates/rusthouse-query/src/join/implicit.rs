@@ -163,7 +163,7 @@ pub(super) fn rewrite(
     } else {
         None
     };
-    let mut keys = vec![Vec::<Vec<Token>>::new(); tables.len()];
+    let mut edges = Vec::<(usize, usize, Vec<Token>)>::new();
     let mut remainder = Vec::new();
     for mut piece in pieces {
         if let (Some(schemas), [left, Token::Operator(Operator::Eq), right]) =
@@ -216,7 +216,7 @@ pub(super) fn rewrite(
                     .and_then(|name| tables.iter().position(|(_, alias)| alias == name));
                 if let (Some(ai), Some(bi)) = (ai, bi) {
                     if ai != bi {
-                        keys[ai.max(bi)].push(piece);
+                        edges.push((ai, bi, piece));
                         continue;
                     }
                 }
@@ -224,17 +224,54 @@ pub(super) fn rewrite(
         }
         remainder.push(piece);
     }
-    if keys.iter().skip(1).any(Vec::is_empty) {
+    // Choose a connected left-deep order. A later table can connect two
+    // earlier FROM entries, so the written order is not always executable.
+    let mut order = vec![0usize];
+    while order.len() < tables.len() {
+        let next = (1..tables.len()).find(|candidate| {
+            !order.contains(candidate)
+                && edges.iter().any(|(a, b, _)| {
+                    (*a == *candidate && order.contains(b))
+                        || (*b == *candidate && order.contains(a))
+                })
+        });
+        match next {
+            Some(index) => order.push(index),
+            None => {
+                return Err(ParseError(
+                    "comma joins require a connected graph of equality keys".into(),
+                ));
+            }
+        }
+    }
+    let changed_order = order.iter().enumerate().any(|(i, &index)| i != index);
+    // Wildcard output follows the original FROM order. Do not silently change it.
+    if changed_order
+        && matches!(
+            &tokens[1..from],
+            [Token::Star] | [Token::Word(_), Token::Star]
+        )
+    {
         return Err(ParseError(
-            "each comma joined table needs a qualified equality key".into(),
+            "reordered comma joins require explicit projections".into(),
         ));
+    }
+    let mut position = vec![0usize; tables.len()];
+    for (index, &original) in order.iter().enumerate() {
+        position[original] = index;
+    }
+    let mut keys = vec![Vec::<Vec<Token>>::new(); tables.len()];
+    for (left, right, piece) in edges {
+        keys[position[left].max(position[right])].push(piece);
     }
     let word = |s: &str| Token::Word(s.to_owned());
     let mut result = tokens[..from + 1].to_vec();
-    result.push(word(&tables[0].0));
+    let (first_table, first_alias) = &tables[order[0]];
+    result.push(word(first_table));
     result.push(word("AS"));
-    result.push(word(&tables[0].1));
-    for (index, (table, name)) in tables.iter().enumerate().skip(1) {
+    result.push(word(first_alias));
+    for (index, &original) in order.iter().enumerate().skip(1) {
+        let (table, name) = &tables[original];
         result.push(word("JOIN"));
         result.push(word(table));
         result.push(word("AS"));
