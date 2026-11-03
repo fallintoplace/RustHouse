@@ -177,7 +177,7 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 Token::Minus
             }
             b'=' | b'<' | b'>' => Token::Operator(scan_comparison(bytes, &mut index)),
-            b'!' if bytes.get(index + 1) == Some(&b'=') => {
+            b'!' if matches!(bytes.get(index + 1), Some(b'=' | b'<' | b'>')) => {
                 Token::Operator(scan_comparison(bytes, &mut index))
             }
             b'0' if matches!(bytes.get(index + 1), Some(b'x' | b'X')) => {

@@ -308,6 +308,8 @@ pub(super) fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
     let (operator, width) = match (bytes[*index], bytes.get(*index + 1)) {
         (b'<', Some(b'=')) => (Operator::Le, 2),
         (b'<', Some(b'>')) | (b'!', Some(b'=')) => (Operator::Ne, 2),
+        (b'!', Some(b'<')) => (Operator::Ge, 2),
+        (b'!', Some(b'>')) => (Operator::Le, 2),
         (b'>', Some(b'=')) => (Operator::Ge, 2),
         (b'=', Some(b'=')) => (Operator::Eq, 2),
         (b'=', _) => (Operator::Eq, 1),
