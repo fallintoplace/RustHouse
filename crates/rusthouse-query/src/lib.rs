@@ -8,8 +8,10 @@ mod execute;
 mod explain;
 mod expression;
 mod grouped_affine;
+mod grouped_extract;
 mod grouped_minute;
 pub use grouped_affine::GroupedAffineKey;
+pub use grouped_extract::GroupedExtractMinute;
 pub use grouped_minute::GroupedMinute;
 mod insert;
 mod insert_select;
@@ -409,6 +411,8 @@ pub struct Select {
     pub grouped_affine: Vec<GroupedAffineKey>,
     /// Count rows grouped by the UTC minute of a DateTime column.
     pub grouped_minute: Option<GroupedMinute>,
+    /// EXTRACT minute in a three-key grouped count.
+    pub grouped_extract_minute: Option<GroupedExtractMinute>,
     /// Computed arguments aligned with grouped aggregate metrics, when present.
     pub grouped_expressions: Vec<Option<ScalarExpr>>,
     /// Whether the grouped metric is used only for HAVING.
@@ -956,6 +960,14 @@ pub fn split_clickhouse_format(sql: &str) -> Result<(&str, Option<&str>), ParseE
 
 pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
     let mut tokens = tokenize(sql)?;
+    if matches!(tokens.as_slice(), [Token::Word(select), Token::Word(_), Token::Comma, Token::Word(function), Token::LParen, ..] if select.eq_ignore_ascii_case("SELECT") && function.eq_ignore_ascii_case("EXTRACT"))
+    {
+        return match grouped_extract::parse(tokens.clone())? {
+            Some(grouped) => Ok(grouped),
+            None => parse_select_tokens(tokens),
+        };
+    }
+
     if matches!(tokens.as_slice(), [Token::Word(select), Token::Word(function), Token::LParen, ..] if select.eq_ignore_ascii_case("SELECT") && function.eq_ignore_ascii_case("DATE_TRUNC"))
     {
         return match grouped_minute::parse(tokens.clone())? {
@@ -2716,6 +2728,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         grouped_literal: None,
         grouped_affine: Vec::new(),
         grouped_minute: None,
+        grouped_extract_minute: None,
         grouped_expressions,
         hidden_aggregate,
         alias,

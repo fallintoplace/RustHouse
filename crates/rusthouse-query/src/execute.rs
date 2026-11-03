@@ -57,6 +57,7 @@ use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 mod cte_max_join;
 mod derived_join_count;
 mod grouped_distinct;
+mod grouped_extract;
 mod grouped_filter;
 mod grouped_generated;
 mod grouped_minute;
@@ -468,7 +469,9 @@ pub fn execute<W: Write>(
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let mut buffered = BufWriter::new(output);
-    if query.grouped_minute.is_some() {
+    if query.grouped_extract_minute.is_some() {
+        grouped_extract::execute(query, part, &mut buffered)?;
+    } else if query.grouped_minute.is_some() {
         grouped_minute::execute(query, part, &mut buffered)?;
     } else if !query.grouped_affine.is_empty() {
         let path = part.ok_or_else(|| {
