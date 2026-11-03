@@ -181,7 +181,6 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             (b'\\', Some(b'f')) => Some(12),
             (b'\\', Some(b'\x60')) => Some(b'\x60'),
             (b'\\', Some(b'v')) => Some(11),
-            (b'\\', Some(b'e')) => Some(27),
             (b'\'', Some(b'\'')) => Some(b'\''),
             _ => None,
         };
@@ -663,7 +662,7 @@ mod clickhouse_control_escape_tests {
 }
 
 #[cfg(test)]
-mod clickhouse_escape_character_tests {
+mod clickhouse_escape_character_sequence_tests {
     use super::*;
 
     #[test]
