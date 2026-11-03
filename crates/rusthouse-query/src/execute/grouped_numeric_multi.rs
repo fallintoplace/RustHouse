@@ -46,9 +46,10 @@ impl DistinctValues {
         let charge = std::mem::size_of_val(&entry)
             .saturating_mul(2)
             .saturating_add(dynamic);
-        self.retained = self.retained.checked_add(charge).ok_or_else(|| {
-            ExecutionError::Invalid("distinct state memory overflow".into())
-        })?;
+        self.retained = self
+            .retained
+            .checked_add(charge)
+            .ok_or_else(|| ExecutionError::Invalid("distinct state memory overflow".into()))?;
         if self.retained > 64 * 1024 * 1024 {
             return Err(ExecutionError::Invalid(
                 "grouped distinct values exceed 64 MiB retained budget".into(),
@@ -263,8 +264,10 @@ pub(super) fn execute<W: Write>(
         let selected = types.get(value_column).ok_or_else(|| {
             ExecutionError::Invalid(format!("unknown aggregate column: {value_column}"))
         })?;
-        if !matches!(function, AggregateFunction::Count | AggregateFunction::CountDistinct)
-            && matches!(typed::base_type(selected), "String" | "UUID")
+        if !matches!(
+            function,
+            AggregateFunction::Count | AggregateFunction::CountDistinct
+        ) && matches!(typed::base_type(selected), "String" | "UUID")
         {
             return Err(numeric_column_error());
         }
@@ -473,7 +476,11 @@ pub(super) fn execute<W: Write>(
                 if *function == AggregateFunction::CountDistinct {
                     let column_index = column_index.expect("distinct metric has a column");
                     if !typed::is_null_at(&batch[column_index], row)
-                        && distinct_values.insert(index, metric, typed::key_at(&batch[column_index], row))?
+                        && distinct_values.insert(
+                            index,
+                            metric,
+                            typed::key_at(&batch[column_index], row),
+                        )?
                     {
                         state.increment_count()?;
                     }

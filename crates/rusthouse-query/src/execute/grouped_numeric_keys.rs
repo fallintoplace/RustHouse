@@ -237,8 +237,10 @@ pub(super) fn execute<W: Write>(
         let kind = types.get(column).ok_or_else(|| {
             ExecutionError::Invalid(format!("unknown aggregate column: {column}"))
         })?;
-        if !matches!(function, AggregateFunction::Count | AggregateFunction::CountDistinct)
-            && matches!(typed::base_type(kind), "String" | "UUID")
+        if !matches!(
+            function,
+            AggregateFunction::Count | AggregateFunction::CountDistinct
+        ) && matches!(typed::base_type(kind), "String" | "UUID")
         {
             return Err(numeric_column_error());
         }
@@ -508,7 +510,11 @@ pub(super) fn execute<W: Write>(
                 if *function == AggregateFunction::CountDistinct {
                     let index = column_index.expect("distinct metric has a column");
                     if !typed::is_null_at(&batch[index], row)
-                        && distinct_values.insert(group, metric, typed::key_at(&batch[index], row))?
+                        && distinct_values.insert(
+                            group,
+                            metric,
+                            typed::key_at(&batch[index], row),
+                        )?
                     {
                         state.increment_count()?;
                     }

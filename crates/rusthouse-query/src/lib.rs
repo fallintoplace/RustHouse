@@ -927,7 +927,8 @@ pub fn parse_select(sql: &str) -> Result<Select, ParseError> {
 // must instead use the multi-aggregate plan.
 fn distinct_count_has_following_metric(parser: &Parser) -> bool {
     let mut index = parser.index + 5;
-    if matches!(parser.tokens.get(index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("AS")) {
+    if matches!(parser.tokens.get(index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("AS"))
+    {
         index += 2;
     }
     parser.tokens.get(index) == Some(&Token::Comma)
@@ -1442,11 +1443,12 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             "SUMIF" | "AVGIF" | "MINIF" | "MAXIF"));
                     parser.index += 1;
                     parser.take(Token::LParen);
-                    let function = if function == AggregateFunction::Count && parser.keyword("DISTINCT") {
-                        AggregateFunction::CountDistinct
-                    } else {
-                        function
-                    };
+                    let function =
+                        if function == AggregateFunction::Count && parser.keyword("DISTINCT") {
+                            AggregateFunction::CountDistinct
+                        } else {
+                            function
+                        };
                     let (value_column, case_filter) = grouped_metric_value(&mut parser, function)?;
                     let function = if function == AggregateFunction::Sum && value_column == "*" {
                         AggregateFunction::Count
@@ -1517,13 +1519,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         if !parser.take(Token::LParen) {
                             return Err(ParseError("expected '(' after aggregate name".into()));
                         }
-                        let function = if function == AggregateFunction::Count && parser.keyword("DISTINCT") {
-                            AggregateFunction::CountDistinct
-                        } else {
-                            function
-                        };
-                        let (value_column, case_filter) = grouped_metric_value(&mut parser, function)?;
-                        let function = if function == AggregateFunction::Sum && value_column == "*" {
+                        let function =
+                            if function == AggregateFunction::Count && parser.keyword("DISTINCT") {
+                                AggregateFunction::CountDistinct
+                            } else {
+                                function
+                            };
+                        let (value_column, case_filter) =
+                            grouped_metric_value(&mut parser, function)?;
+                        let function = if function == AggregateFunction::Sum && value_column == "*"
+                        {
                             AggregateFunction::Count
                         } else {
                             function
