@@ -197,7 +197,7 @@ pub(super) fn handle_sql(config: &Config, format: QueryFormat) -> Response {
             } else {
                 JsonArraySink::new(&mut writer)
             };
-            emit(&mut JsonlWriter::new(&mut array)).and_then(|()| array.finish())
+            emit(&mut JsonlWriter::new(&mut array)).and_then(|()| array.finish().map(|_| ()))
         }
     };
     match write {
