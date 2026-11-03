@@ -384,7 +384,9 @@ pub(super) fn execute<W: Write>(
                     if !filter.passes(&batch, row, filter_enabled)? {
                         // CASE ... ELSE 0 contributes a zero for unmatched rows.
                         // Plain SUMIF and CASE without ELSE still skip the row.
-                        if matches!(filters.get(metric), Some(Some(crate::GroupedFilter::CaseElseZero { .. }))) {
+                        if *function != AggregateFunction::Count
+                            && matches!(filters.get(metric), Some(Some(crate::GroupedFilter::CaseElseZero { .. })))
+                        {
                             if *function == AggregateFunction::Sum {
                                 state.update_sum(Number::Unsigned(0))?;
                             } else {
