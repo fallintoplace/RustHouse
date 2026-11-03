@@ -860,6 +860,29 @@ fn execute_multi_join_inner<W: Write>(
     avg_plan: Option<(&crate::JoinCorrelatedAvg, &std::path::Path)>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query
+        .grouped_formula
+        .as_ref()
+        .is_some_and(|formula| formula.sums.is_empty() || formula.sums.len() > 8)
+    {
+        return Err(invalid("grouped formula requires between 1 and 8 sums"));
+    }
+    if query.grouped_formula.is_some()
+        && (query.grouped_count.is_none()
+            || query.kind != JoinType::Inner
+            || query.steps.iter().any(|step| step.kind != JoinType::Inner)
+            || query.grouped_sum.is_some()
+            || query.grouped_min.is_some()
+            || query.grouped_distinct.is_some()
+            || query.grouped_count_column.is_some()
+            || query.aggregate.is_some()
+            || query.scalar_sum.is_some()
+            || query.scalar_formula.is_some()
+            || !query.grouped_case_counts.is_empty()
+            || query.grouped_sum_having.is_some())
+    {
+        return Err(invalid("grouped formula requires an INNER grouped plan"));
+    }
     if query.grouped_min.is_some()
         && (query.grouped_count.is_none()
             || query.grouped_sum.is_some()
@@ -1071,9 +1094,10 @@ fn execute_multi_join_inner<W: Write>(
                 let mut indices = HashMap::new();
                 let mut names = Vec::new();
                 for name in columns {
+                    let (relation, column_name) = name.split_once('\0').unwrap_or(("", &name));
                     let column = JoinColumn {
-                        relation: String::new(),
-                        name: name.clone(),
+                        relation: relation.to_owned(),
+                        name: column_name.to_owned(),
                     };
                     let index = column_index(&relations, &column)?;
                     indices.insert(name, index);
@@ -1105,6 +1129,7 @@ fn execute_multi_join_inner<W: Write>(
     let formula = query
         .scalar_formula
         .as_ref()
+        .or(query.grouped_formula.as_ref())
         .map(|formula| -> Result<BoundFormula, ExecutionError> {
             let sums = formula
                 .sums

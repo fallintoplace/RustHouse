@@ -53,6 +53,7 @@ type GroupRow = (
     u64,
     Option<super::super::Number>,
     Option<HashSet<typed::Key>>,
+    Option<Box<[Option<super::super::Number>]>>,
 );
 
 #[derive(Default)]
@@ -79,6 +80,7 @@ struct OutputSpec<'a> {
     scalar_sum: bool,
     grouped_min: bool,
     formula: Option<&'a BoundFormula>,
+    grouped_formula: Option<&'a BoundFormula>,
     distinct_index: Option<usize>,
     row_filters: Option<&'a super::row_filters::RowFilters>,
     exists: &'a [super::exists::BoundExists],
@@ -217,7 +219,29 @@ fn visit<W: Write>(
                 }
                 None => None,
             };
-            if let Some((_, count, sum, _)) = state.groups.get_mut(state.group_key.as_slice()) {
+            let mut formula_values = [None; 8];
+            if let Some(formula) = spec.grouped_formula {
+                for (index, sum) in formula.sums.iter().enumerate() {
+                    formula_values[index] =
+                        super::super::multi_aggregate::eval_row_arithmetic(&sum.expression, row)?;
+                }
+            }
+            if let Some((_, count, sum, _, sums)) = state.groups.get_mut(state.group_key.as_slice())
+            {
+                if let Some(formula) = spec.grouped_formula {
+                    let sums = sums.as_mut().expect("grouped formula sums exist");
+                    for (index, value) in formula_values.iter().enumerate().take(formula.sums.len())
+                    {
+                        if let Some(value) = value {
+                            sums[index] = Some(match sums[index] {
+                                Some(previous) => {
+                                    super::super::checked_aggregate_sum(previous, *value)?
+                                }
+                                None => *value,
+                            });
+                        }
+                    }
+                }
                 if let Some(value) = value {
                     *sum = Some(match *sum {
                         Some(previous) if spec.grouped_min => {
@@ -262,6 +286,7 @@ fn visit<W: Write>(
                             u64,
                             Option<super::super::Number>,
                             Option<HashSet<typed::Key>>,
+                            Option<Box<[Option<super::super::Number>]>>,
                         )>())
                     })
                     .ok_or_else(|| invalid("chained JOIN group size overflow"))?;
@@ -269,6 +294,13 @@ fn visit<W: Write>(
                     .group_bytes
                     .checked_add(fixed)
                     .and_then(|bytes| bytes.checked_add(variable))
+                    .and_then(|bytes| {
+                        let extra = spec.grouped_formula.map_or(0, |formula| {
+                            16 + formula.sums.len()
+                                * std::mem::size_of::<Option<super::super::Number>>()
+                        });
+                        bytes.checked_add(extra)
+                    })
                     .filter(|&bytes| bytes <= MAX_STREAM_GROUP_BYTES)
                     .ok_or_else(|| invalid("chained JOIN grouped memory budget exceeded"))?;
                 state.groups.insert(
@@ -284,13 +316,18 @@ fn visit<W: Write>(
                         if spec.distinct_index.is_some() { 0 } else { 1 },
                         value,
                         spec.distinct_index.map(|_| HashSet::new()),
+                        spec.grouped_formula.map(|formula| {
+                            formula_values[..formula.sums.len()]
+                                .to_vec()
+                                .into_boxed_slice()
+                        }),
                     ),
                 );
             }
             if let Some(index) = spec.distinct_index {
                 if !matches!(row[index], typed::Cell::Null) {
                     let key = row[index].key();
-                    let (_, count, _, distinct) = state
+                    let (_, count, _, distinct, _) = state
                         .groups
                         .get_mut(state.group_key.as_slice())
                         .expect("group exists");
@@ -402,7 +439,16 @@ pub(super) fn execute<W: Write>(
         sum,
         scalar_sum: query.scalar_sum.is_some(),
         grouped_min: query.grouped_min.is_some(),
-        formula,
+        formula: if query.scalar_formula.is_some() {
+            formula
+        } else {
+            None
+        },
+        grouped_formula: if query.grouped_formula.is_some() {
+            formula
+        } else {
+            None
+        },
         distinct_index,
         row_filters,
         exists,
@@ -548,7 +594,7 @@ pub(super) fn execute<W: Write>(
             any: step.any,
         });
     }
-    if spec.group_indices.is_none() && !spec.scalar_sum && formula.is_none() {
+    if spec.group_indices.is_none() && !spec.scalar_sum && spec.formula.is_none() {
         write_join_header(output, &selected)?;
     }
     // A build can contain physical rows but no legal JOIN keys (only NULL
@@ -557,7 +603,7 @@ pub(super) fn execute<W: Write>(
     if stages.iter().any(|stage| stage.hash.is_empty()) {
         if query.grouped_count.is_some() {
             write_group_header(query, &selected, output)?;
-        } else if let Some(formula) = formula {
+        } else if let Some(formula) = spec.formula {
             let value = evaluate_formula(formula, &vec![None; formula.sums.len()])?;
             write_scalar_sum(query, value, true, output)?;
         } else if spec.scalar_sum {
@@ -579,7 +625,7 @@ pub(super) fn execute<W: Write>(
     let mut reader = TypedQueryReader::open(&paths[0], &projected_names)?;
     let mut scanned = 0u64;
     let mut state = OutputState::default();
-    if let Some(formula) = formula {
+    if let Some(formula) = spec.formula {
         state.formula_sums.resize(formula.sums.len(), None);
     }
     // The recursive visitor restores fact row length after each match.
@@ -610,7 +656,7 @@ pub(super) fn execute<W: Write>(
     if scanned != relations[0].rows {
         return Err(invalid("JOIN input row count changed during scan"));
     }
-    if let Some(formula) = formula {
+    if let Some(formula) = spec.formula {
         let value = evaluate_formula(formula, &state.formula_sums)?;
         return write_scalar_sum(query, value, true, output);
     }
@@ -644,6 +690,14 @@ pub(super) fn execute<W: Write>(
                 .collect::<Result<Vec<_>, ExecutionError>>()?
         };
         let mut rows = state.groups.into_values().collect::<Vec<_>>();
+        if let Some(formula) = spec.grouped_formula {
+            for row in &mut rows {
+                row.2 = evaluate_formula(
+                    formula,
+                    row.4.as_deref().expect("grouped formula sums exist"),
+                )?;
+            }
+        }
         if let Some(having) = &query.grouped_sum_having {
             use super::super::Number;
             if having.value == "\\N" {
@@ -699,7 +753,7 @@ pub(super) fn execute<W: Write>(
                         nulls_first,
                     )
                 } else {
-                    if sum.is_some() {
+                    if sum.is_some() || spec.grouped_formula.is_some() {
                         compare_sum_values(left.2, right.2, descending, nulls_first)
                     } else {
                         let count_order = left.1.cmp(&right.1);
@@ -732,7 +786,7 @@ pub(super) fn execute<W: Write>(
                     output.write_all(b"\t")?;
                 }
                 if index == metric {
-                    if spec.sum.is_some() {
+                    if spec.sum.is_some() || spec.grouped_formula.is_some() {
                         typed::write_value(
                             output,
                             &sum.map_or(typed::Cell::Null, typed::Cell::Numeric),
@@ -755,12 +809,12 @@ pub(super) fn execute<W: Write>(
         };
         if let Some(positions) = bounded {
             for index in positions.into_iter().skip(query.offset) {
-                let (values, count, sum, _) = &rows[index];
+                let (values, count, sum, _, _) = &rows[index];
                 write_group(values, *count, *sum)?;
             }
         } else {
             rows.sort_by(compare);
-            for (values, count, sum, _) in rows
+            for (values, count, sum, _, _) in rows
                 .iter()
                 .skip(query.offset)
                 .take(query.limit.unwrap_or(usize::MAX))
