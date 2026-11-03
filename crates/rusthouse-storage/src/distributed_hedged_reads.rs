@@ -26,6 +26,26 @@ fn valid_replica_label(value: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
+fn choose_candidate<'a>(
+    eligible: &[&'a HedgedReplica],
+    used: &HashSet<&str>,
+    seen_zones: &HashSet<&str>,
+) -> Option<&'a HedgedReplica> {
+    eligible
+        .iter()
+        .copied()
+        .find(|candidate| {
+            !used.contains(candidate.node.as_str())
+                && !seen_zones.contains(candidate.zone.as_str())
+        })
+        .or_else(|| {
+            eligible
+                .iter()
+                .copied()
+                .find(|candidate| !used.contains(candidate.node.as_str()))
+        })
+}
+
 pub fn plan_hedged_reads(
     replicas: &[HedgedReplica],
     snapshot: SnapshotVersion,
@@ -87,17 +107,7 @@ pub fn plan_hedged_reads(
         }
         // Use the fastest unseen zone while it exists. Once each zone is
         // represented, pick the fastest remaining replica.
-        let pick = eligible
-            .iter()
-            .find(|candidate| {
-                !used.contains(candidate.node.as_str())
-                    && !seen_zones.contains(candidate.zone.as_str())
-            })
-            .or_else(|| {
-                eligible
-                    .iter()
-                    .find(|candidate| !used.contains(candidate.node.as_str()))
-            })
+        let pick = choose_candidate(&eligible, &used, &seen_zones)
             .expect("at least one candidate remains");
         used.insert(pick.node.as_str());
         seen_zones.insert(pick.zone.as_str());
