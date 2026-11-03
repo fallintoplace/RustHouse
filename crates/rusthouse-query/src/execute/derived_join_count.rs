@@ -30,7 +30,9 @@ pub fn execute_derived_join_count<W: Write>(
 ) -> Result<(), ExecutionError> {
     let mut intermediate = LimitedRows(Vec::new());
     let mut inner = plan.inner.clone();
-    if plan.limit == Some(0) { inner.limit = Some(0); }
+    if plan.limit == Some(0) {
+        inner.limit = Some(0);
+    }
     execute_join(&inner, left, right, &mut intermediate)?;
     let text = std::str::from_utf8(&intermediate.0)
         .map_err(|_| ExecutionError::Invalid("invalid derived JOIN output".into()))?;
