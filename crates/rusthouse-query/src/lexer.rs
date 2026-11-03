@@ -12,6 +12,8 @@ const MAX_SMALL_STATEMENT_TOKENS: usize = 32_768;
 pub(super) enum Token {
     Word(String),
     QuotedWord(String),
+    /// A safe, printable multi-word name that is valid only in output positions.
+    QuotedAlias(String),
     Number(String),
     String(String),
     Star,
@@ -279,11 +281,18 @@ mod tests {
                 Token::QuotedWord("events".into()),
             ]
         );
+        assert_eq!(
+            tokenize("SELECT \"order count\"").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::QuotedAlias("order count".into()),
+            ]
+        );
+        assert!(crate::parse_select("SELECT \"order count\" FROM numbers(1)").is_err());
         for sql in [
             "SELECT `unterminated",
             "SELECT \"unterminated",
             "SELECT ``",
-            "SELECT \"a b\"",
             "SELECT `../db`",
             "SELECT `some``thing`",
             "SELECT `1bad`",
