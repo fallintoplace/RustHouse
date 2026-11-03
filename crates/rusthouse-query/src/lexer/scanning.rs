@@ -245,7 +245,7 @@ pub(super) fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
 
 pub(super) fn follows_binary_minus_context(tokens: &[Token]) -> bool {
     match tokens.last() {
-        Some(Token::Number(_) | Token::RParen) => true,
+        Some(Token::Number(_) | Token::String(_) | Token::RParen) => true,
         Some(Token::QuotedWord(_)) => true,
         Some(Token::Word(word)) => !["SELECT", "BETWEEN", "AND", "OR", "WHERE", "NOT", "IN"]
             .iter()
@@ -374,6 +374,31 @@ mod quoted_identifier_fast_path_tests {
         assert_eq!(
             scan_quoted_identifier("`ok_42`", &mut 0).unwrap(),
             Token::QuotedWord("ok_42".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod minus_after_string_tests {
+    use super::*;
+
+    #[test]
+    fn string_literal_followed_by_minus_is_not_a_signed_number() {
+        assert_eq!(
+            tokenize("'value'-2").unwrap(),
+            vec![
+                Token::String("value".into()),
+                Token::Minus,
+                Token::Number("2".into()),
+            ]
+        );
+        assert_eq!(
+            tokenize("'value' - .5").unwrap(),
+            vec![
+                Token::String("value".into()),
+                Token::Minus,
+                Token::Number(".5".into()),
+            ]
         );
     }
 }
