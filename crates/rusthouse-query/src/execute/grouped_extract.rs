@@ -156,7 +156,9 @@ pub(super) fn execute<W: Write>(
                 retained = retained
                     .checked_add(bytes)
                     .filter(|&n| n <= MAX_GROUP_BYTES)
-                    .ok_or_else(|| ExecutionError::Invalid("EXTRACT groups exceed 64 MiB".into()))?;
+                    .ok_or_else(|| {
+                        ExecutionError::Invalid("EXTRACT groups exceed 64 MiB".into())
+                    })?;
                 entry.insert(0)
             }
         };
