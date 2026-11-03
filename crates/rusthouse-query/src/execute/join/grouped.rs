@@ -230,7 +230,13 @@ fn execute_multi<W: Write>(
         .collect::<Vec<_>>();
     let names = columns
         .iter()
-        .map(|column| format!("{}.{}", column.relation, column.name))
+        .map(|column| {
+            if column.relation.is_empty() {
+                column.name.clone()
+            } else {
+                format!("{}.{}", column.relation, column.name)
+            }
+        })
         .collect::<Vec<_>>();
     let selected = indices
         .iter()
@@ -452,7 +458,11 @@ pub(super) fn execute<W: Write>(
             .data_type
             .clone()
     };
-    let group_name = format!("{}.{}", key_column.relation, key_column.name);
+    let group_name = if key_column.relation.is_empty() {
+        key_column.name.clone()
+    } else {
+        format!("{}.{}", key_column.relation, key_column.name)
+    };
     let comparison_filter = query
         .where_comparison
         .as_ref()
