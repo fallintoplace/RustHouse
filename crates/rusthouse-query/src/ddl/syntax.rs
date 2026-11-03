@@ -49,7 +49,18 @@ fn canonical_type(name: &str) -> Option<&'static str> {
 }
 
 pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, ParseError> {
-    let name = parser.word()?;
+    let mut name = parser.word()?;
+    if name.eq_ignore_ascii_case("NATIONAL") {
+        name = parser.word()?;
+        if !matches!(
+            name.to_ascii_uppercase().as_str(),
+            "CHAR" | "CHARACTER" | "VARCHAR"
+        ) {
+            return Err(ParseError(
+                "NATIONAL requires CHAR, CHARACTER or VARCHAR".into(),
+            ));
+        }
+    }
     if name.eq_ignore_ascii_case("CHARACTER") || name.eq_ignore_ascii_case("CHAR") {
         parser.keyword("VARYING");
     }
@@ -260,5 +271,32 @@ mod postgres_float_alias_tests {
         assert_eq!(columns[0].data_type, "Float32");
         assert_eq!(columns[1].data_type, "Float64");
         assert!(parse_ddl("CREATE TABLE metrics (bad FLOAT16)").is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod national_character_alias_tests {
+    use crate::ddl::{Ddl, parse_ddl};
+
+    #[test]
+    fn national_character_spellings_map_to_string() {
+        let ddl = parse_ddl(
+            "CREATE TABLE t (a NATIONAL CHAR, b NATIONAL CHARACTER VARYING, c NATIONAL VARCHAR)",
+        )
+        .unwrap()
+        .unwrap();
+        let Ddl::CreateTable { columns, .. } = ddl else {
+            panic!("expected CREATE TABLE");
+        };
+        assert!(columns.iter().all(|column| column.data_type == "String"));
+
+        for invalid in [
+            "CREATE TABLE t (a NATIONAL)",
+            "CREATE TABLE t (a NATIONAL INT)",
+            "CREATE TABLE t (a NATIONAL VARYING)",
+        ] {
+            assert!(parse_ddl(invalid).is_err(), "{invalid}");
+        }
     }
 }
