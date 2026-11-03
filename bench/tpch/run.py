@@ -155,6 +155,11 @@ def compare_reference(actual, reference, mode="exact"):
         return Counter(actual.splitlines(keepends=True)) == Counter(
             reference.splitlines(keepends=True)
         )
+    if mode == "unordered-header":
+        output_rows = actual.splitlines(keepends=True)
+        reference_rows = reference.splitlines(keepends=True)
+        return (output_rows[:1] == reference_rows[:1]
+                and Counter(output_rows[1:]) == Counter(reference_rows[1:]))
     if mode == "numeric":
         return numeric_rows_match(actual, reference)
     raise ValueError(f"unknown reference comparison mode: {mode}")
@@ -246,7 +251,7 @@ def main(argv=None):
     parser.add_argument("--database", type=Path, required=True)
     parser.add_argument("--queries-dir", type=Path, required=True)
     parser.add_argument("--reference-dir", type=Path)
-    parser.add_argument("--comparison", choices=("exact", "unordered", "numeric"), default="exact",
+    parser.add_argument("--comparison", choices=("exact", "unordered", "unordered-header", "numeric"), default="exact",
                         help="Compare row order exactly or as a multiset")
     parser.add_argument("--require-verified", action="store_true",
                         help="Require golden output for every measured query")
