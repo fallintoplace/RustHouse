@@ -414,6 +414,11 @@ fn parse_atom(
             }
             operator = inverse_comparison_operator(&operator);
         }
+        if parser.tokens.get(parser.index) == Some(&Token::LParen)
+            && matches!(parser.tokens.get(parser.index + 1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT"))
+        {
+            return Err(ParseError("scalar WHERE subqueries are not yet supported".into()));
+        }
         // A bare identifier after a relational operator is another column,
         // not a string literal. CAST and typed DATE/TIMESTAMP literals retain
         // their existing parser paths.
@@ -800,6 +805,17 @@ mod asymmetric_between_tests {
             "SELECT * FROM numbers(10) WHERE number BETWEEN ASYMMETRIC 1"
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_where_subquery_diagnostic_10 {
+    use crate::parse_select;
+
+    #[test]
+    fn unsupported_subquery_has_specific_diagnostic() {
+        let err = parse_select("SELECT count(*) FROM partsupp WHERE ps_supplycost = (SELECT min(ps_supplycost) FROM partsupp)").unwrap_err();
+        assert!(err.0.contains("scalar WHERE subqueries"), "{err}");
     }
 }
 
