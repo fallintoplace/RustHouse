@@ -544,6 +544,45 @@ mod nested_block_comment_tests {
 }
 
 #[cfg(test)]
+mod dollar_quoted_string_tests {
+    use super::*;
+
+    #[test]
+    fn reads_untagged_and_tagged_heredocs_as_raw_strings() {
+        assert_eq!(
+            tokenize("SELECT $$hello$$, $tag$don't \\n decode$tag$").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("hello".into()),
+                Token::Comma,
+                Token::String("don't \\n decode".into()),
+            ]
+        );
+        assert_eq!(
+            tokenize("$q$first $wrong$ second$q$").unwrap(),
+            vec![Token::String("first $wrong$ second".into())]
+        );
+        assert_eq!(
+            tokenize("$$ $$").unwrap(),
+            vec![Token::String(" ".into())]
+        );
+    }
+
+    #[test]
+    fn rejects_unsupported_and_unterminated_heredocs() {
+        for sql in [
+            "$",
+            "$tag",
+            "$tag$unfinished",
+            "$tag$abc$wrong$",
+            "$bad-name$stuff$bad-name$",
+        ] {
+            assert!(tokenize(sql).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod bulk_comment_span_tests {
     use super::*;
 
@@ -601,41 +640,3 @@ mod radix_literal_tests {
     }
 }
 
-#[cfg(test)]
-mod dollar_quoted_string_tests {
-    use super::*;
-
-    #[test]
-    fn reads_untagged_and_tagged_heredocs_as_raw_strings() {
-        assert_eq!(
-            tokenize("SELECT $$hello$$, $tag$don't \\n decode$tag$").unwrap(),
-            vec![
-                Token::Word("SELECT".into()),
-                Token::String("hello".into()),
-                Token::Comma,
-                Token::String("don't \\n decode".into()),
-            ]
-        );
-        assert_eq!(
-            tokenize("$q$first $wrong$ second$q$").unwrap(),
-            vec![Token::String("first $wrong$ second".into())]
-        );
-        assert_eq!(
-            tokenize("$$ $$").unwrap(),
-            vec![Token::String(" ".into())]
-        );
-    }
-
-    #[test]
-    fn rejects_unsupported_and_unterminated_heredocs() {
-        for sql in [
-            "$",
-            "$tag",
-            "$tag$unfinished",
-            "$tag$abc$wrong$",
-            "$bad-name$stuff$bad-name$",
-        ] {
-            assert!(tokenize(sql).is_err(), "{sql}");
-        }
-    }
-}
