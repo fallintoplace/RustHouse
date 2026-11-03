@@ -137,7 +137,7 @@ enum State {
 }
 
 // Resolve column names once per query rather than for every aggregate and row.
-enum BoundExpr {
+pub(super) enum BoundExpr {
     Column(usize),
     TextLength(usize),
     Integer(i64),
@@ -174,7 +174,7 @@ enum BoundExpr {
 }
 
 impl BoundExpr {
-    fn bind(
+    pub(super) fn bind(
         expression: &ScalarExpr,
         indices: &HashMap<String, usize>,
     ) -> Result<Self, ExecutionError> {
@@ -373,7 +373,7 @@ fn compare_expression_numbers(left: Number, right: Number) -> Option<std::cmp::O
     }
 }
 
-fn eval_number(
+pub(super) fn eval_number(
     expression: &BoundExpr,
     batch: &[TypedColumn],
     row: usize,

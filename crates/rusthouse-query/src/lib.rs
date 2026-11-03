@@ -383,6 +383,8 @@ pub struct Having {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Select {
     pub projection: Projection,
+    /// Computed arguments aligned with grouped aggregate metrics, when present.
+    pub grouped_expressions: Vec<Option<ScalarExpr>>,
     pub alias: Option<String>,
     /// One wildcard column rename. Applies to query output only.
     pub rename: Option<(String, String)>,
@@ -992,6 +994,24 @@ fn grouped_metric_column(
     Ok(column)
 }
 
+fn grouped_metric_with_expression(
+    parser: &mut Parser,
+    function: AggregateFunction,
+) -> Result<(String, Option<GroupedFilter>, Option<ScalarExpr>), ParseError> {
+    let start = parser.index;
+    if function != AggregateFunction::Count
+        && !matches!(parser.tokens.get(start), Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE"))
+    {
+        let expression = expression::parse_expression_tokens(parser)?;
+        if !matches!(expression, ScalarExpr::Column(_)) {
+            return Ok(("<expression>".into(), None, Some(expression)));
+        }
+        parser.index = start;
+    }
+    let (column, filter) = grouped_metric_value(parser, function)?;
+    Ok((column, filter, None))
+}
+
 // SUM(CASE WHEN ... THEN metric ELSE 0 END) is equivalent to a
 // conditional SUM of that metric. Reject other CASE shapes rather than
 // silently dropping a nonzero ELSE branch.
@@ -1147,6 +1167,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     let mut literal_alias = None;
 
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
+    let mut grouped_expressions = Vec::new();
     let projection = if let Some(items) = multiple {
         Projection::MultipleAggregates(items)
     } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("LENGTH"))
@@ -1449,7 +1470,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         } else {
                             function
                         };
-                    let (value_column, case_filter) = grouped_metric_value(&mut parser, function)?;
+                                        let (value_column, case_filter, expr) = grouped_metric_with_expression(&mut parser, function)?;
                     let function = if function == AggregateFunction::Sum && value_column == "*" {
                         AggregateFunction::Count
                     } else {
@@ -1471,6 +1492,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     if !parser.take(Token::RParen) {
                         return Err(ParseError("expected ')' after grouped aggregate".into()));
                     }
+                    let mut expressions = vec![expr];
                     let mut items = vec![(function, value_column)];
                     let mut filters = vec![filter];
                     let mut aliases = vec![if parser.keyword("AS") {
@@ -1525,10 +1547,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                             } else {
                                 function
                             };
-                        let (value_column, case_filter) =
-                            grouped_metric_value(&mut parser, function)?;
-                        let function = if function == AggregateFunction::Sum && value_column == "*"
-                        {
+                                                let (value_column, case_filter, expr) = grouped_metric_with_expression(&mut parser, function)?;
+                        let function = if function == AggregateFunction::Sum && value_column == "*" {
                             AggregateFunction::Count
                         } else {
                             function
@@ -1549,6 +1569,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         if !parser.take(Token::RParen) {
                             return Err(ParseError("expected ')' after grouped aggregate".into()));
                         }
+                        expressions.push(expr);
                         items.push((function, value_column));
                         filters.push(filter);
                         aliases.push(if parser.keyword("AS") {
@@ -1556,6 +1577,13 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         } else {
                             None
                         });
+                    }
+                    for (expression, alias) in expressions.iter().zip(&aliases) {
+                        if expression.is_some() && alias.is_none() {
+                            return Err(ParseError(
+                                "grouped aggregate expressions require an alias".into(),
+                            ));
+                        }
                     }
                     let mut seen = std::collections::HashSet::new();
                     for alias in aliases.iter().flatten() {
@@ -1578,12 +1606,18 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         // Preserve the existing COUNT(*) fast path.
                         grouped_count = true;
                     } else if items.len() == 1
+                        && expressions[0].is_none()
                         && columns.len() == 1
                         && aliases[0].is_none()
                         && filters[0].is_none()
                     {
                         grouped_aggregate = items.pop();
                     } else {
+                        grouped_expressions = if expressions.iter().any(Option::is_some) {
+                            expressions
+                        } else {
+                            Vec::new()
+                        };
                         grouped_aggregates = Some((items, aliases, filters));
                     }
                     break;
@@ -2459,6 +2493,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     }
     Ok(Select {
         projection,
+        grouped_expressions,
         alias,
         rename,
         distinct,
@@ -2743,14 +2778,9 @@ mod tpch_parser_first_stop_2 {
 
     #[test]
     fn unsupported_construct_has_specific_error() {
-        let error = parse_select(
-            "SELECT category, SUM(price * (1 - discount)) FROM sales GROUP BY category",
-        )
-        .unwrap_err();
-        assert!(
-            error.0.contains("computed grouped aggregate arguments"),
-            "{error}"
-        );
+        let error = parse_select("SELECT category, SUM(price * (1 - discount)) FROM sales GROUP BY category").unwrap_err();
+        assert!(error.0.contains("require an alias"), "{error}");
+        parse_select("SELECT category, SUM(price * (1 - discount)) AS total FROM sales GROUP BY category").unwrap();
     }
 }
 

@@ -1915,6 +1915,11 @@ fn execute_numbers<W: Write>(
                 "mixed grouped COUNT(DISTINCT) requires a stored table".into(),
             ));
         }
+        if query.grouped_expressions.iter().any(Option::is_some) {
+            return Err(ExecutionError::Invalid(
+                "generated grouped expressions require a stored table".into(),
+            ));
+        }
         // Generated metrics do not yet implement per-metric FILTER. Never
         // silently ignore a parsed predicate and return incorrect results.
         if filters.iter().any(Option::is_some) {
