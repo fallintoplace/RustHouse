@@ -5,6 +5,7 @@ from unittest.mock import patch
 from subprocess import CompletedProcess
 
 from parser_inventory import inventory, parse_statement
+from run import query_fingerprint
 
 
 class ParserInventoryTests(unittest.TestCase):
@@ -29,6 +30,9 @@ class ParserInventoryTests(unittest.TestCase):
             self.assertEqual(report["results"][5]["error"], "expected parser error")
             self.assertEqual(report["results"][1]["status"], "missing_query")
             self.assertEqual(seen, ["SELECT 1", "SELECT failure"])
+            self.assertEqual(report["query_sha256"], query_fingerprint([
+                (1, "SELECT 1"), (6, "SELECT failure"),
+            ]))
 
     def test_canonical_option_verifies_source_before_parser(self):
         with tempfile.TemporaryDirectory() as root:
