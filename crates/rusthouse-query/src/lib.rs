@@ -1714,10 +1714,14 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             return Err(ParseError("HAVING requires a grouped aggregate".into()));
         }
         let operator = parser.operator()?;
+        let wrapped = parser.take(Token::LParen);
         let value = parser
             .number()?
             .parse::<u64>()
             .map_err(|_| ParseError("HAVING threshold must be a UInt64".into()))?;
+        if wrapped && !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after HAVING threshold".into()));
+        }
         Some(Having {
             operator,
             value,
@@ -2134,5 +2138,27 @@ mod where_boolean_literal_tests {
                 parse_select(&numeric_sql).unwrap()
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod having_parenthesized_threshold_tests {
+    use crate::parse_select;
+
+    #[test]
+    fn parenthesized_unsigned_threshold_matches_plain_count() {
+        let plain = parse_select(
+            "SELECT number, COUNT(*) FROM numbers(10) GROUP BY number HAVING COUNT(*) >= 2",
+        )
+        .unwrap();
+        let wrapped = parse_select(
+            "SELECT number, COUNT(*) FROM numbers(10) GROUP BY number HAVING COUNT(*) >= (2)",
+        )
+        .unwrap();
+        assert_eq!(plain.having, wrapped.having);
+        assert!(parse_select(
+            "SELECT number, COUNT(*) FROM numbers(10) GROUP BY number HAVING COUNT(*) >= (2",
+        )
+        .is_err());
     }
 }
