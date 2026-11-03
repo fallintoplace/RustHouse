@@ -120,9 +120,12 @@ pub(super) fn run(
     format: SqlOutputFormat,
     output_path: Option<PathBuf>,
     time: bool,
+    read_lock: Option<rusthouse_storage::DatabaseLock>,
 ) -> Result<(), String> {
     // Protect both immutable snapshots against concurrent DROP and RENAME.
-    let _lock = if database.is_dir() {
+    let _lock = if read_lock.is_some() {
+        read_lock
+    } else if database.is_dir() {
         Some(crate::database::read_lock(database)?)
     } else {
         None

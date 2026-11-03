@@ -42,6 +42,21 @@ fn implicit_inner_join_matches_explicit_join() {
         assert!(expected.status.success(), "{explicit}: {expected:?}");
         assert_eq!(actual.stdout, expected.stdout, "{implicit}");
     }
+    for statement in [
+        "CREATE TABLE orders (o_orderkey UInt64)",
+        "CREATE TABLE lineitem (l_orderkey UInt64)",
+        "INSERT INTO orders VALUES (1), (2)",
+        "INSERT INTO lineitem VALUES (1), (1), (3)",
+    ] {
+        let result = sql(statement);
+        assert!(result.status.success(), "{statement}: {result:?}");
+    }
+    let unqualified = sql("SELECT count(*) FROM orders, lineitem WHERE o_orderkey = l_orderkey");
+    assert!(unqualified.status.success(), "{unqualified:?}");
+    assert_eq!(unqualified.stdout, b"count\n2\n");
+    let ambiguous = sql("SELECT count(*) FROM lefts, rights WHERE id = id");
+    assert!(!ambiguous.status.success(), "{ambiguous:?}");
+    assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("ambiguous JOIN column"));
     for query in [
         "SELECT l.id FROM lefts l, rights r WHERE l.id = r.id OR l.id = 1",
         "SELECT l.id FROM lefts l, rights r WHERE l.id = 1",
