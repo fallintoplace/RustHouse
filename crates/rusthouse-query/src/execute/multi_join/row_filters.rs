@@ -50,10 +50,14 @@ impl RowFilters {
     ) -> Result<Self, ExecutionError> {
         let mut indices = Vec::new();
         let resolve = |name: &str| {
+            let (relation, name) = name.split_once('\0').unwrap_or(("", name));
+            if relation.contains('\0') || name.contains('\0') {
+                return Err(invalid("invalid qualified JOIN filter"));
+            }
             column_index(
                 relations,
                 &JoinColumn {
-                    relation: String::new(),
+                    relation: relation.to_owned(),
                     name: name.to_owned(),
                 },
             )
