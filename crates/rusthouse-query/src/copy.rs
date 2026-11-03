@@ -102,6 +102,10 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
         header: false,
     };
     if parser.keyword("WITH") {
+        if parser.keyword("CSV") {
+            options.header = parser.keyword("HEADER");
+            return Ok(options);
+        }
         if !parser.take(Token::LParen) {
             return Err(ParseError("COPY WITH requires '('".into()));
         }
