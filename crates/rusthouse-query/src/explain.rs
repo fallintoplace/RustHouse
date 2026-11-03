@@ -191,6 +191,12 @@ pub fn explain_select(query: &Select) -> String {
     }
 
     steps.push(describe_projection(&query.projection));
+    if let Some(minute) = &query.grouped_minute {
+        steps.push(format!(
+            "Group DateTime by UTC minute: {} as {}",
+            minute.column, minute.label
+        ));
+    }
     if !query.grouped_affine.is_empty() {
         steps.push(format!(
             "Project grouped expressions: {}",
