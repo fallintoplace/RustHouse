@@ -74,6 +74,21 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 scan_string(sql, &mut index)?
             }
             b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
+            b'+' if !follows_binary_minus_context(&tokens)
+                && bytes.get(index + 1) == Some(&b'0')
+                && matches!(bytes.get(index + 2), Some(b'x' | b'X' | b'b' | b'B')) =>
+            {
+                index += 1;
+                let radix = if matches!(bytes.get(index + 1), Some(b'x' | b'X')) {
+                    16
+                } else {
+                    2
+                };
+                let Token::Number(value) = scan_radix_number(sql, &mut index, radix)? else {
+                    unreachable!("radix scanner always returns a number")
+                };
+                Token::Number(format!("+{value}"))
+            }
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
             b'+' if !follows_binary_minus_context(&tokens)
                 && (is_ascii_digit_at(bytes, index + 1)
@@ -707,6 +722,46 @@ mod bulk_comment_span_tests {
     }
 }
 
+
+#[cfg(test)]
+mod positive_radix_literal_tests {
+    use super::*;
+
+    #[test]
+    fn scans_explicitly_positive_hexadecimal_and_binary_literals() {
+        assert_eq!(
+            tokenize("SELECT +0x10, +0XFF, +0b101, +0B11").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("+16".into()),
+                Token::Comma,
+                Token::Number("+255".into()),
+                Token::Comma,
+                Token::Number("+5".into()),
+                Token::Comma,
+                Token::Number("+3".into()),
+            ],
+        );
+    }
+
+    #[test]
+    fn binary_addition_with_radix_constants_is_not_mistaken_for_unary_plus() {
+        assert_eq!(
+            tokenize("1+0x10 3+0b11").unwrap(),
+            vec![
+                Token::Number("1".into()),
+                Token::Plus,
+                Token::Number("16".into()),
+                Token::Number("3".into()),
+                Token::Plus,
+                Token::Number("3".into()),
+            ],
+        );
+        for sql in ["+0x", "+0b", "+0x10000000000000000"] {
+            assert!(tokenize(sql).is_err(), "{sql}");
+        }
+    }
+}
 
 #[cfg(test)]
 mod radix_literal_tests {
