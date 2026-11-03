@@ -848,6 +848,21 @@ fn execute_multi_join_inner<W: Write>(
     avg_plan: Option<(&crate::JoinCorrelatedAvg, &std::path::Path)>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query.grouped_min.is_some()
+        && (query.grouped_count.is_none()
+            || query.grouped_sum.is_some()
+            || query.grouped_distinct.is_some()
+            || query.grouped_count_column.is_some()
+            || query.aggregate.is_some()
+            || query.scalar_sum.is_some()
+            || query.scalar_formula.is_some()
+            || !query.grouped_case_counts.is_empty()
+            || query.grouped_sum_having.is_some()
+            || query.kind != JoinType::Inner
+            || query.steps.iter().any(|step| step.kind != JoinType::Inner))
+    {
+        return Err(invalid("grouped MIN requires an INNER grouped plan"));
+    }
     if query.scalar_where.is_some()
         && (query.kind != JoinType::Inner
             || query.steps.iter().any(|step| step.kind != JoinType::Inner))
@@ -932,6 +947,7 @@ fn execute_multi_join_inner<W: Write>(
         if query.grouped_count.is_none()
             || query.aggregate.is_some()
             || query.grouped_sum.is_some()
+            || query.grouped_min.is_some()
             || query.grouped_distinct.is_some()
             || query.grouped_count_column.is_some()
             || !query.grouped_case_counts.is_empty()
@@ -1013,10 +1029,15 @@ fn execute_multi_join_inner<W: Write>(
             indices: names,
         })
     };
+    let min_metric = query
+        .grouped_min
+        .as_ref()
+        .map(|column| crate::join::GroupedSum::Column(column.clone()));
     let grouped_sum = query
         .grouped_sum
         .as_ref()
         .or(scalar_metric.as_ref())
+        .or(min_metric.as_ref())
         .map(bind_sum)
         .transpose()?;
     let formula = query

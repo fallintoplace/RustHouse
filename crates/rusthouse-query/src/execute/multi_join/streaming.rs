@@ -76,6 +76,7 @@ struct OutputSpec<'a> {
     group_indices: Option<Vec<usize>>,
     sum: Option<&'a BoundSum>,
     scalar_sum: bool,
+    grouped_min: bool,
     formula: Option<&'a BoundFormula>,
     distinct_index: Option<usize>,
     row_filters: Option<&'a super::row_filters::RowFilters>,
@@ -199,6 +200,13 @@ fn visit<W: Write>(
             if let Some((_, count, sum, _)) = state.groups.get_mut(state.group_key.as_slice()) {
                 if let Some(value) = value {
                     *sum = Some(match *sum {
+                        Some(previous) if spec.grouped_min => {
+                            if super::super::compare_numbers(value, previous).is_lt() {
+                                value
+                            } else {
+                                previous
+                            }
+                        }
                         Some(previous) => super::super::checked_aggregate_sum(previous, value)?,
                         None => value,
                     });
@@ -367,6 +375,7 @@ pub(super) fn execute<W: Write>(
         column_comparisons,
         sum,
         scalar_sum: query.scalar_sum.is_some(),
+        grouped_min: query.grouped_min.is_some(),
         formula,
         distinct_index,
         row_filters,

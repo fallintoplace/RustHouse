@@ -135,7 +135,9 @@ pub struct JoinSelect {
     pub grouped_case_counts: Vec<(crate::GroupedFilter, String)>,
     /// A numeric SUM over an INNER join.
     pub grouped_sum: Option<GroupedSum>,
-    /// Position of the grouped SUM in the SELECT list.
+    /// A numeric MIN over an INNER join.
+    pub grouped_min: Option<JoinColumn>,
+    /// Position of the grouped aggregate in the SELECT list.
     pub grouped_sum_position: Option<usize>,
     pub grouped_sum_having: Option<GroupedSumHaving>,
     /// A scalar SUM over a numeric expression in an INNER join.
@@ -808,6 +810,7 @@ fn parse_join_tokens(
     let mut grouped_distinct = None;
     let mut grouped_case_counts = Vec::new();
     let mut grouped_sum = None;
+    let mut grouped_min = None;
     let mut grouped_sum_position = None;
     let columns = if aggregate.is_some()
         || scalar_sum.is_some()
@@ -830,8 +833,8 @@ fn parse_join_tokens(
             if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("SUM"))
                 && matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
             {
-                if grouped_sum.is_some() {
-                    return Err(ParseError("JOIN supports one grouped SUM".into()));
+                if grouped_sum.is_some() || grouped_min.is_some() {
+                    return Err(ParseError("JOIN supports one grouped aggregate".into()));
                 }
                 parser.keyword("SUM");
                 if !matches!(parser.tokens.get(parser.index + 1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE"))
@@ -919,8 +922,35 @@ fn parse_join_tokens(
                 grouped_count_projection = true;
                 break;
             }
+            if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("MIN"))
+                && matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
+            {
+                parser.keyword("MIN");
+                if grouped_sum.is_some() || grouped_min.is_some() {
+                    return Err(ParseError("JOIN supports one grouped aggregate".into()));
+                }
+                if !parser.take(Token::LParen) {
+                    return Err(ParseError("grouped JOIN MIN requires '('".into()));
+                }
+                let column = projected(&mut parser)?;
+                if column.name == "*" || !parser.take(Token::RParen) {
+                    return Err(ParseError("grouped JOIN MIN requires one column".into()));
+                }
+                aggregate_alias = if parser.keyword("AS") {
+                    Some(parser.bounded_word()?)
+                } else {
+                    Some(format!("min({})", column.display_name()))
+                };
+                grouped_min = Some(column);
+                grouped_sum_position = Some(columns.len());
+                grouped_count_projection = true;
+                if parser.take(Token::Comma) {
+                    continue;
+                }
+                break;
+            }
             if parser.keyword("COUNT") {
-                if grouped_sum.is_some() {
+                if grouped_sum.is_some() || grouped_min.is_some() {
                     return Err(ParseError("JOIN supports one grouped aggregate".into()));
                 }
                 if !parser.take(Token::LParen) {
@@ -1496,6 +1526,7 @@ fn parse_join_tokens(
             } else if grouped_count_projection
                 && grouped_case_counts.is_empty()
                 && grouped_sum.is_none()
+                && grouped_min.is_none()
                 && grouped_distinct.is_none()
                 && grouped_count_column.is_none()
                 && parser.keyword("COUNT")
@@ -1612,6 +1643,14 @@ fn parse_join_tokens(
             )));
         }
     }
+    if let Some(column) = &grouped_min {
+        if !column.relation.is_empty() && !known_qualifier(&column.relation) {
+            return Err(ParseError(format!(
+                "unknown JOIN qualifier: {}",
+                column.relation
+            )));
+        }
+    }
     if let Some(GroupedSum::Column(column)) = &grouped_sum {
         if !column.relation.is_empty() && !known_qualifier(&column.relation) {
             return Err(ParseError(format!(
@@ -1709,15 +1748,16 @@ fn parse_join_tokens(
             "JOIN expression SUM requires INNER joins and comparison filters".into(),
         ));
     }
-    let chained_comparison_filters = (!steps.is_empty() || grouped_sum.is_some())
-        && kind == JoinType::Inner
-        && steps.iter().all(|step| step.kind == JoinType::Inner)
-        && matches!(
-            aggregate.as_ref(),
-            None | Some(JoinAggregate::CountStar | JoinAggregate::CountColumn(_))
-        )
-        && where_in_filters.is_empty()
-        && where_like_filters.is_empty();
+    let chained_comparison_filters =
+        (!steps.is_empty() || grouped_sum.is_some() || grouped_min.is_some())
+            && kind == JoinType::Inner
+            && steps.iter().all(|step| step.kind == JoinType::Inner)
+            && matches!(
+                aggregate.as_ref(),
+                None | Some(JoinAggregate::CountStar | JoinAggregate::CountColumn(_))
+            )
+            && where_in_filters.is_empty()
+            && where_like_filters.is_empty();
     if grouped_case_counts.is_empty()
         && (where_comparison.is_some()
             || !where_column_comparisons.is_empty()
@@ -1786,10 +1826,10 @@ fn parse_join_tokens(
             "JOIN ON LIKE requires grouped LEFT JOIN COUNT(column)".into(),
         ));
     }
-    if grouped_sum.is_some()
+    if (grouped_sum.is_some() || grouped_min.is_some())
         && (kind != JoinType::Inner || steps.iter().any(|step| step.kind != JoinType::Inner))
     {
-        return Err(ParseError("grouped SUM requires INNER joins".into()));
+        return Err(ParseError("grouped SUM or MIN requires INNER joins".into()));
     }
     let grouped_count = if grouped_count_projection {
         let projected_keys = columns
@@ -1912,6 +1952,7 @@ fn parse_join_tokens(
         grouped_distinct,
         grouped_case_counts,
         grouped_sum,
+        grouped_min,
         grouped_sum_position,
         grouped_sum_having,
         scalar_sum,
@@ -2166,6 +2207,11 @@ pub fn explain_join(query: &JoinSelect) -> String {
             };
             plan.push_str(&format!(
                 "\nAggregate: GROUP BY {keys} with SUM({expression})"
+            ));
+        } else if let Some(column) = &query.grouped_min {
+            plan.push_str(&format!(
+                "\nAggregate: GROUP BY {keys} with MIN({})",
+                column.display_name()
             ));
         } else if let Some(column) = &query.grouped_distinct {
             plan.push_str(&format!(
