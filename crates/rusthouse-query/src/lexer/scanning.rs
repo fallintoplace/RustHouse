@@ -124,6 +124,7 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             (b'\\', Some(b'r')) => Some(b'\r'),
             (b'\\', Some(b't')) => Some(b'\t'),
             (b'\\', Some(b'0')) => Some(0),
+            (b'\\', Some(b'/')) => Some(b'/'),
             (b'\\', Some(b'a')) => Some(7),
             (b'\\', Some(b'b')) => Some(8),
             (b'\\', Some(b'f')) => Some(12),
@@ -449,6 +450,22 @@ mod escaped_string_bulk_span_tests {
         for sql in ["'prefix\\nunterminated", "'prefix\\q"] {
             assert!(scan_string(sql, &mut 0).is_err(), "{sql}");
         }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_escaped_slash_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_escaped_forward_slash() {
+        let sql = r"'a\/b'";
+        let mut index = 0;
+        assert_eq!(
+            scan_string(sql, &mut index).unwrap(),
+            Token::String("a/b".into())
+        );
+        assert_eq!(index, sql.len());
     }
 }
 
