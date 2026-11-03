@@ -550,7 +550,7 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             )));
         }
     }
-    let (limit, comma_offset) = if parser.keyword("LIMIT") {
+    let (mut limit, comma_offset) = if parser.keyword("LIMIT") {
         let first = bound(&mut parser, "LIMIT")?;
         if parser.take(Token::Comma) {
             (Some(bound(&mut parser, "LIMIT")?), Some(first))
@@ -567,6 +567,22 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
     } else {
         0
     };
+    if parser.keyword("FETCH") {
+        if limit.is_some() {
+            return Err(ParseError("cannot combine FETCH with LIMIT".into()));
+        }
+        if !parser.keyword("FIRST") && !parser.keyword("NEXT") {
+            return Err(ParseError("FETCH requires FIRST or NEXT".into()));
+        }
+        let count = bound(&mut parser, "FETCH")?;
+        if !parser.keyword("ROWS") && !parser.keyword("ROW") {
+            return Err(ParseError("FETCH requires ROW or ROWS".into()));
+        }
+        if !parser.keyword("ONLY") {
+            return Err(ParseError("FETCH requires ONLY".into()));
+        }
+        limit = Some(count);
+    }
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
         return Err(ParseError(
@@ -1420,5 +1436,24 @@ mod tests {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
         assert!(parse_join("SELECT a.*, b.id FROM lefts a JOIN rights b ON a.id = b.id").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod join_fetch_rows_tests {
+    use super::*;
+
+    #[test]
+    fn fetch_uses_join_limit_without_changing_offset() {
+        for suffix in ["FETCH FIRST 2 ROWS ONLY", "FETCH NEXT 2 ROW ONLY"] {
+            let query = parse_join(&format!("SELECT * FROM l JOIN r ON l.id = r.id OFFSET 3 {suffix}"))
+                .unwrap().unwrap();
+            assert_eq!(query.offset, 3, "{suffix}");
+            assert_eq!(query.limit, Some(2), "{suffix}");
+        }
+        for suffix in ["FETCH 2 ROWS ONLY", "FETCH FIRST -1 ROWS ONLY",
+                       "FETCH NEXT 2 ROWS", "LIMIT 3 FETCH NEXT 1 ROW ONLY"] {
+            assert!(parse_join(&format!("SELECT * FROM l JOIN r ON l.id = r.id {suffix}")).is_err(), "{suffix}");
+        }
     }
 }
