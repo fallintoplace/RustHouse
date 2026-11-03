@@ -215,6 +215,579 @@ pub(super) fn scan_quoted_identifier(sql: &str, index: &mut usize) -> Result<Tok
     ))
 }
 
+pub(super) fn scan_heredoc(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
+    let bytes = sql.as_bytes();
+    let delimiter_start = *index;
+    let mut delimiter_end = delimiter_start + 1;
+    while let Some(&byte) = bytes.get(delimiter_end) {
+        if byte == b'
+    let bytes = sql.as_bytes();
+    let start = *index;
+    *index += 1;
+    while matches!(
+        bytes.get(*index),
+        Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+    ) {
+        *index += 1;
+    }
+    Token::Word(sql[start..*index].into())
+}
+
+pub(super) fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
+    let (operator, width) = match (bytes[*index], bytes.get(*index + 1)) {
+        (b'<', Some(b'=')) => (Operator::Le, 2),
+        (b'<', Some(b'>')) | (b'!', Some(b'=')) => (Operator::Ne, 2),
+        (b'>', Some(b'=')) => (Operator::Ge, 2),
+        (b'=', Some(b'=')) => (Operator::Eq, 2),
+        (b'=', _) => (Operator::Eq, 1),
+        (b'<', _) => (Operator::Lt, 1),
+        (b'>', _) => (Operator::Gt, 1),
+        _ => unreachable!("only comparison operator starters reach this helper"),
+    };
+    *index += width;
+    operator
+}
+
+pub(super) fn follows_binary_minus_context(tokens: &[Token]) -> bool {
+    match tokens.last() {
+        Some(Token::Number(_) | Token::RParen) => true,
+        Some(Token::QuotedWord(_)) => true,
+        Some(Token::Word(word)) => !["SELECT", "BETWEEN", "AND", "OR", "WHERE", "NOT", "IN"]
+            .iter()
+            .any(|keyword| word.eq_ignore_ascii_case(keyword)),
+        _ => false,
+    }
+}
+
+pub(super) fn punctuation_token(byte: u8) -> Token {
+    match byte {
+        b'*' => Token::Star,
+        b'/' => Token::Slash,
+        b'%' => Token::Percent,
+        b'+' => Token::Plus,
+        b',' => Token::Comma,
+        b'.' => Token::Dot,
+        b'(' => Token::LParen,
+        b')' => Token::RParen,
+        b';' => Token::Semicolon,
+        _ => unreachable!("only supported punctuation reaches this helper"),
+    }
+}
+
+#[cfg(test)]
+mod exponent_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_trailing_dot_decimal_literals_without_accepting_bare_dot() {
+        for (input, expected) in [
+            ("1.", "1."),
+            ("-12.", "-12."),
+            ("1.e2", "1.e2"),
+            (".5", ".5"),
+            ("-.5", "-.5"),
+        ] {
+            let mut index = 0;
+            assert_eq!(
+                scan_number(input, &mut index).unwrap(),
+                Token::Number(expected.into())
+            );
+            assert_eq!(index, input.len());
+        }
+        assert!(scan_number("-.", &mut 0).is_err());
+    }
+
+    #[test]
+    fn decodes_control_escapes_without_changing_unknown_backslashes() {
+        let mut index = 0;
+        let token = scan_string(r"'a\nb\tc\r\0\b\f\_z'", &mut index).unwrap();
+        assert_eq!(token, Token::String("a\nb\tc\r\0\x08\x0c\\_z".into()));
+        assert_eq!(index, r"'a\nb\tc\r\0\b\f\_z'".len());
+    }
+
+    #[test]
+    fn ignores_digit_separators_without_losing_source_offsets() {
+        for (input, canonical) in [
+            ("1_640_995_200_123", "1640995200123"),
+            ("-12_345", "-12345"),
+            ("-1_2.3_4e+5_6", "-12.34e+56"),
+            (".1_2", ".12"),
+            ("10_0.", "100."),
+        ] {
+            let mut index = 0;
+            assert_eq!(
+                scan_number(input, &mut index).unwrap(),
+                Token::Number(canonical.into()),
+            );
+            assert_eq!(index, input.len());
+        }
+        let parsed = crate::parse_select("SELECT 1_000").unwrap();
+        assert!(matches!(
+            parsed.projection,
+            crate::Projection::Literal(1000)
+        ));
+        for bad in ["SELECT _123", "SELECT 1__2", "SELECT 10_"] {
+            assert!(crate::parse_select(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn scans_signed_exponents_without_splitting_the_number() {
+        let mut index = 0;
+        assert_eq!(
+            scan_number("2.5E-3", &mut index).unwrap(),
+            Token::Number("2.5E-3".into())
+        );
+        assert_eq!(index, 6);
+        for invalid in ["2e", "2e+", "2e-"] {
+            assert!(scan_number(invalid, &mut 0).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod quoted_identifier_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn reads_long_plain_identifier_without_changing_offsets() {
+        for delimiter in ['`', '"'] {
+            let source = format!("{delimiter}a{}{delimiter} SELECT", "_9".repeat(60));
+            let mut cursor = 0;
+            assert_eq!(
+                scan_quoted_identifier(&source, &mut cursor).unwrap(),
+                Token::QuotedWord(format!("a{}", "_9".repeat(60)))
+            );
+            assert_eq!(cursor, source.len() - " SELECT".len());
+        }
+    }
+
+    #[test]
+    fn escaped_and_invalid_identifiers_keep_existing_validation() {
+        for source in [
+            "`bad-name`",
+            "`a``b`",
+            "`a\\`b`",
+            "`1bad`",
+            "`café`",
+            "`unterminated",
+        ] {
+            assert!(scan_quoted_identifier(source, &mut 0).is_err(), "{source}");
+        }
+        let long = format!("`{}`", "x".repeat(129));
+        assert!(scan_quoted_identifier(&long, &mut 0).is_err());
+        assert_eq!(
+            scan_quoted_identifier("`ok_42`", &mut 0).unwrap(),
+            Token::QuotedWord("ok_42".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod plain_string_literal_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn scans_long_unescaped_literals_and_preserves_following_tokens() {
+        let value = "a".repeat(32 * 1024);
+        let sql = format!("'{value}' + 5");
+        let mut cursor = 0;
+        assert_eq!(
+            scan_string(&sql, &mut cursor).unwrap(),
+            Token::String(value)
+        );
+        assert_eq!(sql.as_bytes()[cursor], b' ');
+    }
+
+    #[test]
+    fn escaped_literals_decode_from_first_special_byte() {
+        let mut cursor = 0;
+        let token = scan_string("'prefix\\nwith''quote'", &mut cursor).unwrap();
+        assert_eq!(token, Token::String("prefix\nwith'quote".into()));
+        assert_eq!(cursor, "'prefix\\nwith''quote'".len());
+
+        let mut cursor = 0;
+        assert_eq!(
+            scan_string("'café' trailing", &mut cursor).unwrap(),
+            Token::String("café".into()),
+        );
+        assert_eq!(cursor, "'café'".len());
+    }
+
+    #[test]
+    fn missing_terminator_is_rejected_in_plain_and_escaped_forms() {
+        for sql in ["'unfinished", "'unfinished\\n"] {
+            let mut cursor = 0;
+            assert!(scan_string(sql, &mut cursor).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod escaped_string_bulk_span_tests {
+    use super::*;
+
+    #[test]
+    fn skips_large_plain_spans_between_escapes_without_changing_bytes() {
+        let prefix = "é".repeat(8 * 1024);
+        let suffix = "z".repeat(16 * 1024);
+        let sql = format!("'{prefix}\\n{suffix}''tail' SELECT");
+        let mut cursor = 0;
+        assert_eq!(
+            scan_string(&sql, &mut cursor).unwrap(),
+            Token::String(format!("{prefix}\n{suffix}'tail"))
+        );
+        assert_eq!(&sql[cursor..], " SELECT");
+    }
+
+    #[test]
+    fn preserves_unknown_escapes_and_rejects_truncated_strings() {
+        for sql in ["'a\\qword'", "'a\\qword\\ntrail'"] {
+            let mut cursor = 0;
+            let expected = sql[1..sql.len() - 1].replace("\\n", "\n");
+            assert_eq!(
+                scan_string(sql, &mut cursor).unwrap(),
+                Token::String(expected)
+            );
+            assert_eq!(cursor, sql.len());
+        }
+        for sql in ["'prefix\\nunterminated", "'prefix\\q"] {
+            assert!(scan_string(sql, &mut 0).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_control_escape_tests {
+    use super::*;
+
+    #[test]
+    fn parses_bell_and_vertical_tab_without_modifying_unknown_escapes() {
+        let sql = r"'one\atwo\vthree\_four'";
+        let mut cursor = 0;
+        assert_eq!(
+            scan_string(sql, &mut cursor).unwrap(),
+            Token::String("one\u{0007}two\u{000b}three\\_four".into())
+        );
+        assert_eq!(cursor, sql.len());
+    }
+}
+
+#[cfg(test)]
+mod doubled_equals_tests {
+    #[test]
+    fn accepts_clickhouse_double_equals_for_numeric_predicates() {
+        let ordinary = crate::parse_select(
+            "SELECT number FROM numbers(4) WHERE number = 2",
+        )
+        .unwrap();
+        let doubled = crate::parse_select(
+            "SELECT number FROM numbers(4) WHERE number == 2",
+        )
+        .unwrap();
+        assert_eq!(doubled, ordinary);
+        assert!(crate::parse_select(
+            "SELECT number FROM numbers(4) WHERE number === 2"
+        )
+        .is_err());
+    }
+}
+ {
+            break;
+        }
+        if (!byte.is_ascii_alphanumeric() && byte != b'_')
+            || (delimiter_end == delimiter_start + 1 && byte.is_ascii_digit())
+            || delimiter_end - delimiter_start > 64
+        {
+            return Err(ParseError("invalid heredoc delimiter".into()));
+        }
+        delimiter_end += 1;
+    }
+    if bytes.get(delimiter_end) != Some(&b'
+    let bytes = sql.as_bytes();
+    let start = *index;
+    *index += 1;
+    while matches!(
+        bytes.get(*index),
+        Some(b'a'..=b'z' | b'A'..=b'Z' | b'0'..=b'9' | b'_')
+    ) {
+        *index += 1;
+    }
+    Token::Word(sql[start..*index].into())
+}
+
+pub(super) fn scan_comparison(bytes: &[u8], index: &mut usize) -> Operator {
+    let (operator, width) = match (bytes[*index], bytes.get(*index + 1)) {
+        (b'<', Some(b'=')) => (Operator::Le, 2),
+        (b'<', Some(b'>')) | (b'!', Some(b'=')) => (Operator::Ne, 2),
+        (b'>', Some(b'=')) => (Operator::Ge, 2),
+        (b'=', Some(b'=')) => (Operator::Eq, 2),
+        (b'=', _) => (Operator::Eq, 1),
+        (b'<', _) => (Operator::Lt, 1),
+        (b'>', _) => (Operator::Gt, 1),
+        _ => unreachable!("only comparison operator starters reach this helper"),
+    };
+    *index += width;
+    operator
+}
+
+pub(super) fn follows_binary_minus_context(tokens: &[Token]) -> bool {
+    match tokens.last() {
+        Some(Token::Number(_) | Token::RParen) => true,
+        Some(Token::QuotedWord(_)) => true,
+        Some(Token::Word(word)) => !["SELECT", "BETWEEN", "AND", "OR", "WHERE", "NOT", "IN"]
+            .iter()
+            .any(|keyword| word.eq_ignore_ascii_case(keyword)),
+        _ => false,
+    }
+}
+
+pub(super) fn punctuation_token(byte: u8) -> Token {
+    match byte {
+        b'*' => Token::Star,
+        b'/' => Token::Slash,
+        b'%' => Token::Percent,
+        b'+' => Token::Plus,
+        b',' => Token::Comma,
+        b'.' => Token::Dot,
+        b'(' => Token::LParen,
+        b')' => Token::RParen,
+        b';' => Token::Semicolon,
+        _ => unreachable!("only supported punctuation reaches this helper"),
+    }
+}
+
+#[cfg(test)]
+mod exponent_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_trailing_dot_decimal_literals_without_accepting_bare_dot() {
+        for (input, expected) in [
+            ("1.", "1."),
+            ("-12.", "-12."),
+            ("1.e2", "1.e2"),
+            (".5", ".5"),
+            ("-.5", "-.5"),
+        ] {
+            let mut index = 0;
+            assert_eq!(
+                scan_number(input, &mut index).unwrap(),
+                Token::Number(expected.into())
+            );
+            assert_eq!(index, input.len());
+        }
+        assert!(scan_number("-.", &mut 0).is_err());
+    }
+
+    #[test]
+    fn decodes_control_escapes_without_changing_unknown_backslashes() {
+        let mut index = 0;
+        let token = scan_string(r"'a\nb\tc\r\0\b\f\_z'", &mut index).unwrap();
+        assert_eq!(token, Token::String("a\nb\tc\r\0\x08\x0c\\_z".into()));
+        assert_eq!(index, r"'a\nb\tc\r\0\b\f\_z'".len());
+    }
+
+    #[test]
+    fn ignores_digit_separators_without_losing_source_offsets() {
+        for (input, canonical) in [
+            ("1_640_995_200_123", "1640995200123"),
+            ("-12_345", "-12345"),
+            ("-1_2.3_4e+5_6", "-12.34e+56"),
+            (".1_2", ".12"),
+            ("10_0.", "100."),
+        ] {
+            let mut index = 0;
+            assert_eq!(
+                scan_number(input, &mut index).unwrap(),
+                Token::Number(canonical.into()),
+            );
+            assert_eq!(index, input.len());
+        }
+        let parsed = crate::parse_select("SELECT 1_000").unwrap();
+        assert!(matches!(
+            parsed.projection,
+            crate::Projection::Literal(1000)
+        ));
+        for bad in ["SELECT _123", "SELECT 1__2", "SELECT 10_"] {
+            assert!(crate::parse_select(bad).is_err(), "{bad}");
+        }
+    }
+
+    #[test]
+    fn scans_signed_exponents_without_splitting_the_number() {
+        let mut index = 0;
+        assert_eq!(
+            scan_number("2.5E-3", &mut index).unwrap(),
+            Token::Number("2.5E-3".into())
+        );
+        assert_eq!(index, 6);
+        for invalid in ["2e", "2e+", "2e-"] {
+            assert!(scan_number(invalid, &mut 0).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod quoted_identifier_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn reads_long_plain_identifier_without_changing_offsets() {
+        for delimiter in ['`', '"'] {
+            let source = format!("{delimiter}a{}{delimiter} SELECT", "_9".repeat(60));
+            let mut cursor = 0;
+            assert_eq!(
+                scan_quoted_identifier(&source, &mut cursor).unwrap(),
+                Token::QuotedWord(format!("a{}", "_9".repeat(60)))
+            );
+            assert_eq!(cursor, source.len() - " SELECT".len());
+        }
+    }
+
+    #[test]
+    fn escaped_and_invalid_identifiers_keep_existing_validation() {
+        for source in [
+            "`bad-name`",
+            "`a``b`",
+            "`a\\`b`",
+            "`1bad`",
+            "`café`",
+            "`unterminated",
+        ] {
+            assert!(scan_quoted_identifier(source, &mut 0).is_err(), "{source}");
+        }
+        let long = format!("`{}`", "x".repeat(129));
+        assert!(scan_quoted_identifier(&long, &mut 0).is_err());
+        assert_eq!(
+            scan_quoted_identifier("`ok_42`", &mut 0).unwrap(),
+            Token::QuotedWord("ok_42".into())
+        );
+    }
+}
+
+#[cfg(test)]
+mod plain_string_literal_fast_path_tests {
+    use super::*;
+
+    #[test]
+    fn scans_long_unescaped_literals_and_preserves_following_tokens() {
+        let value = "a".repeat(32 * 1024);
+        let sql = format!("'{value}' + 5");
+        let mut cursor = 0;
+        assert_eq!(
+            scan_string(&sql, &mut cursor).unwrap(),
+            Token::String(value)
+        );
+        assert_eq!(sql.as_bytes()[cursor], b' ');
+    }
+
+    #[test]
+    fn escaped_literals_decode_from_first_special_byte() {
+        let mut cursor = 0;
+        let token = scan_string("'prefix\\nwith''quote'", &mut cursor).unwrap();
+        assert_eq!(token, Token::String("prefix\nwith'quote".into()));
+        assert_eq!(cursor, "'prefix\\nwith''quote'".len());
+
+        let mut cursor = 0;
+        assert_eq!(
+            scan_string("'café' trailing", &mut cursor).unwrap(),
+            Token::String("café".into()),
+        );
+        assert_eq!(cursor, "'café'".len());
+    }
+
+    #[test]
+    fn missing_terminator_is_rejected_in_plain_and_escaped_forms() {
+        for sql in ["'unfinished", "'unfinished\\n"] {
+            let mut cursor = 0;
+            assert!(scan_string(sql, &mut cursor).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod escaped_string_bulk_span_tests {
+    use super::*;
+
+    #[test]
+    fn skips_large_plain_spans_between_escapes_without_changing_bytes() {
+        let prefix = "é".repeat(8 * 1024);
+        let suffix = "z".repeat(16 * 1024);
+        let sql = format!("'{prefix}\\n{suffix}''tail' SELECT");
+        let mut cursor = 0;
+        assert_eq!(
+            scan_string(&sql, &mut cursor).unwrap(),
+            Token::String(format!("{prefix}\n{suffix}'tail"))
+        );
+        assert_eq!(&sql[cursor..], " SELECT");
+    }
+
+    #[test]
+    fn preserves_unknown_escapes_and_rejects_truncated_strings() {
+        for sql in ["'a\\qword'", "'a\\qword\\ntrail'"] {
+            let mut cursor = 0;
+            let expected = sql[1..sql.len() - 1].replace("\\n", "\n");
+            assert_eq!(
+                scan_string(sql, &mut cursor).unwrap(),
+                Token::String(expected)
+            );
+            assert_eq!(cursor, sql.len());
+        }
+        for sql in ["'prefix\\nunterminated", "'prefix\\q"] {
+            assert!(scan_string(sql, &mut 0).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod clickhouse_control_escape_tests {
+    use super::*;
+
+    #[test]
+    fn parses_bell_and_vertical_tab_without_modifying_unknown_escapes() {
+        let sql = r"'one\atwo\vthree\_four'";
+        let mut cursor = 0;
+        assert_eq!(
+            scan_string(sql, &mut cursor).unwrap(),
+            Token::String("one\u{0007}two\u{000b}three\\_four".into())
+        );
+        assert_eq!(cursor, sql.len());
+    }
+}
+
+#[cfg(test)]
+mod doubled_equals_tests {
+    #[test]
+    fn accepts_clickhouse_double_equals_for_numeric_predicates() {
+        let ordinary = crate::parse_select(
+            "SELECT number FROM numbers(4) WHERE number = 2",
+        )
+        .unwrap();
+        let doubled = crate::parse_select(
+            "SELECT number FROM numbers(4) WHERE number == 2",
+        )
+        .unwrap();
+        assert_eq!(doubled, ordinary);
+        assert!(crate::parse_select(
+            "SELECT number FROM numbers(4) WHERE number === 2"
+        )
+        .is_err());
+    }
+}
+) {
+        return Err(ParseError("unterminated heredoc delimiter".into()));
+    }
+    let delimiter = &sql[delimiter_start..=delimiter_end];
+    let content_start = delimiter_end + 1;
+    let end_offset = sql[content_start..]
+        .find(delimiter)
+        .ok_or_else(|| ParseError("unterminated heredoc literal".into()))?;
+    let content_end = content_start + end_offset;
+    *index = content_end + delimiter.len();
+    Ok(Token::String(sql[content_start..content_end].to_owned()))
+}
+
 pub(super) fn scan_word(sql: &str, index: &mut usize) -> Token {
     let bytes = sql.as_bytes();
     let start = *index;
