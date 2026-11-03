@@ -50,6 +50,11 @@ fn canonical_type(name: &str) -> Option<&'static str> {
 
 pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, ParseError> {
     let name = parser.word()?;
+    if name.eq_ignore_ascii_case("TIMESTAMP") && parser.keyword("WITHOUT") {
+        if !parser.keyword("TIME") || !parser.keyword("ZONE") {
+            return Err(ParseError("TIMESTAMP WITHOUT requires TIME ZONE".into()));
+        }
+    }
     if name.eq_ignore_ascii_case("CHARACTER") {
         parser.keyword("VARYING");
     }
