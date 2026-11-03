@@ -164,37 +164,31 @@ fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Resul
 
 fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     let mut start = 0;
-    for (index, &byte) in field.iter().enumerate() {
-        let escape: Option<&[u8]> = match byte {
-            b'|' => Some(b"\\|"),
-            b'\\' => Some(b"\\\\"),
-            b'&' => Some(b"&amp;"),
-            b'<' => Some(b"&lt;"),
-            b'>' => Some(b"&gt;"),
-            b'\r' => Some(b"&#13;"),
-            byte if byte.is_ascii_control() => {
-                if start < index {
-                    output.write_all(&field[start..index])?;
-                }
-                write!(output, "&#{byte};")?;
-                start = index + 1;
-                continue;
-            }
-            _ => None,
-        };
-        if let Some(escape) = escape {
-            if start < index {
-                output.write_all(&field[start..index])?;
-            }
-            output.write_all(escape)?;
-            start = index + 1;
+    // Ordinary cell data can be forwarded as a single span. Only actual
+    // Markdown/HTML metacharacters and control bytes need a dispatch.
+    while let Some(relative) = field[start..]
+        .iter()
+        .position(|&byte| matches!(byte, b'|' | b'\\' | b'&' | b'<' | b'>') || byte.is_ascii_control())
+    {
+        let index = start + relative;
+        if start < index {
+            output.write_all(&field[start..index])?;
         }
+        match field[index] {
+            b'|' => output.write_all(br"\|")?,
+            b'\\' => output.write_all(br"\\")?,
+            b'&' => output.write_all(b"&amp;")?,
+            b'<' => output.write_all(b"&lt;")?,
+            b'>' => output.write_all(b"&gt;")?,
+            b'\r' => output.write_all(b"&#13;")?,
+            byte => write!(output, "&#{byte};")?,
+        }
+        start = index + 1;
     }
     if start < field.len() {
         output.write_all(&field[start..])?;
     }
     Ok(())
-}
 
 impl<W: Write> Write for MarkdownWriter<W> {
     fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
@@ -244,6 +238,20 @@ impl<W: Write> Write for MarkdownWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn long_plain_markdown_spans_preserve_special_characters() {
+        let field = [vec![b'x'; 8192], b"|\r<&\\>".to_vec(), vec![b'y'; 8192]].concat();
+        let mut result = Vec::new();
+        write_cell(&mut result, &field).unwrap();
+        let expected = [
+            vec![b'x'; 8192],
+            br"\|&#13;&lt;&amp;\\&gt;".to_vec(),
+            vec![b'y'; 8192],
+        ]
+        .concat();
+        assert_eq!(result, expected);
+    }
 
     #[test]
     fn complete_rows_bypass_the_line_staging_buffer() {
