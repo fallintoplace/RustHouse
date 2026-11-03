@@ -1,3 +1,4 @@
+mod exists;
 mod input;
 
 use self::input::*;
@@ -7,8 +8,8 @@ use crate::{
     sql_values, vertical,
 };
 use rusthouse_query::{
-    Source, execute, explain_join, explain_select, parse_ddl, parse_delete, parse_insert,
-    parse_join, parse_select, parse_update, split_clickhouse_format,
+    Source, execute, explain_join, explain_select, parse_correlated_exists, parse_ddl,
+    parse_delete, parse_insert, parse_join, parse_select, parse_update, split_clickhouse_format,
 };
 use std::ffi::OsString;
 use std::path::PathBuf;
@@ -402,7 +403,15 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             time,
         );
     }
-    let mut select = parse_select(&query).map_err(|error| error.to_string())?;
+    let correlated = parse_correlated_exists(&query).map_err(|error| error.to_string())?;
+    if correlated.is_some() && (show_ast || explain) {
+        return Err("correlated EXISTS cannot use --show-ast or --explain yet".into());
+    }
+    let mut select = if let Some(ref correlated) = correlated {
+        correlated.outer.clone()
+    } else {
+        parse_select(&query).map_err(|error| error.to_string())?
+    };
     if explain {
         if show_ast || time || format.is_some() || output_path.is_some() {
             return Err(
@@ -437,6 +446,18 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         }
         _ => None,
     };
+    if let Some(correlated) = correlated {
+        let database_dir = database
+            .as_deref()
+            .ok_or("correlated EXISTS requires --database")?;
+        if part.is_some() {
+            return Err("correlated EXISTS cannot use --part".into());
+        }
+        select = exists::bind(database_dir, correlated)?;
+        if let Some(cap) = max_rows {
+            select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
+        }
+    }
     if let (Some(database_dir), Some(Source::Table(table))) =
         (database.as_deref(), select.source.as_ref())
     {
