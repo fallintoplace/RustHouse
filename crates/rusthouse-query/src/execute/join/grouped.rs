@@ -196,7 +196,7 @@ pub(super) fn execute<W: Write>(
     };
     let group_name = format!("{}.{}", key_column.relation, key_column.name);
     if query.limit == Some(0) {
-        writeln!(output, "{group_name}\tcount")?;
+        writeln!(output, "{group_name}\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
         return Ok(());
     }
     let selected = [(index, group_name.clone(), None)];
@@ -267,7 +267,7 @@ pub(super) fn execute<W: Write>(
         .and_then(|limit| query.offset.checked_add(limit))
         .filter(|&end| end < rows.len())
         .map(|end| super::super::sorted_group_positions(&rows, end, &compare));
-    writeln!(output, "{group_name}\tcount")?;
+    writeln!(output, "{group_name}\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
     if let Some(indices) = bounded {
         for index in indices.into_iter().skip(query.offset) {
             let (group, count) = &rows[index];
