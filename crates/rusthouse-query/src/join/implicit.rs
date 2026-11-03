@@ -246,6 +246,10 @@ pub(super) fn rewrite(
         [left, Token::Operator(Operator::Eq), right] => {
             unqualified_column(left).is_some() && unqualified_column(right).is_some()
         }
+        [left, Token::Operator(Operator::Eq), _, Token::Dot, right]
+        | [_, Token::Dot, right, Token::Operator(Operator::Eq), left] => {
+            unqualified_column(left).is_some() && qualifier(right).is_some()
+        }
         _ => false,
     });
     let schemas = if let (true, Some(resolver)) = (needs_schema, resolve.as_mut()) {
@@ -261,6 +265,39 @@ pub(super) fn rewrite(
     let mut edges = Vec::<(usize, usize, Vec<Token>)>::new();
     let mut remainder = Vec::new();
     for mut piece in pieces {
+        if let Some(schemas) = &schemas {
+            let unqualified = match piece.as_slice() {
+                [name, Token::Operator(Operator::Eq), _, Token::Dot, _]
+                    if unqualified_column(name).is_some() =>
+                {
+                    Some(0)
+                }
+                [_, Token::Dot, _, Token::Operator(Operator::Eq), name]
+                    if unqualified_column(name).is_some() =>
+                {
+                    Some(4)
+                }
+                _ => None,
+            };
+            if let Some(index) = unqualified {
+                let name = unqualified_column(&piece[index]).expect("unqualified column");
+                let found = schemas
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, cols)| cols.iter().any(|column| column == name))
+                    .map(|(index, _)| index)
+                    .collect::<Vec<_>>();
+                if found.len() > 1 {
+                    return Err(ParseError(format!("ambiguous JOIN column: {name}")));
+                }
+                if let Some(&table) = found.first() {
+                    piece.splice(
+                        index..index,
+                        [Token::Word(tables[table].1.clone()), Token::Dot],
+                    );
+                }
+            }
+        }
         if let (Some(schemas), [left, Token::Operator(Operator::Eq), right]) =
             (&schemas, piece.as_slice())
         {

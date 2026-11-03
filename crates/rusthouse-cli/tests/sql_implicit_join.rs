@@ -82,6 +82,28 @@ fn implicit_inner_join_matches_explicit_join() {
     );
     assert!(connected.status.success(), "{connected:?}");
     assert_eq!(connected.stdout, b"count\n3\n");
+    let same_table = sql(
+        "SELECT count(*) FROM part p, partsupp ps WHERE p_key = ps.ps_part AND p_key = p.p_key",
+    );
+    assert!(same_table.status.success(), "{same_table:?}");
+    assert_eq!(same_table.stdout, b"count\n3\n");
+    for query in [
+        "SELECT count(*) FROM part p, supplier s, partsupp ps WHERE p_key = ps.ps_part AND s.s_key = ps_supplier",
+        "SELECT count(*) FROM part p, supplier s, partsupp ps WHERE ps.ps_part = p_key AND ps_supplier = s.s_key",
+    ] {
+        let result = sql(query);
+        assert!(result.status.success(), "{query}: {result:?}");
+        assert_eq!(result.stdout, b"count\n3\n");
+    }
+    let mixed_ambiguous = sql("SELECT count(*) FROM lefts l, rights r WHERE id = r.id");
+    assert!(!mixed_ambiguous.status.success(), "{mixed_ambiguous:?}");
+    assert!(String::from_utf8_lossy(&mixed_ambiguous.stderr).contains("ambiguous JOIN column"));
+    assert!(!sql("SELECT count(*) FROM part p, partsupp ps WHERE p_key = ps.ps_part AND p_key = unknown.ps_part").status.success());
+    assert!(
+        !sql("SELECT count(*) FROM part p, partsupp ps WHERE missing = ps.ps_part")
+            .status
+            .success()
+    );
     let ambiguous = sql("SELECT count(*) FROM lefts, rights WHERE id = id");
     assert!(!ambiguous.status.success(), "{ambiguous:?}");
     assert!(String::from_utf8_lossy(&ambiguous.stderr).contains("ambiguous JOIN column"));
