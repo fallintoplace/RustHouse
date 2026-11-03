@@ -23,6 +23,16 @@ impl TransferCreditWindow {
         Ok(Self { budget, in_flight: 0, next_sequence: 1, frames: VecDeque::new() })
     }
 
+
+    /// Adjust backpressure without dropping in-flight frames or sequence state.
+    pub fn set_budget(&mut self, budget: u64) -> Result<(), &'static str> {
+        if budget == 0 || budget < self.in_flight {
+            return Err("transfer byte budget is below in-flight bytes");
+        }
+        self.budget = budget;
+        Ok(())
+    }
+
     pub fn in_flight_bytes(&self) -> u64 { self.in_flight }
     pub fn available_bytes(&self) -> u64 { self.budget - self.in_flight }
 
@@ -94,5 +104,39 @@ mod tests {
         let before = window.clone();
         assert!(window.acknowledge_verified(&[(a.sequence, 11), (b.sequence, 77)]).is_err());
         assert_eq!(window, before);
+    }
+}
+
+#[cfg(test)]
+mod transfer_budget_tests {
+    use super::*;
+
+    #[test]
+    fn resizing_never_overcommits_existing_frames() {
+        let mut window = TransferCreditWindow::new(10).unwrap();
+        let first = window.reserve(6, 77).unwrap();
+        let before = window.clone();
+        assert!(window.set_budget(5).is_err());
+        assert!(window.set_budget(0).is_err());
+        assert_eq!(window, before);
+
+        window.set_budget(6).unwrap();
+        assert_eq!(window.available_bytes(), 0);
+        assert_eq!(window.acknowledge_verified(&[(first.sequence, 77)]).unwrap(), 6);
+        window.set_budget(3).unwrap();
+        assert_eq!(window.available_bytes(), 3);
+        let next = window.reserve(3, 88).unwrap();
+        assert_eq!(next.sequence, first.sequence + 1);
+        assert_eq!(window.in_flight_bytes(), 3);
+    }
+
+    #[test]
+    fn increasing_budget_keeps_outstanding_receipts() {
+        let mut window = TransferCreditWindow::new(2).unwrap();
+        let frame = window.reserve(2, 5).unwrap();
+        window.set_budget(10).unwrap();
+        assert_eq!(window.available_bytes(), 8);
+        assert_eq!(window.acknowledge_verified(&[(frame.sequence, 5)]).unwrap(), 2);
+        assert_eq!(window.available_bytes(), 10);
     }
 }
