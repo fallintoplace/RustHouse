@@ -59,6 +59,23 @@ class FullRunnerTests(unittest.TestCase):
                         run_full("rusthouse", "db", root, "refs", report_path,
                                  invoke=invoke)
 
+    def test_sf1_full_table_preflight_runs_before_queries(self):
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "queries"
+            corpus(root)
+            executed = []
+            def fake_invoke(cmd):
+                executed.append(cmd)
+                return subprocess.CompletedProcess(cmd, 0)
+            with patch("run_canonical.verify_sf1_cardinality",
+                       side_effect=ValueError("part: SF1 expected 200000")) as audit:
+                with self.assertRaisesRegex(ValueError, "part: SF1"):
+                    run_full("rusthouse", "db", root, "refs", Path(tmp) / "report.json",
+                             invoke=fake_invoke, verify_sf1_tables=True)
+            audit.assert_called_once()
+            self.assertEqual(executed, [])
+
     def test_rejects_canonical_query_replaced_during_open(self):
         import os
         from unittest.mock import patch
