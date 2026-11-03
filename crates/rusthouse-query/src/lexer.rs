@@ -129,6 +129,16 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 index += 1;
                 Token::Minus
             }
+            b'-' if bytes.get(index + 1) == Some(&b'0')
+                && matches!(bytes.get(index + 2), Some(b'x' | b'X')) =>
+            {
+                scan_signed_radix_number(sql, &mut index, 16)?
+            }
+            b'-' if bytes.get(index + 1) == Some(&b'0')
+                && matches!(bytes.get(index + 2), Some(b'b' | b'B')) =>
+            {
+                scan_signed_radix_number(sql, &mut index, 2)?
+            }
             b'-' if bytes.get(index + 1) == Some(&b'.') => {
                 if is_ascii_digit_at(bytes, index + 2) {
                     scan_number(sql, &mut index)?
@@ -596,6 +606,46 @@ mod radix_literal_tests {
         );
         for invalid in ["0x", "0b", "0x10000000000000000", "0b2"] {
             assert!(tokenize(invalid).is_err(), "{invalid}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod signed_radix_literal_tests {
+    use super::*;
+
+    #[test]
+    fn reads_negative_hex_and_binary_literals_as_single_numbers() {
+        assert_eq!(
+            tokenize("SELECT -0x10, -0XFF, -0b101, -0B11").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("-16".into()),
+                Token::Comma,
+                Token::Number("-255".into()),
+                Token::Comma,
+                Token::Number("-5".into()),
+                Token::Comma,
+                Token::Number("-3".into()),
+            ]
+        );
+    }
+
+    #[test]
+    fn subtraction_before_radix_literals_remains_binary() {
+        assert_eq!(
+            tokenize("1-0x10 3-0b11").unwrap(),
+            vec![
+                Token::Number("1".into()),
+                Token::Minus,
+                Token::Number("16".into()),
+                Token::Number("3".into()),
+                Token::Minus,
+                Token::Number("3".into()),
+            ]
+        );
+        for sql in ["-0x", "-0b", "-0x10000000000000000"] {
+            assert!(tokenize(sql).is_err(), "{sql}");
         }
     }
 }
