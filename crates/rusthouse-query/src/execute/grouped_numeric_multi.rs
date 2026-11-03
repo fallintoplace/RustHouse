@@ -1,5 +1,6 @@
 //! Multiple grouped numeric aggregates over one typed scan.
 use super::typed::{self, Cell};
+use super::grouped_filter::{BoundGroupedFilter, bind_grouped_filters};
 use super::{AggregateState, ExecutionError, Number};
 use crate::{AggregateFunction, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
@@ -175,7 +176,7 @@ pub(super) fn execute<W: Write>(
     column: &str,
     items: &[(AggregateFunction, String)],
     aliases: &[Option<String>],
-    filters: &[Option<String>],
+    filters: &[Option<crate::GroupedFilter>],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     let metadata = inspect_query_source(part)?;
@@ -204,13 +205,16 @@ pub(super) fn execute<W: Write>(
         }
     }
     for filter in filters.iter().flatten() {
-        if !names.contains(filter) {
-            names.push(filter.clone());
+        let name = filter.column();
+        if !names.iter().any(|column| column == name) {
+            names.push(name.to_owned());
         }
         let column_type = types
-            .get(filter)
-            .ok_or_else(|| ExecutionError::Invalid(format!("unknown filter column: {filter}")))?;
-        if matches!(typed::base_type(column_type), "String" | "UUID") {
+            .get(name)
+            .ok_or_else(|| ExecutionError::Invalid(format!("unknown filter column: {name}")))?;
+        if matches!(filter, crate::GroupedFilter::Truthy(_))
+            && matches!(typed::base_type(column_type), "String" | "UUID")
+        {
             return Err(ExecutionError::Invalid(
                 "conditional metric filters must be numeric".into(),
             ));
@@ -243,8 +247,8 @@ pub(super) fn execute<W: Write>(
         if let Some(alias) = aliases.get(index).and_then(Option::as_deref) {
             write!(output, "\t{alias}")?;
         } else {
-            if let Some(filter) = filters.get(index).and_then(Option::as_deref) {
-                write!(output, "\t{}If({value_column}, {filter})", function.name())?;
+            if let Some(filter) = filters.get(index).and_then(Option::as_ref) {
+                write!(output, "\t{}If({value_column}, {})", function.name(), filter.label())?;
             } else {
                 write!(output, "\t{}({value_column})", function.name())?;
             }
@@ -262,10 +266,7 @@ pub(super) fn execute<W: Write>(
             (*function != AggregateFunction::Count || name != "*").then(|| indices[name])
         })
         .collect::<Vec<_>>();
-    let filter_indices = filters
-        .iter()
-        .map(|value| value.as_ref().map(|column| indices[column]))
-        .collect::<Vec<_>>();
+    let filter_indices = bind_grouped_filters(filters, &indices, &types)?;
     let mut groups = Vec::<(Cell, Vec<AggregateState>)>::new();
     let mut retained_group_bytes = 0usize;
     let mut retained_median_bytes = 0usize;
@@ -379,9 +380,8 @@ pub(super) fn execute<W: Write>(
                 .zip(item_indices.iter().zip(groups[index].1.iter_mut()))
                 .enumerate()
             {
-                if let Some(&filter_index) = filter_indices.get(metric).and_then(Option::as_ref) {
-                    let enabled = filter_enabled(&batch[filter_index], row)?;
-                    if !enabled {
+                if let Some(filter) = filter_indices.get(metric).and_then(Option::as_ref) {
+                    if !filter.passes(&batch, row, filter_enabled)? {
                         continue;
                     }
                 }
