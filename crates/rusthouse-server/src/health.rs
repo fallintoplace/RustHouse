@@ -12,6 +12,10 @@ fn is_peer_healthy(peer: Peer) -> bool {
     )
 }
 
+fn probe_safely(peer: Peer, ping: &impl Fn(Peer) -> bool) -> bool {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ping(peer))).unwrap_or(false)
+}
+
 const MAX_INFLIGHT_HEALTH_PROBES: usize = 8;
 
 fn probe_peers_with(peers: &[Peer], ping: impl Fn(Peer) -> bool + Sync) -> Vec<bool> {
@@ -30,8 +34,7 @@ fn probe_peers_with_workers(
     // Most deployments have just one peer. Avoid a scoped-thread spawn
     // while preserving panic isolation for that peer.
     if let [peer] = peers {
-        let healthy =
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ping(*peer))).unwrap_or(false);
+        let healthy = probe_safely(*peer, &ping);
         return vec![healthy];
     }
     let cursor = AtomicUsize::new(0);
@@ -45,8 +48,7 @@ fn probe_peers_with_workers(
         if index >= peers.len() {
             break;
         }
-        let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ping(peers[index])))
-            .unwrap_or(false);
+        let healthy = probe_safely(peers[index], &ping);
         results[index].store(healthy, Ordering::Relaxed);
     };
     std::thread::scope(|scope| {
