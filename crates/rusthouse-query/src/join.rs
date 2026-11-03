@@ -423,8 +423,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         });
     }
     let (where_null, where_comparison) = if parser.keyword("WHERE") {
+        let parenthesized = parser.take(Token::LParen);
         let column = qualified(&mut parser)?;
-        if parser.keyword("IS") {
+        let condition = if parser.keyword("IS") {
             let not_null = parser.keyword("NOT");
             if !parser.keyword("NULL") {
                 return Err(ParseError("JOIN WHERE requires IS [NOT] NULL".into()));
@@ -446,7 +447,11 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                 ));
             }
             (None, Some((column, operator, parser.literal()?)))
+        };
+        if parenthesized && !parser.take(Token::RParen) {
+            return Err(ParseError("JOIN WHERE requires closing ')'".into()));
         }
+        condition
     } else {
         (None, None)
     };
@@ -1438,5 +1443,37 @@ mod join_count_one_tests {
             assert!(matches!(query.aggregate, Some(JoinAggregate::CountStar)), "{sql}");
         }
         assert!(parse_join("SELECT COUNT(2) FROM l JOIN r ON l.id = r.id").is_err());
+    }
+}
+
+#[cfg(test)]
+mod join_where_predicate_parentheses_tests {
+    use super::*;
+
+    #[test]
+    fn parentheses_preserve_where_comparisons_and_null_filters() {
+        for (wrapped, plain) in [
+            (
+                "SELECT a.id FROM a JOIN b ON a.id = b.id WHERE (a.id > 1)",
+                "SELECT a.id FROM a JOIN b ON a.id = b.id WHERE a.id > 1",
+            ),
+            (
+                "SELECT a.id FROM a LEFT JOIN b ON a.id = b.id WHERE (b.id IS NULL)",
+                "SELECT a.id FROM a LEFT JOIN b ON a.id = b.id WHERE b.id IS NULL",
+            ),
+        ] {
+            assert_eq!(parse_join(wrapped).unwrap(), parse_join(plain).unwrap());
+        }
+    }
+
+    #[test]
+    fn malformed_or_multiple_where_conditions_still_fail() {
+        for sql in [
+            "SELECT a.id FROM a JOIN b ON a.id = b.id WHERE (a.id = 1",
+            "SELECT a.id FROM a JOIN b ON a.id = b.id WHERE a.id = 1)",
+            "SELECT a.id FROM a JOIN b ON a.id = b.id WHERE (a.id = 1 OR b.id = 1)",
+        ] {
+            assert!(parse_join(sql).is_err(), "{sql}");
+        }
     }
 }
