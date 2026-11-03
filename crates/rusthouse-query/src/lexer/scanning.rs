@@ -125,6 +125,7 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             (b'\\', Some(b't')) => Some(b'\t'),
             (b'\\', Some(b'0')) => Some(0),
             (b'\\', Some(b'a')) => Some(7),
+            (b'\\', Some(b'e')) => Some(27),
             (b'\\', Some(b'b')) => Some(8),
             (b'\\', Some(b'f')) => Some(12),
             (b'\\', Some(b'v')) => Some(11),
@@ -485,5 +486,20 @@ mod doubled_equals_tests {
             "SELECT number FROM numbers(4) WHERE number === 2"
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod ascii_escape_character_tests {
+    use super::*;
+
+    #[test]
+    fn reads_backslash_e_as_ascii_esc() {
+        let mut index = 0;
+        assert_eq!(
+            scan_string(r"'a\eb'", &mut index).unwrap(),
+            Token::String("a\u{001b}b".into()),
+        );
+        assert_eq!(index, r"'a\eb'".len());
     }
 }
