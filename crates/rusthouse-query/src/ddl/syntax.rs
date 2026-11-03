@@ -156,6 +156,9 @@ pub(super) fn parse_column_definitions(parser: &mut Parser) -> Result<Vec<Column
         if !parser.take(Token::Comma) {
             break;
         }
+        if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+            break;
+        }
     }
     Ok(columns)
 }
@@ -260,5 +263,26 @@ mod postgres_float_alias_tests {
         assert_eq!(columns[0].data_type, "Float32");
         assert_eq!(columns[1].data_type, "Float64");
         assert!(parse_ddl("CREATE TABLE metrics (bad FLOAT16)").is_err());
+    }
+}
+
+
+#[cfg(test)]
+mod create_column_trailing_comma_tests {
+    use crate::ddl::parse_ddl;
+
+    #[test]
+    fn accepts_single_trailing_create_column_comma() {
+        let with_comma = parse_ddl("CREATE TABLE t (id INT, name VARCHAR,)").unwrap();
+        let plain = parse_ddl("CREATE TABLE t (id INT, name VARCHAR)").unwrap();
+        assert_eq!(with_comma, plain);
+
+        for invalid in [
+            "CREATE TABLE t (,)",
+            "CREATE TABLE t (id INT,,)",
+            "CREATE TABLE t (id INT, name VARCHAR,,)",
+        ] {
+            assert!(parse_ddl(invalid).is_err(), "{invalid}");
+        }
     }
 }
