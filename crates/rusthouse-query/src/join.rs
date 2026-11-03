@@ -106,6 +106,8 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         }
         let result = if parser.take(Token::Star) {
             JoinAggregate::CountStar
+        } else if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+            JoinAggregate::CountStar
         } else if matches!(parser.tokens.get(parser.index), Some(Token::Number(value)) if value == "1") {
             parser.index += 1;
             JoinAggregate::CountStar
@@ -1438,5 +1440,20 @@ mod join_count_one_tests {
             assert!(matches!(query.aggregate, Some(JoinAggregate::CountStar)), "{sql}");
         }
         assert!(parse_join("SELECT COUNT(2) FROM l JOIN r ON l.id = r.id").is_err());
+    }
+}
+
+#[cfg(test)]
+mod join_count_empty_tests {
+    use super::*;
+
+    #[test]
+    fn zero_argument_join_count_counts_rows() {
+        let query = parse_join("SELECT COUNT() FROM a JOIN b ON a.id = b.id")
+            .unwrap()
+            .unwrap();
+        assert!(matches!(query.aggregate, Some(JoinAggregate::CountStar)));
+        assert!(parse_join("SELECT COUNT(,) FROM a JOIN b ON a.id = b.id").is_err());
+        assert!(parse_join("SELECT COUNT(NULL) FROM a JOIN b ON a.id = b.id").is_err());
     }
 }
