@@ -221,7 +221,17 @@ pub(super) fn rewrite(
         pred_end += 1;
     }
     let predicates = &tokens[end + 1..pred_end];
-    if predicates.iter().any(|t| keyword(t, "OR")) {
+    let mut depth = 0usize;
+    let mut top_level_or = false;
+    for token in predicates {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            _ if depth == 0 && keyword(token, "OR") => top_level_or = true,
+            _ => {}
+        }
+    }
+    if top_level_or {
         return rewrite_disjunctive(&tokens, from, end, pred_end, &tables, resolve);
     }
     let mut pieces = Vec::<Vec<Token>>::new();
@@ -370,6 +380,9 @@ pub(super) fn rewrite(
         match next {
             Some(index) => order.push(index),
             None => {
+                if predicates.iter().any(|token| keyword(token, "OR")) {
+                    return rewrite_disjunctive(&tokens, from, end, pred_end, &tables, resolve);
+                }
                 return Err(ParseError(
                     "comma joins require a connected graph of equality keys".into(),
                 ));
@@ -449,6 +462,12 @@ mod tests {
         );
         let unsafe_query = "SELECT SUM(amount * 1) FROM first, second WHERE (a_id = b_id AND kind = 'a') OR kind = 'b'";
         assert!(super::super::parse_join_with_schema(unsafe_query, schema).is_err());
+        let wrapped = "SELECT SUM(amount * 1) FROM first, second WHERE ((a_id = b_id AND kind = 'a') OR (b_id = a_id AND kind = 'b'))";
+        assert!(
+            super::super::parse_join_with_schema(wrapped, schema)
+                .unwrap()
+                .is_some()
+        );
     }
 
     #[test]
