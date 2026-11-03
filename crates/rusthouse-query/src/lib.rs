@@ -834,6 +834,20 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     if !distinct {
         parser.keyword("ALL");
     }
+    let top_limit = if parser.keyword("TOP") {
+        let parenthesized = parser.take(Token::LParen);
+        let count = parser.number()?;
+        if !count.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(ParseError("TOP must be a non-negative integer".into()));
+        }
+        let count = count.parse::<usize>().map_err(|_| ParseError("TOP is too large".into()))?;
+        if parenthesized && !parser.take(Token::RParen) {
+            return Err(ParseError("TOP requires closing ')'".into()));
+        }
+        Some(count)
+    } else {
+        None
+    };
     let mut literal_alias = None;
 
     let multiple = multi_aggregate::parse_multiple(&mut parser)?;
@@ -1969,6 +1983,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         }
         limit = Some(count);
     }
+    if top_limit.is_some() && (limit.is_some() || offset.is_some()) {
+        return Err(ParseError("TOP cannot be combined with LIMIT, OFFSET or FETCH".into()));
+    }
+    limit = top_limit.or(limit);
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
         return Err(ParseError(
