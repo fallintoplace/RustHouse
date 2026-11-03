@@ -68,6 +68,9 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 continue;
             }
             b'\'' => scan_string(sql, &mut index)?,
+            b'X' | b'x' if bytes.get(index + 1) == Some(&b'\'') => {
+                scan_hex_string(sql, &mut index)?
+            }
             b'E' | b'e' | b'N' | b'n' if bytes.get(index + 1) == Some(&b'\'') => {
                 index += 1;
                 scan_string(sql, &mut index)?
@@ -597,5 +600,38 @@ mod radix_literal_tests {
         for invalid in ["0x", "0b", "0x10000000000000000", "0b2"] {
             assert!(tokenize(invalid).is_err(), "{invalid}");
         }
+    }
+}
+
+#[cfg(test)]
+mod sql_hexadecimal_string_literal_tests {
+    use super::*;
+
+    #[test]
+    fn parses_standard_hex_encoded_strings() {
+        assert_eq!(
+            tokenize("SELECT X'4142', x'c3a9', X'', X'00'").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::String("AB".into()),
+                Token::Comma,
+                Token::String("é".into()),
+                Token::Comma,
+                Token::String("".into()),
+                Token::Comma,
+                Token::String("\0".into()),
+            ],
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_hex_strings_without_misreading_tokens() {
+        for sql in ["X'1'", "X'0G'", "X'12", "X'FF'", "X'123'"] {
+            assert!(tokenize(sql).is_err(), "{sql}");
+        }
+        assert_eq!(
+            tokenize("xvalue X'41'").unwrap(),
+            vec![Token::Word("xvalue".into()), Token::String("A".into())],
+        );
     }
 }
