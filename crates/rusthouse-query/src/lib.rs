@@ -912,6 +912,15 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 return Err(ParseError("expected ')' after COUNT(*)".into()));
             }
             Projection::Count
+        } else if matches!(
+            parser.tokens.get(parser.index),
+            Some(Token::Number(number)) if number == "1"
+        ) {
+            parser.index += 1;
+            if !parser.take(Token::RParen) {
+                return Err(ParseError("COUNT(1) requires closing ')'".into()));
+            }
+            Projection::Count
         } else {
             let column = parser.word()?;
             if !parser.take(Token::RParen) {
@@ -2266,5 +2275,19 @@ mod parenthesized_predicate_literal_tests {
         }
         let nested = format!("{}1{}", "(".repeat(17), ")".repeat(17));
         assert!(parse_select(&format!("SELECT count(*) FROM t WHERE number = {nested}")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod count_one_parser_tests {
+    use super::*;
+
+    #[test]
+    fn single_count_one_reuses_row_count_projection() {
+        assert_eq!(
+            parse_select("SELECT COUNT(1) FROM numbers(3)").unwrap().projection,
+            Projection::Count
+        );
+        assert!(parse_select("SELECT COUNT(1, 2) FROM numbers(3)").is_err());
     }
 }
