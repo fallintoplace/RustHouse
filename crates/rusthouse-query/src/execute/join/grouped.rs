@@ -295,7 +295,7 @@ fn execute_multi<W: Write>(
         }).collect::<Result<Vec<_>, ExecutionError>>()?
     };
     let mut rows = groups.into_values().collect::<Vec<_>>();
-    rows.sort_by(|left, right| {
+    let compare = |left: &(Vec<typed::Cell>, u64), right: &(Vec<typed::Cell>, u64)| {
         for &(index, descending, nulls_first) in &ordering {
             let order = if let Some(index) = index {
                 typed::compare_order_cells(
@@ -310,7 +310,12 @@ fn execute_multi<W: Write>(
             }
         }
         std::cmp::Ordering::Equal
-    });
+    };
+    let bounded = query
+        .limit
+        .and_then(|limit| query.offset.checked_add(limit))
+        .filter(|&end| end < rows.len())
+        .map(|end| super::super::sorted_group_positions(&rows, end, &compare));
     for (index, name) in names.iter().enumerate() {
         if index != 0 {
             output.write_all(b"\t")?;
@@ -318,7 +323,7 @@ fn execute_multi<W: Write>(
         output.write_all(name.as_bytes())?;
     }
     writeln!(output, "\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
-    for (values, count) in rows.iter().skip(query.offset).take(query.limit.unwrap_or(usize::MAX)) {
+    let mut write_group = |values: &[typed::Cell], count: u64| -> Result<(), ExecutionError> {
         for (index, value) in values.iter().enumerate() {
             if index != 0 {
                 output.write_all(b"\t")?;
@@ -326,6 +331,22 @@ fn execute_multi<W: Write>(
             typed::write_typed_value(output, value, data_types[index])?;
         }
         writeln!(output, "\t{count}")?;
+        Ok(())
+    };
+    if let Some(positions) = bounded {
+        for index in positions.into_iter().skip(query.offset) {
+            let (values, count) = &rows[index];
+            write_group(values, *count)?;
+        }
+    } else {
+        rows.sort_by(compare);
+        for (values, count) in rows
+            .iter()
+            .skip(query.offset)
+            .take(query.limit.unwrap_or(usize::MAX))
+        {
+            write_group(values, *count)?;
+        }
     }
     Ok(())
 }
