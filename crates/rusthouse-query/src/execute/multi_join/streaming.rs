@@ -51,6 +51,7 @@ struct Stage {
 struct OutputState {
     seen: u64,
     emitted: usize,
+    scalar_sum: Option<super::super::Number>,
     groups: HashMap<Vec<typed::Key>, (Vec<typed::Cell>, u64, Option<super::super::Number>)>,
     group_key: Vec<typed::Key>,
     group_bytes: usize,
@@ -65,6 +66,7 @@ struct OutputSpec<'a> {
     column_comparisons: &'a [(usize, crate::Operator, usize)],
     group_indices: Option<Vec<usize>>,
     sum: Option<&'a BoundSum>,
+    scalar_sum: bool,
     offset: usize,
     limit: Option<usize>,
 }
@@ -118,6 +120,18 @@ fn visit<W: Write>(
                 typed::matches_comparison(&row[*left], &row[*right], *operator)
             })
         {
+            return Ok(());
+        }
+        if spec.scalar_sum {
+            if let Some(value) = super::super::multi_aggregate::eval_row_arithmetic(
+                &spec.sum.expect("bound SUM").expression,
+                row,
+            )? {
+                state.scalar_sum = Some(match state.scalar_sum {
+                    Some(previous) => super::super::checked_aggregate_sum(previous, value)?,
+                    None => value,
+                });
+            }
             return Ok(());
         }
         if let Some(indices) = &spec.group_indices {
@@ -246,7 +260,11 @@ pub(super) fn execute<W: Write>(
     if relations[0].names.is_empty() {
         return Err(invalid("JOIN requires nonempty table schemas"));
     }
-    let selected = output_columns(query, relations, initial_step)?;
+    let selected = if query.scalar_sum.is_some() {
+        Vec::new()
+    } else {
+        output_columns(query, relations, initial_step)?
+    };
     let null_filter = query
         .where_null
         .as_ref()
@@ -262,6 +280,7 @@ pub(super) fn execute<W: Write>(
         comparisons,
         column_comparisons,
         sum,
+        scalar_sum: query.scalar_sum.is_some(),
         group_indices: query
             .grouped_count
             .as_ref()
@@ -377,7 +396,7 @@ pub(super) fn execute<W: Write>(
             any: step.any,
         });
     }
-    if spec.group_indices.is_none() {
+    if spec.group_indices.is_none() && !spec.scalar_sum {
         write_join_header(output, &selected)?;
     }
     // A build can contain physical rows but no legal JOIN keys (only NULL
@@ -386,6 +405,8 @@ pub(super) fn execute<W: Write>(
     if stages.iter().any(|stage| stage.hash.is_empty()) {
         if query.grouped_count.is_some() {
             write_group_header(query, &selected, output)?;
+        } else if spec.scalar_sum {
+            write_scalar_sum(query, None, true, output)?;
         }
         return Ok(());
     }
@@ -430,6 +451,9 @@ pub(super) fn execute<W: Write>(
     }
     if scanned != relations[0].rows {
         return Err(invalid("JOIN input row count changed during scan"));
+    }
+    if spec.scalar_sum {
+        return write_scalar_sum(query, state.scalar_sum, true, output);
     }
     if let Some(group_columns) = &query.grouped_count {
         let ordering = if query.order_by.is_empty() {
