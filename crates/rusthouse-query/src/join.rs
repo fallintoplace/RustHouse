@@ -141,8 +141,17 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             None
         }
     };
-    let aggregate_alias = if aggregate.is_some() && parser.keyword("AS") {
-        Some(parser.word()?)
+    let aggregate_alias = if aggregate.is_some() {
+        if parser.keyword("AS") {
+            Some(parser.bounded_word()?)
+        } else if matches!(
+            parser.tokens.get(parser.index + 1),
+            Some(Token::Word(word)) if word.eq_ignore_ascii_case("FROM")
+        ) {
+            Some(parser.bounded_word()?)
+        } else {
+            None
+        }
     } else {
         None
     };
@@ -1438,5 +1447,45 @@ mod join_count_one_tests {
             assert!(matches!(query.aggregate, Some(JoinAggregate::CountStar)), "{sql}");
         }
         assert!(parse_join("SELECT COUNT(2) FROM l JOIN r ON l.id = r.id").is_err());
+    }
+}
+
+#[cfg(test)]
+mod join_bare_aggregate_alias_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_aggregate_aliases_without_as() {
+        for function in ["COUNT(*)", "SUM(a.amount)", "AVG(a.amount)"] {
+            let bare = format!(
+                "SELECT {function} total FROM a JOIN b ON a.id = b.id"
+            );
+            let explicit = format!(
+                "SELECT {function} AS total FROM a JOIN b ON a.id = b.id"
+            );
+            assert_eq!(parse_join(&bare).unwrap(), parse_join(&explicit).unwrap());
+        }
+        let query = parse_join("SELECT COUNT(*) FROM a JOIN b ON a.id = b.id")
+            .unwrap()
+            .unwrap();
+        assert!(query.aggregate_alias.is_none());
+    }
+
+    #[test]
+    fn restricts_join_aggregate_alias_lengths() {
+        let allowed = "x".repeat(128);
+        let oversized = "x".repeat(129);
+        assert!(
+            parse_join(&format!(
+                "SELECT COUNT(*) {allowed} FROM a JOIN b ON a.id = b.id"
+            ))
+            .is_ok()
+        );
+        for sql in [
+            format!("SELECT COUNT(*) {oversized} FROM a JOIN b ON a.id = b.id"),
+            format!("SELECT COUNT(*) AS {oversized} FROM a JOIN b ON a.id = b.id"),
+        ] {
+            assert!(parse_join(&sql).is_err(), "{sql}");
+        }
     }
 }
