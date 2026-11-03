@@ -111,6 +111,29 @@ pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseEr
     Ok(Token::Number(canonical))
 }
 
+pub(super) fn scan_heredoc(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
+    let bytes = sql.as_bytes();
+    let start = *index;
+    let mut end = start + 1;
+    while bytes
+        .get(end)
+        .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+    {
+        end += 1;
+    }
+    if bytes.get(end) != Some(&b'$') {
+        return Err(ParseError("invalid dollar-quoted SQL string delimiter".into()));
+    }
+    let delimiter = &sql[start..=end];
+    let content_start = end + 1;
+    let remainder = &sql[content_start..];
+    let offset = remainder
+        .find(delimiter)
+        .ok_or_else(|| ParseError("unterminated dollar-quoted SQL string".into()))?;
+    *index = content_start + offset + delimiter.len();
+    Ok(Token::String(remainder[..offset].to_owned()))
+}
+
 pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseError> {
     let bytes = sql.as_bytes();
     let mut start = *index + 1;
