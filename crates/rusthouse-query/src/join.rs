@@ -253,7 +253,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                 },
             ));
             names.push(name);
-            if !parser.take(Token::Comma) {
+            if !parser.take(Token::Comma)
+                || parser.tokens.get(parser.index) == Some(&Token::RParen)
+            {
                 break;
             }
         }
@@ -365,7 +367,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                     return Err(ParseError("duplicate JOIN USING column".into()));
                 }
                 names.push(name);
-                if !parser.take(Token::Comma) {
+                if !parser.take(Token::Comma)
+                    || parser.tokens.get(parser.index) == Some(&Token::RParen)
+                {
                     break;
                 }
             }
@@ -1231,7 +1235,6 @@ mod tests {
             "SELECT * FROM l JOIN r USING id",
             "SELECT * FROM l JOIN r USING ()",
             "SELECT * FROM l JOIN r USING (id, id)",
-            "SELECT * FROM l JOIN r USING (id,) ",
             "SELECT * FROM l JOIN r USING (id) ON l.id = r.id",
         ] {
             assert!(parse_join(sql).is_err(), "{sql}");
@@ -1420,5 +1423,33 @@ mod tests {
             assert!(parse_join(statement).is_err(), "{statement}");
         }
         assert!(parse_join("SELECT a.*, b.id FROM lefts a JOIN rights b ON a.id = b.id").is_ok());
+    }
+}
+
+#[cfg(test)]
+mod join_using_trailing_comma_tests {
+    use super::parse_join;
+
+    #[test]
+    fn accepts_final_separator_in_simple_and_chained_using() {
+        let first = parse_join("SELECT * FROM a JOIN b USING (id,)")
+            .unwrap()
+            .unwrap();
+        assert_eq!(first.using_keys, ["id"]);
+
+        let chain = parse_join(
+            "SELECT * FROM a JOIN b ON a.id = b.id JOIN c USING (id,)",
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(chain.steps[0].using_keys, ["id"]);
+
+        for sql in [
+            "SELECT * FROM a JOIN b USING (,)",
+            "SELECT * FROM a JOIN b USING (id,,)",
+            "SELECT * FROM a JOIN b USING (id, id,)",
+        ] {
+            assert!(parse_join(sql).is_err(), "{sql}");
+        }
     }
 }
