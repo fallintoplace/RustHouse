@@ -1175,7 +1175,6 @@ mod quorum_snapshot_zone_failover_tests {
     }
 }
 
-
 /// Choose bounded hedge candidates from one quorum-observed snapshot.
 ///
 /// The fastest eligible replica is first. Later candidates prefer previously
@@ -1275,16 +1274,14 @@ mod latency_quorum_hedge_tests {
             ("e", "north"),
         ];
         let latency = [("a", 50), ("b", 5), ("c", 10), ("d", 1), ("e", 0)];
-        let (chosen, candidates) = plan_latency_aware_quorum_hedges(
-            &members, policy, &statuses, &zones, &latency, 3,
-        )
-        .unwrap();
+        let (chosen, candidates) =
+            plan_latency_aware_quorum_hedges(&members, policy, &statuses, &zones, &latency, 3)
+                .unwrap();
         assert_eq!(chosen, majority);
         assert_eq!(candidates, ["b", "c", "a"]);
-        let (_, limited) = plan_latency_aware_quorum_hedges(
-            &members, policy, &statuses, &zones, &latency, 2,
-        )
-        .unwrap();
+        let (_, limited) =
+            plan_latency_aware_quorum_hedges(&members, policy, &statuses, &zones, &latency, 2)
+                .unwrap();
         assert_eq!(limited, ["b", "c"]);
     }
 
@@ -1305,29 +1302,45 @@ mod latency_quorum_hedge_tests {
         let zones = [("a", "x"), ("b", "y"), ("c", "z")];
         assert!(
             plan_latency_aware_quorum_hedges(
-                &members, policy, &statuses, &zones,
-                &[("a", 1), ("b", 2)], 2
+                &members,
+                policy,
+                &statuses,
+                &zones,
+                &[("a", 1), ("b", 2)],
+                2
             )
             .is_err()
         );
         assert!(
             plan_latency_aware_quorum_hedges(
-                &members, policy, &statuses, &zones,
-                &[("a", 1), ("a", 2), ("c", 3)], 2
+                &members,
+                policy,
+                &statuses,
+                &zones,
+                &[("a", 1), ("a", 2), ("c", 3)],
+                2
             )
             .is_err()
         );
         assert!(
             plan_latency_aware_quorum_hedges(
-                &members, policy, &statuses, &zones,
-                &[("a", 1), ("b", 2), ("d", 3)], 2
+                &members,
+                policy,
+                &statuses,
+                &zones,
+                &[("a", 1), ("b", 2), ("d", 3)],
+                2
             )
             .is_err()
         );
         assert!(
             plan_latency_aware_quorum_hedges(
-                &members, policy, &statuses, &zones,
-                &[("a", 1), ("b", 2), ("c", 3)], 65
+                &members,
+                policy,
+                &statuses,
+                &zones,
+                &[("a", 1), ("b", 2), ("c", 3)],
+                65
             )
             .is_err()
         );

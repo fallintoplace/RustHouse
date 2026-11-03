@@ -17,7 +17,8 @@ fn sql(query: &str, path: &Path) -> Output {
 fn chained_join_preserves_temporal_projected_types() {
     let database = std::env::temp_dir().join(format!(
         "rusthouse-chained-join-date-{}-{}",
-        std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&database).unwrap();
     for query in [

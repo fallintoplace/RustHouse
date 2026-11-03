@@ -278,7 +278,6 @@ pub(super) fn is_function(name: &str) -> bool {
         )
 }
 
-
 pub(super) fn parse(parser: &mut Parser) -> Result<ConstantValue, ParseError> {
     parse_at_depth(parser, 0)
 }
@@ -297,7 +296,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let value = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "CRC32IEEE requires one argument")?;
             match value {
-                Some(value) => ConstantValue::Integer(i64::from(crc32_ieee_zero_seed(value.as_bytes()))),
+                Some(value) => {
+                    ConstantValue::Integer(i64::from(crc32_ieee_zero_seed(value.as_bytes())))
+                }
                 None => ConstantValue::Null,
             }
         }
@@ -489,7 +490,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "FIRSTSIGNIFICANTSUBDOMAIN" | "CUTTOFIRSTSIGNIFICANTSUBDOMAIN"
+        "FIRSTSIGNIFICANTSUBDOMAIN"
+        | "CUTTOFIRSTSIGNIFICANTSUBDOMAIN"
         | "CUTTOFIRSTSIGNIFICANTSUBDOMAINWITHWWW" => {
             let input = text_arg(parser, depth + 1)?;
             require(
@@ -1004,13 +1006,25 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "COMPARESUBSTRINGS" => {
             let left = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "compareSubstrings requires two strings")?;
+            require(
+                parser,
+                Token::Comma,
+                "compareSubstrings requires two strings",
+            )?;
             let right = text_arg(parser, depth + 1)?;
             let (left_offset, right_offset, length) = if parser.take(Token::Comma) {
                 let left_offset = integer_arg(parser, depth + 1)?;
-                require(parser, Token::Comma, "compareSubstrings requires two offsets")?;
+                require(
+                    parser,
+                    Token::Comma,
+                    "compareSubstrings requires two offsets",
+                )?;
                 let right_offset = integer_arg(parser, depth + 1)?;
-                require(parser, Token::Comma, "compareSubstrings requires a byte count")?;
+                require(
+                    parser,
+                    Token::Comma,
+                    "compareSubstrings requires a byte count",
+                )?;
                 let length = integer_arg(parser, depth + 1)?;
                 (left_offset, right_offset, length)
             } else {
@@ -1045,13 +1059,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "DAMERAULEVENSHTEINDISTANCE" => {
             let left = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "Damerau-Levenshtein requires two strings")?;
+            require(
+                parser,
+                Token::Comma,
+                "Damerau-Levenshtein requires two strings",
+            )?;
             let right = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "Damerau-Levenshtein requires two strings")?;
+            require(
+                parser,
+                Token::RParen,
+                "Damerau-Levenshtein requires two strings",
+            )?;
             match (left, right) {
-                (Some(left), Some(right)) => ConstantValue::Integer(
-                    bounded_damerau_levenshtein(left.as_bytes(), right.as_bytes())?,
-                ),
+                (Some(left), Some(right)) => ConstantValue::Integer(bounded_damerau_levenshtein(
+                    left.as_bytes(),
+                    right.as_bytes(),
+                )?),
                 _ => ConstantValue::Null,
             }
         }
@@ -1579,7 +1602,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     all[skip..].to_vec()
                 }
                 ConstantValue::Decimal(_) => {
-                    return Err(ParseError("HEX does not support floating-point literals".into()));
+                    return Err(ParseError(
+                        "HEX does not support floating-point literals".into(),
+                    ));
                 }
                 ConstantValue::Null => return Ok(ConstantValue::Null),
             };
@@ -1778,7 +1803,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let haystack = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "hasSubsequenceUTF8 requires a needle")?;
             let needle = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "hasSubsequenceUTF8 requires two arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "hasSubsequenceUTF8 requires two arguments",
+            )?;
             match (haystack, needle) {
                 (Some(haystack), Some(needle)) => {
                     let mut remaining = needle.chars();
@@ -2296,9 +2325,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 "fromUnixTimestamp64Second requires one argument",
             )?;
             match input {
-                Some(seconds) => ConstantValue::Text(
-                    super::date_scalar::render_datetime64_utc(seconds)?,
-                ),
+                Some(seconds) => {
+                    ConstantValue::Text(super::date_scalar::render_datetime64_utc(seconds)?)
+                }
                 None => ConstantValue::Null,
             }
         }
@@ -3029,7 +3058,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Null => None,
                 ConstantValue::Integer(value) => Some(i128::from(value)),
                 ConstantValue::Decimal(_) => {
-                    return Err(ParseError("integer conversion requires an integer or string".into()));
+                    return Err(ParseError(
+                        "integer conversion requires an integer or string".into(),
+                    ));
                 }
                 ConstantValue::Text(value) => Some(
                     value
@@ -3481,7 +3512,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             let mut border = vec![0usize; folded_needle.len()];
                             for index in 1..folded_needle.len() {
                                 let mut candidate = border[index - 1];
-                                while candidate > 0 && folded_needle[index] != folded_needle[candidate] {
+                                while candidate > 0
+                                    && folded_needle[index] != folded_needle[candidate]
+                                {
                                     candidate = border[candidate - 1];
                                 }
                                 if folded_needle[index] == folded_needle[candidate] {
@@ -3876,7 +3909,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(binary_string(&bytes[skip..])?)
                 }
                 ConstantValue::Decimal(_) => {
-                    return Err(ParseError("bin does not support floating-point literals".into()));
+                    return Err(ParseError(
+                        "bin does not support floating-point literals".into(),
+                    ));
                 }
                 ConstantValue::Null => ConstantValue::Null,
             }
@@ -4267,16 +4302,15 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
-        "URL_DECODE" | "DECODEURLCOMPONENT" | "DECODEURLFORMCOMPONENT"
+        "URL_DECODE"
+        | "DECODEURLCOMPONENT"
+        | "DECODEURLFORMCOMPONENT"
         | "TRYDECODEURLCOMPONENT" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "URL decoder requires one argument")?;
             match input {
                 Some(input) => {
-                    let decoded = decode_percent_encoded(
-                        &input,
-                        name == "DECODEURLFORMCOMPONENT",
-                    );
+                    let decoded = decode_percent_encoded(&input, name == "DECODEURLFORMCOMPONENT");
                     if name == "TRYDECODEURLCOMPONENT" {
                         decoded.map_or(ConstantValue::Null, ConstantValue::Text)
                     } else {
@@ -4588,7 +4622,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 ConstantValue::Null => None,
                 ConstantValue::Integer(value) => Some(value as u128),
                 ConstantValue::Decimal(_) => {
-                    return Err(ParseError("unsigned conversion requires an integer or string".into()));
+                    return Err(ParseError(
+                        "unsigned conversion requires an integer or string".into(),
+                    ));
                 }
                 ConstantValue::Text(value) => Some(
                     value
@@ -5044,9 +5080,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 "JSONArrayLength requires one argument",
             )?;
             let length = input.and_then(|input| {
-                crate::json::parse_json(&input).ok().and_then(|json| {
-                    (json.type_name() == "Array").then(|| json.container_len())
-                })
+                crate::json::parse_json(&input)
+                    .ok()
+                    .and_then(|json| (json.type_name() == "Array").then(|| json.container_len()))
             });
             match length {
                 Some(length) => ConstantValue::Integer(
@@ -5118,7 +5154,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "REGEXPQUOTEMETA" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "regexpQuoteMeta requires one argument")?;
+            require(
+                parser,
+                Token::RParen,
+                "regexpQuoteMeta requires one argument",
+            )?;
             match input {
                 Some(input) => ConstantValue::Text(regexp_quote_meta(&input)?),
                 None => ConstantValue::Null,
@@ -5289,7 +5329,9 @@ pub(super) fn integer_arg(parser: &mut Parser, depth: usize) -> Result<Option<i6
         return match parse_at_depth(parser, depth)? {
             ConstantValue::Integer(value) => Ok(Some(value)),
             ConstantValue::Null => Ok(None),
-            ConstantValue::Text(_) | ConstantValue::Decimal(_) => Err(ParseError("expected an integer expression".into())),
+            ConstantValue::Text(_) | ConstantValue::Decimal(_) => {
+                Err(ParseError("expected an integer expression".into()))
+            }
         };
     }
     Ok(Some(super::scalar::parse(parser)?))
@@ -5309,7 +5351,9 @@ pub(super) fn text_arg(parser: &mut Parser, depth: usize) -> Result<Option<Strin
         Some(Token::Word(word)) if is_function(word) => match parse_at_depth(parser, depth)? {
             ConstantValue::Text(value) => Ok(Some(value)),
             ConstantValue::Null => Ok(None),
-            ConstantValue::Integer(_) | ConstantValue::Decimal(_) => Err(ParseError("expected a string expression".into())),
+            ConstantValue::Integer(_) | ConstantValue::Decimal(_) => {
+                Err(ParseError("expected a string expression".into()))
+            }
         },
         _ => Err(ParseError(
             "expected a string literal or string function".into(),
@@ -6277,8 +6321,14 @@ mod clickhouse_to_decimal_string_parity_tests {
             other => panic!("unexpected value: {other:?}"),
         };
         assert_eq!(high_precision, format!("3.{}", "0".repeat(77)));
-        assert_eq!(value("SELECT toDecimalString(NULL, 2)"), ConstantValue::Null);
-        assert_eq!(value("SELECT toDecimalString(4, NULL)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT toDecimalString(NULL, 2)"),
+            ConstantValue::Null
+        );
+        assert_eq!(
+            value("SELECT toDecimalString(4, NULL)"),
+            ConstantValue::Null
+        );
         assert!(parse_select("SELECT toDecimalString(4)").is_err());
         assert!(parse_select("SELECT toDecimalString(4, -1)").is_err());
         assert!(parse_select("SELECT toDecimalString(4, 78)").is_err());
@@ -6340,15 +6390,24 @@ mod clickhouse_ends_with_case_insensitive_utf8_parity_tests {
         for (sql, expected) in [
             ("SELECT endsWithCaseInsensitiveUTF8('данных', 'ЫХ')", 1),
             ("SELECT endsWithCaseInsensitiveUTF8('Äpfel', 'FEL')", 1),
-            ("SELECT endsWithCaseInsensitiveUTF8('ClickHouse', 'HOUSE')", 1),
-            ("SELECT endsWithCaseInsensitiveUTF8('ClickHouse', 'click')", 0),
+            (
+                "SELECT endsWithCaseInsensitiveUTF8('ClickHouse', 'HOUSE')",
+                1,
+            ),
+            (
+                "SELECT endsWithCaseInsensitiveUTF8('ClickHouse', 'click')",
+                0,
+            ),
             ("SELECT endsWithCaseInsensitiveUTF8('Ёжик', '')", 1),
             ("SELECT endsWithCaseInsensitiveUTF8('', '')", 1),
             ("SELECT endsWithCaseInsensitiveUTF8('', 'a')", 0),
         ] {
             assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
         }
-        assert_eq!(value("SELECT endsWithCaseInsensitiveUTF8(NULL, 'a')"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT endsWithCaseInsensitiveUTF8(NULL, 'a')"),
+            ConstantValue::Null
+        );
         assert!(parse_select("SELECT endsWithCaseInsensitiveUTF8('a')").is_err());
         assert!(parse_select("SELECT endsWithCaseInsensitiveUTF8('a', 'b', 'c')").is_err());
     }
@@ -6368,17 +6427,29 @@ mod clickhouse_starts_with_case_insensitive_utf8_parity_tests {
     #[test]
     fn matches_unicode_prefixes_and_empty_needle() {
         for (sql, expected) in [
-            ("SELECT startsWithCaseInsensitiveUTF8('приставка', 'ПРИ')", 1),
+            (
+                "SELECT startsWithCaseInsensitiveUTF8('приставка', 'ПРИ')",
+                1,
+            ),
             ("SELECT startsWithCaseInsensitiveUTF8('Äpfel', 'äP')", 1),
-            ("SELECT startsWithCaseInsensitiveUTF8('ClickHouse', 'cli')", 1),
-            ("SELECT startsWithCaseInsensitiveUTF8('ClickHouse', 'house')", 0),
+            (
+                "SELECT startsWithCaseInsensitiveUTF8('ClickHouse', 'cli')",
+                1,
+            ),
+            (
+                "SELECT startsWithCaseInsensitiveUTF8('ClickHouse', 'house')",
+                0,
+            ),
             ("SELECT startsWithCaseInsensitiveUTF8('Ёжик', '')", 1),
             ("SELECT startsWithCaseInsensitiveUTF8('', '')", 1),
             ("SELECT startsWithCaseInsensitiveUTF8('', 'a')", 0),
         ] {
             assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
         }
-        assert_eq!(value("SELECT startsWithCaseInsensitiveUTF8(NULL, 'a')"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT startsWithCaseInsensitiveUTF8(NULL, 'a')"),
+            ConstantValue::Null
+        );
         assert!(parse_select("SELECT startsWithCaseInsensitiveUTF8('a')").is_err());
         assert!(parse_select("SELECT startsWithCaseInsensitiveUTF8('a', 'b', 'c')").is_err());
     }
@@ -6398,7 +6469,10 @@ mod clickhouse_has_subsequence_case_insensitive_utf8_parity_tests {
     #[test]
     fn matches_case_insensitive_unicode_subsequences() {
         for (sql, expected) in [
-            ("SELECT hasSubsequenceCaseInsensitiveUTF8('не прислоняться', 'не слонЯ')", 1),
+            (
+                "SELECT hasSubsequenceCaseInsensitiveUTF8('не прислоняться', 'не слонЯ')",
+                1,
+            ),
             ("SELECT hasSubsequenceCaseInsensitiveUTF8('Äpfel', 'äe')", 1),
             ("SELECT hasSubsequenceCaseInsensitiveUTF8('ДОБРО', 'до')", 1),
             ("SELECT hasSubsequenceCaseInsensitiveUTF8('AbCd', 'dc')", 0),
@@ -6407,8 +6481,14 @@ mod clickhouse_has_subsequence_case_insensitive_utf8_parity_tests {
         ] {
             assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
         }
-        assert_eq!(value("SELECT hasSubsequenceCaseInsensitiveUTF8(NULL, 'a')"), ConstantValue::Null);
-        assert_eq!(value("SELECT hasSubsequenceCaseInsensitiveUTF8('a', NULL)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT hasSubsequenceCaseInsensitiveUTF8(NULL, 'a')"),
+            ConstantValue::Null
+        );
+        assert_eq!(
+            value("SELECT hasSubsequenceCaseInsensitiveUTF8('a', NULL)"),
+            ConstantValue::Null
+        );
         assert!(parse_select("SELECT hasSubsequenceCaseInsensitiveUTF8('a')").is_err());
     }
 }
@@ -6427,7 +6507,10 @@ mod clickhouse_has_subsequence_utf8_parity_tests {
     #[test]
     fn matches_ordered_unicode_codepoints() {
         for (sql, expected) in [
-            ("SELECT hasSubsequenceUTF8('ReplicatedMergeTree', 'RepMT')", 1),
+            (
+                "SELECT hasSubsequenceUTF8('ReplicatedMergeTree', 'RepMT')",
+                1,
+            ),
             ("SELECT hasSubsequenceUTF8('a💫bç', 'aç')", 1),
             ("SELECT hasSubsequenceUTF8('a💫bç', 'ça')", 0),
             ("SELECT hasSubsequenceUTF8('Москва', 'Мса')", 1),
@@ -6436,8 +6519,14 @@ mod clickhouse_has_subsequence_utf8_parity_tests {
         ] {
             assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
         }
-        assert_eq!(value("SELECT hasSubsequenceUTF8(NULL, 'a')"), ConstantValue::Null);
-        assert_eq!(value("SELECT hasSubsequenceUTF8('a', NULL)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT hasSubsequenceUTF8(NULL, 'a')"),
+            ConstantValue::Null
+        );
+        assert_eq!(
+            value("SELECT hasSubsequenceUTF8('a', NULL)"),
+            ConstantValue::Null
+        );
         assert!(parse_select("SELECT hasSubsequenceUTF8('a')").is_err());
     }
 }
@@ -6456,7 +6545,10 @@ mod clickhouse_compare_substrings_parity_tests {
     #[test]
     fn compares_byte_ranges_and_short_tails() {
         for (sql, expected) in [
-            ("SELECT compareSubstrings('Saxony', 'Anglo-Saxon', 0, 6, 5)", 0),
+            (
+                "SELECT compareSubstrings('Saxony', 'Anglo-Saxon', 0, 6, 5)",
+                0,
+            ),
             ("SELECT compareSubstrings('abc', 'abd')", -1),
             ("SELECT compareSubstrings('abd', 'abc')", 1),
             ("SELECT compareSubstrings('abc', 'abc')", 0),
@@ -6467,7 +6559,10 @@ mod clickhouse_compare_substrings_parity_tests {
         ] {
             assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
         }
-        assert_eq!(value("SELECT compareSubstrings(NULL, 'abc')"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT compareSubstrings(NULL, 'abc')"),
+            ConstantValue::Null
+        );
         assert!(parse_select("SELECT compareSubstrings('abc')").is_err());
         assert!(parse_select("SELECT compareSubstrings('abc', 'def', 1)").is_err());
         assert!(parse_select("SELECT compareSubstrings('abc', 'def', -1, 0, 2)").is_err());
@@ -6488,7 +6583,10 @@ mod clickhouse_reverse_by_separator_parity_tests {
     #[test]
     fn reverses_dot_slash_and_multibyte_separator_tokens() {
         for (sql, expected) in [
-            ("SELECT reverseBySeparator('www.google.com')", "com.google.www"),
+            (
+                "SELECT reverseBySeparator('www.google.com')",
+                "com.google.www",
+            ),
             ("SELECT reverseBySeparator('a/b/c', '/')", "c/b/a"),
             ("SELECT reverseBySeparator('x::y::z', '::')", "z::y::x"),
             ("SELECT reverseBySeparator('.a.b.')", ".b.a."),
@@ -6498,8 +6596,14 @@ mod clickhouse_reverse_by_separator_parity_tests {
         ] {
             assert_eq!(value(sql), ConstantValue::Text(expected.into()), "{sql}");
         }
-        assert_eq!(value("SELECT reverseBySeparator(NULL)"), ConstantValue::Null);
-        assert_eq!(value("SELECT reverseBySeparator('x', NULL)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT reverseBySeparator(NULL)"),
+            ConstantValue::Null
+        );
+        assert_eq!(
+            value("SELECT reverseBySeparator('x', NULL)"),
+            ConstantValue::Null
+        );
         assert!(parse_select("SELECT reverseBySeparator()").is_err());
         assert!(parse_select("SELECT reverseBySeparator('a', '.', 'b')").is_err());
     }
@@ -6530,7 +6634,10 @@ mod clickhouse_encode_url_component_parity_tests {
             value("SELECT encodeURLComponent('')"),
             ConstantValue::Text(String::new()),
         );
-        assert_eq!(value("SELECT encodeURLComponent(NULL)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT encodeURLComponent(NULL)"),
+            ConstantValue::Null
+        );
         assert!(parse_select("SELECT encodeURLComponent()").is_err());
         assert!(parse_select("SELECT encodeURLComponent('a', 'b')").is_err());
     }
@@ -6552,7 +6659,10 @@ mod clickhouse_position_case_insensitive_utf8_parity_tests {
     fn finds_unicode_case_insensitive_positions() {
         for (sql, expected) in [
             ("SELECT positionCaseInsensitiveUTF8('Äpfel', 'äP')", 1),
-            ("SELECT positionCaseInsensitiveUTF8('Crème brûlée', 'BRÛ')", 7),
+            (
+                "SELECT positionCaseInsensitiveUTF8('Crème brûlée', 'BRÛ')",
+                7,
+            ),
             ("SELECT positionCaseInsensitiveUTF8('Привет Мир', 'МИР')", 8),
             ("SELECT positionCaseInsensitiveUTF8('abc abc', 'ABC', 4)", 5),
             ("SELECT positionCaseInsensitiveUTF8('abc', 'A', 0)", 1),
@@ -6563,8 +6673,14 @@ mod clickhouse_position_case_insensitive_utf8_parity_tests {
         ] {
             assert_eq!(value(sql), ConstantValue::Integer(expected), "{sql}");
         }
-        assert_eq!(value("SELECT positionCaseInsensitiveUTF8(NULL, 'a')"), ConstantValue::Null);
-        assert_eq!(value("SELECT positionCaseInsensitiveUTF8('abc', NULL)"), ConstantValue::Null);
+        assert_eq!(
+            value("SELECT positionCaseInsensitiveUTF8(NULL, 'a')"),
+            ConstantValue::Null
+        );
+        assert_eq!(
+            value("SELECT positionCaseInsensitiveUTF8('abc', NULL)"),
+            ConstantValue::Null
+        );
         assert!(parse_select("SELECT positionCaseInsensitiveUTF8('a')").is_err());
         assert!(parse_select("SELECT positionCaseInsensitiveUTF8('abc', 'a', -1)").is_err());
         assert!(parse_select("SELECT positionCaseInsensitiveUTF8('a', 'b', 1, 2)").is_err());
@@ -6573,7 +6689,6 @@ mod clickhouse_position_case_insensitive_utf8_parity_tests {
 
 #[cfg(test)]
 mod typed_json_exists_selector_tests {
-    use super::*;
 
     #[test]
     fn indexes_and_property_names_select_only_their_container_type() {
@@ -6589,7 +6704,11 @@ mod typed_json_exists_selector_tests {
             let crate::Projection::Constants(columns) = projection else {
                 panic!("expected constant projection");
             };
-            assert_eq!(columns[0].value, crate::ConstantValue::Integer(expected), "{sql}");
+            assert_eq!(
+                columns[0].value,
+                crate::ConstantValue::Integer(expected),
+                "{sql}"
+            );
         }
     }
 }
@@ -6609,9 +6728,15 @@ mod clickhouse_json_array_length_tests {
     #[test]
     fn returns_length_only_for_valid_arrays() {
         for (sql, expected) in [
-            (r#"SELECT JSONArrayLength('[1, {"a":2}, null]')"#, ConstantValue::Integer(3)),
+            (
+                r#"SELECT JSONArrayLength('[1, {"a":2}, null]')"#,
+                ConstantValue::Integer(3),
+            ),
             (r#"SELECT JSONArrayLength('[]')"#, ConstantValue::Integer(0)),
-            (r#"SELECT JSONArrayLength('[[], [1, 2]]')"#, ConstantValue::Integer(2)),
+            (
+                r#"SELECT JSONArrayLength('[[], [1, 2]]')"#,
+                ConstantValue::Integer(2),
+            ),
             (r#"SELECT JSONArrayLength('{}')"#, ConstantValue::Null),
             (r#"SELECT JSONArrayLength('true')"#, ConstantValue::Null),
             (r#"SELECT JSONArrayLength('invalid')"#, ConstantValue::Null),

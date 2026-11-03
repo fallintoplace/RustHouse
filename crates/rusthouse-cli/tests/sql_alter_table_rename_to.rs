@@ -22,7 +22,10 @@ fn alter_rename_to_preserves_persistent_rows() {
     let db = std::env::temp_dir().join(format!(
         "rusthouse-alter_rename_to_preserves_persistent_rows-{}-{}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     successful(&db, "CREATE TABLE events (id UInt64, label String)");
     successful(&db, "INSERT INTO events VALUES (1, 'a'), (2, 'b')");
@@ -32,8 +35,19 @@ fn alter_rename_to_preserves_persistent_rows() {
         b"id\tlabel\n1\ta\n2\tb\n"
     );
     assert!(!sql(&db, "SELECT id FROM events").status.success());
-    assert!(!sql(&db, "ALTER TABLE archive RENAME TO archive").status.success());
-    assert!(!sql(&db, "ALTER TABLE archive RENAME TO other; DROP TABLE archive").status.success());
+    assert!(
+        !sql(&db, "ALTER TABLE archive RENAME TO archive")
+            .status
+            .success()
+    );
+    assert!(
+        !sql(
+            &db,
+            "ALTER TABLE archive RENAME TO other; DROP TABLE archive"
+        )
+        .status
+        .success()
+    );
 
     fs::remove_dir_all(db).unwrap();
 }

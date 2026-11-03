@@ -86,8 +86,8 @@ pub(super) fn push_cell(
         "String" => {
             // An oversized value must fail before cloning its bytes into the
             // mutable column buffer, even when it is the first row in a mark.
-            let length = u64::try_from(value.len())
-                .map_err(|_| invalid("part column exceeds 8 MiB"))?;
+            let length =
+                u64::try_from(value.len()).map_err(|_| invalid("part column exceeds 8 MiB"))?;
             value
                 .len()
                 .checked_add(varuint_width(length))

@@ -1,8 +1,10 @@
 //! Exact multi-key integer MIN/MAX across disjoint shards.
 //! Range-check every partial against its physical declared SQL type.
 
-use super::{AggregateFunction, MAX_RESPONSE_BYTES, MergeError, NormalizedGroupKey,
-    extrema_fits_declared_type, normalized_group_key};
+use super::{
+    AggregateFunction, MAX_RESPONSE_BYTES, MergeError, NormalizedGroupKey,
+    extrema_fits_declared_type, normalized_group_key,
+};
 use std::collections::HashMap;
 
 pub(super) fn merge_multi_key_extrema(
@@ -24,7 +26,11 @@ pub(super) fn merge_multi_key_extrema(
         .strip_prefix("Nullable(")
         .unwrap_or(kind)
         .starts_with("UInt");
-    let header = format!("{}\t{}({value_column})\n", columns.join("\t"), function.name());
+    let header = format!(
+        "{}\t{}({value_column})\n",
+        columns.join("\t"),
+        function.name()
+    );
     let mut positions = HashMap::<Vec<NormalizedGroupKey<'_>>, usize>::new();
     let mut groups = Vec::<(&[u8], Option<i128>, Option<u128>)>::new();
     let mut key_bytes = 0usize;
@@ -48,11 +54,11 @@ pub(super) fn merge_multi_key_extrema(
             }
             let normalized = fields[..columns.len()]
                 .iter()
-                .map(|field| normalized_group_key(field)
-                    .map_err(|_| MergeError::InvalidGroupedSum))
+                .map(|field| normalized_group_key(field).map_err(|_| MergeError::InvalidGroupedSum))
                 .collect::<Result<Vec<_>, _>>()?;
             let wire = fields[columns.len()];
-            let key_len = row.len()
+            let key_len = row
+                .len()
                 .checked_sub(wire.len() + 1)
                 .ok_or(MergeError::InvalidGroupedSum)?;
             let index = if let Some(&id) = positions.get(&normalized) {
@@ -61,7 +67,8 @@ pub(super) fn merge_multi_key_extrema(
                 if groups.len() >= MAX_GROUPS {
                     return Err(MergeError::CoordinatorLimit);
                 }
-                key_bytes = key_bytes.checked_add(key_len)
+                key_bytes = key_bytes
+                    .checked_add(key_len)
                     .filter(|&total| total <= MAX_GROUP_KEY_BYTES)
                     .ok_or(MergeError::CoordinatorLimit)?;
                 let id = groups.len();
@@ -77,7 +84,9 @@ pub(super) fn merge_multi_key_extrema(
                 return Err(MergeError::InvalidGroupedSum);
             }
             if unsigned {
-                let value = text.parse::<u128>().map_err(|_| MergeError::InvalidGroupedSum)?;
+                let value = text
+                    .parse::<u128>()
+                    .map_err(|_| MergeError::InvalidGroupedSum)?;
                 let prior = &mut groups[index].2;
                 *prior = Some(prior.map_or(value, |old| match function {
                     AggregateFunction::Min => old.min(value),
@@ -85,7 +94,9 @@ pub(super) fn merge_multi_key_extrema(
                     _ => unreachable!("validated extrema"),
                 }));
             } else {
-                let value = text.parse::<i128>().map_err(|_| MergeError::InvalidGroupedSum)?;
+                let value = text
+                    .parse::<i128>()
+                    .map_err(|_| MergeError::InvalidGroupedSum)?;
                 let prior = &mut groups[index].1;
                 *prior = Some(prior.map_or(value, |old| match function {
                     AggregateFunction::Min => old.min(value),
@@ -132,13 +143,25 @@ mod tests {
     #[test]
     fn combines_signed_extrema_and_nullable_groups_across_peers() {
         let shards = [
-            (10, b"region\tcategory\tmin(amount)\nwest\ta\t-4\neast\tb\tNULL\n".to_vec()),
-            (10, b"region\tcategory\tmin(amount)\nwest\ta\t-9\neast\tb\t5\n".to_vec()),
+            (
+                10,
+                b"region\tcategory\tmin(amount)\nwest\ta\t-4\neast\tb\tNULL\n".to_vec(),
+            ),
+            (
+                10,
+                b"region\tcategory\tmin(amount)\nwest\ta\t-9\neast\tb\t5\n".to_vec(),
+            ),
         ];
         assert_eq!(
             merge_multi_key_extrema(
-                &shards, &dimensions(), "amount", "Nullable(Int64)", AggregateFunction::Min, 10
-            ).unwrap(),
+                &shards,
+                &dimensions(),
+                "amount",
+                "Nullable(Int64)",
+                AggregateFunction::Min,
+                10
+            )
+            .unwrap(),
             b"region\tcategory\tmin(amount)\nwest\ta\t-9\neast\tb\t5\n"
         );
         let max = [
@@ -147,8 +170,14 @@ mod tests {
         ];
         assert_eq!(
             merge_multi_key_extrema(
-                &max, &dimensions(), "amount", "UInt8", AggregateFunction::Max, 10
-            ).unwrap(),
+                &max,
+                &dimensions(),
+                "amount",
+                "UInt8",
+                AggregateFunction::Max,
+                10
+            )
+            .unwrap(),
             b"region\tcategory\tmax(amount)\nwest\ta\t9\n"
         );
     }
@@ -159,21 +188,33 @@ mod tests {
         assert_eq!(
             merge_multi_key_extrema(
                 &[(10, format!("{prefix}west\ta\t256\n").into_bytes())],
-                &dimensions(), "amount", "UInt8", AggregateFunction::Max, 10
+                &dimensions(),
+                "amount",
+                "UInt8",
+                AggregateFunction::Max,
+                10
             ),
             Err(MergeError::InvalidGroupedSum)
         );
         assert_eq!(
             merge_multi_key_extrema(
                 &[(10, format!("{prefix}west\t1\n").into_bytes())],
-                &dimensions(), "amount", "Int64", AggregateFunction::Max, 10
+                &dimensions(),
+                "amount",
+                "Int64",
+                AggregateFunction::Max,
+                10
             ),
             Err(MergeError::InvalidGroupedSum)
         );
         assert_eq!(
             merge_multi_key_extrema(
                 &[(1, format!("{prefix}west\ta\t1\n").into_bytes())],
-                &dimensions(), "amount", "Int64", AggregateFunction::Max, 10
+                &dimensions(),
+                "amount",
+                "Int64",
+                AggregateFunction::Max,
+                10
             ),
             Err(MergeError::ShardRowLimit)
         );

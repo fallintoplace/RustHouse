@@ -48,8 +48,7 @@ impl Fixture {
                     ]
                 })
                 .collect::<Vec<_>>();
-            write_wide_part(&root.join(format!("all_{part}_{part}_0")), &columns, &rows)
-                .unwrap();
+            write_wide_part(&root.join(format!("all_{part}_{part}_0")), &columns, &rows).unwrap();
         }
         Self(root)
     }

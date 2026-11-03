@@ -152,8 +152,9 @@ fn scan<W: Write>(
                             output_row.push(b'\t');
                         }
                         let value: &typed::Cell = if *index < width {
-                            left_cells[*index]
-                                .get_or_insert_with(|| typed::cell(&batch[source_to_batch[*index]], row_index))
+                            left_cells[*index].get_or_insert_with(|| {
+                                typed::cell(&batch[source_to_batch[*index]], row_index)
+                            })
                         } else {
                             &right_rows[right_index][*index - width]
                         };

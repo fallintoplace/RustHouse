@@ -45,16 +45,14 @@ fn probe_peers_with_workers(
         if index >= peers.len() {
             break;
         }
-        let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            ping(peers[index])
-        }))
-        .unwrap_or(false);
+        let healthy = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| ping(peers[index])))
+            .unwrap_or(false);
         results[index].store(healthy, Ordering::Relaxed);
     };
     std::thread::scope(|scope| {
         let mut handles = Vec::with_capacity(peers.len().min(max_workers));
         for _ in 0..peers.len().min(max_workers) {
-            match std::thread::Builder::new().spawn_scoped(scope, &process) {
+            match std::thread::Builder::new().spawn_scoped(scope, process) {
                 Ok(handle) => handles.push(handle),
                 Err(_) => break,
             }
@@ -350,7 +348,10 @@ mod health_spawn_fallback_tests {
         });
         assert_eq!(
             result,
-            peers.iter().map(|peer| peer.port() % 2 == 0).collect::<Vec<_>>()
+            peers
+                .iter()
+                .map(|peer| peer.port() % 2 == 0)
+                .collect::<Vec<_>>()
         );
     }
 

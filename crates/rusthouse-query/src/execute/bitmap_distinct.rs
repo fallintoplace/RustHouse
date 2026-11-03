@@ -826,7 +826,10 @@ mod cached_prefix_distinct_tests {
         for key in 0..10_000u32 {
             first.insert(key).unwrap();
         }
-        assert_eq!(first.cached_prefix.as_ref().map(|(prefix, _)| *prefix), Some(0));
+        assert_eq!(
+            first.cached_prefix.as_ref().map(|(prefix, _)| *prefix),
+            Some(0)
+        );
         for _ in 0..3 {
             for key in (0..10_000u32).rev() {
                 first.insert(key).unwrap();
@@ -855,8 +858,11 @@ mod cached_prefix_distinct_tests {
         let minus_one = (-1i32) as u32;
         distinct.insert(minus_one).unwrap();
         distinct.insert(minus_one).unwrap();
-        distinct.insert(((-2i32) as u32)).unwrap();
+        distinct.insert((-2i32) as u32).unwrap();
         assert_eq!(distinct.len(), 2);
-        assert_eq!(distinct.cached_prefix.as_ref().map(|(prefix, _)| *prefix), Some(u16::MAX));
+        assert_eq!(
+            distinct.cached_prefix.as_ref().map(|(prefix, _)| *prefix),
+            Some(u16::MAX)
+        );
     }
 }

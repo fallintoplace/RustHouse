@@ -66,7 +66,11 @@ pub fn plan_balanced_compaction_pairs(
         return Err("invalid compaction size ratio");
     }
     plan_compaction_pairs_with_ratio(
-        parts, max_pair_bytes, byte_budget, max_pairs, Some(max_size_ratio),
+        parts,
+        max_pair_bytes,
+        byte_budget,
+        max_pairs,
+        Some(max_size_ratio),
     )
 }
 
@@ -77,10 +81,7 @@ fn plan_compaction_pairs_with_ratio(
     max_pairs: usize,
     max_size_ratio: Option<u64>,
 ) -> Result<Vec<CompactionPair>, &'static str> {
-    if parts.len() > MAX_PARTS
-        || max_pairs > MAX_PLANS
-        || max_pair_bytes == 0
-    {
+    if parts.len() > MAX_PARTS || max_pairs > MAX_PLANS || max_pair_bytes == 0 {
         return Err("invalid compaction planning limits");
     }
     let mut seen = HashSet::with_capacity(parts.len());
@@ -175,7 +176,6 @@ fn plan_compaction_pairs_with_ratio(
     Ok(planned)
 }
 
-
 /// Decide whether local part pressure justifies scheduling compaction.
 /// This only triggers planning; it never deletes or publishes a part.
 pub fn needs_auto_compaction(
@@ -209,7 +209,13 @@ mod auto_compaction_trigger_tests {
 
     #[test]
     fn rejects_invalid_thresholds_and_part_counts() {
-        for (active, max, percent) in [(0, 0, 90), (5, 4, 90), (2, 8, 0), (2, 8, 101), (0, 16_385, 90)] {
+        for (active, max, percent) in [
+            (0, 0, 90),
+            (5, 4, 90),
+            (2, 8, 0),
+            (2, 8, 101),
+            (0, 16_385, 90),
+        ] {
             assert!(needs_auto_compaction(active, max, percent).is_err());
         }
     }
@@ -296,9 +302,17 @@ mod tests {
     #[test]
     fn balanced_planner_skips_skewed_pairs_but_retains_normal_pairs() {
         let unequal = [part("a", "p", 1, 1000), part("b", "p", 2, 1)];
-        assert_eq!(plan_compaction_pairs(&unequal, 2000, 2000, 1).unwrap().len(), 1);
-        assert!(plan_balanced_compaction_pairs(&unequal, 2000, 2000, 1, 4)
-            .unwrap().is_empty());
+        assert_eq!(
+            plan_compaction_pairs(&unequal, 2000, 2000, 1)
+                .unwrap()
+                .len(),
+            1
+        );
+        assert!(
+            plan_balanced_compaction_pairs(&unequal, 2000, 2000, 1, 4)
+                .unwrap()
+                .is_empty()
+        );
         assert!(plan_balanced_compaction_pairs(&unequal, 2000, 2000, 1, 0).is_err());
 
         let parts = [
@@ -311,10 +325,7 @@ mod tests {
         assert_eq!(balanced.len(), 1);
         assert_eq!((&balanced[0].left[..], &balanced[0].right[..]), ("b", "c"));
 
-        let limits = [
-            part("high", "p", 1, u64::MAX),
-            part("low", "p", 2, 1),
-        ];
+        let limits = [part("high", "p", 1, u64::MAX), part("low", "p", 2, 1)];
         assert!(plan_balanced_compaction_pairs(&limits, u64::MAX, u64::MAX, 1, u64::MAX).is_err());
     }
 
@@ -327,7 +338,6 @@ mod tests {
         assert!(plan_compaction_pairs(&parts, 0, 10, 1).is_err());
     }
 }
-
 
 /// Find the least costly set of exactly `required_pairs` disjoint adjacent
 /// compactions. Unlike the greedy planner, this uses dynamic programming.
@@ -410,9 +420,9 @@ pub fn plan_min_cost_compaction_pairs(
             (dp[index + 2][remaining - 1] != u128::MAX)
                 .then(|| u128::from(cost) + dp[index + 2][remaining - 1])
         });
-        if let Some(cost) = costs[index].filter(|_| {
-            take.is_some_and(|candidate| candidate <= dp[index + 1][remaining])
-        }) {
+        if let Some(cost) = costs[index]
+            .filter(|_| take.is_some_and(|candidate| candidate <= dp[index + 1][remaining]))
+        {
             let left = &parts[ordered[index]];
             let right = &parts[ordered[index + 1]];
             result.push(CompactionPair {
@@ -480,8 +490,10 @@ mod optimal_compaction_tests {
         parts[1].level = 1;
         assert!(plan_min_cost_compaction_pairs(&parts, 100, 100, 1).is_err());
         assert!(plan_min_cost_compaction_pairs(&parts, 100, 100, 65).is_err());
-        assert!(plan_min_cost_compaction_pairs(&parts, 100, 100, 0)
-            .unwrap()
-            .is_empty());
+        assert!(
+            plan_min_cost_compaction_pairs(&parts, 100, 100, 0)
+                .unwrap()
+                .is_empty()
+        );
     }
 }

@@ -31,7 +31,6 @@ mod advisory {
     }
 }
 
-
 #[cfg(windows)]
 mod windows_advisory {
     use std::ffi::c_void;
@@ -85,17 +84,15 @@ mod windows_advisory {
         let mut information = std::mem::MaybeUninit::<HandleFileInformation>::uninit();
         // SAFETY: the handle is alive and the kernel fills the full C
         // structure on success. We read it only after success.
-        if unsafe {
-            GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr())
-        } == 0
+        if unsafe { GetFileInformationByHandle(file.as_raw_handle(), information.as_mut_ptr()) }
+            == 0
         {
             return Err(io::Error::last_os_error());
         }
         let information = unsafe { information.assume_init() };
         Ok((
             information.volume_serial,
-            (u64::from(information.file_index_high) << 32)
-                | u64::from(information.file_index_low),
+            (u64::from(information.file_index_high) << 32) | u64::from(information.file_index_low),
         ))
     }
 
@@ -136,7 +133,11 @@ mod windows_advisory {
             event: std::ptr::null_mut(),
         };
         let flags = LOCKFILE_FAIL_IMMEDIATELY
-            | if exclusive { LOCKFILE_EXCLUSIVE_LOCK } else { 0 };
+            | if exclusive {
+                LOCKFILE_EXCLUSIVE_LOCK
+            } else {
+                0
+            };
         // SAFETY: the handle belongs to an open File and the stack OVERLAPPED
         // remains live for the nonblocking call. Closing File releases the lock.
         let result = unsafe { LockFileEx(file.as_raw_handle(), flags, 0, 1, 0, &mut overlapped) };
@@ -401,7 +402,10 @@ mod windows_advisory_lock_tests {
         drop(writer);
 
         let lock_path = directory.join(".rusthouse-write.lock");
-        assert!(lock_path.is_file(), "the lock inode must survive guard drops");
+        assert!(
+            lock_path.is_file(),
+            "the lock inode must survive guard drops"
+        );
         let recovered = acquire_database_lock(&directory, true).unwrap();
         drop(recovered);
         fs::remove_dir_all(directory).unwrap();
@@ -425,7 +429,11 @@ mod windows_lock_identity_tests {
         fs::create_dir(&directory).unwrap();
         let path = directory.join(".rusthouse-write.lock");
         fs::write(&path, b"").unwrap();
-        let file = OpenOptions::new().read(true).write(true).open(&path).unwrap();
+        let file = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .open(&path)
+            .unwrap();
         windows_advisory::validate_identity(&path, &file).unwrap();
 
         let swapped = directory.join("previous-lock");

@@ -45,11 +45,11 @@ pub(super) fn merge_multi_key_sumsquares(
             }
             let normalized = fields[..columns.len()]
                 .iter()
-                .map(|field| normalized_group_key(field)
-                    .map_err(|_| MergeError::InvalidGroupedSum))
+                .map(|field| normalized_group_key(field).map_err(|_| MergeError::InvalidGroupedSum))
                 .collect::<Result<Vec<_>, _>>()?;
             let wire = fields[columns.len()];
-            let key_len = row.len()
+            let key_len = row
+                .len()
                 .checked_sub(wire.len() + 1)
                 .ok_or(MergeError::InvalidGroupedSum)?;
             let id = if let Some(&id) = positions.get(&normalized) {
@@ -74,7 +74,8 @@ pub(super) fn merge_multi_key_sumsquares(
                 .map_err(|_| MergeError::InvalidGroupedSum)?
                 .parse::<u128>()
                 .map_err(|_| MergeError::InvalidGroupedSum)?;
-            let next = groups[id].1
+            let next = groups[id]
+                .1
                 .unwrap_or(0)
                 .checked_add(value)
                 .ok_or(MergeError::SumOverflow)?;
@@ -116,8 +117,14 @@ mod tests {
     #[test]
     fn combines_nonnegative_squares_for_signed_inputs() {
         let shards = [
-            (10, b"region\tcategory\tsumSquares(amount)\nwest\ta\t25\neast\tb\tNULL\n".to_vec()),
-            (10, b"region\tcategory\tsumSquares(amount)\nwest\ta\t9\neast\tb\t16\n".to_vec()),
+            (
+                10,
+                b"region\tcategory\tsumSquares(amount)\nwest\ta\t25\neast\tb\tNULL\n".to_vec(),
+            ),
+            (
+                10,
+                b"region\tcategory\tsumSquares(amount)\nwest\ta\t9\neast\tb\t16\n".to_vec(),
+            ),
         ];
         assert_eq!(
             merge_multi_key_sumsquares(&shards, &dimensions(), "amount", "Int64", 10).unwrap(),
@@ -144,21 +151,30 @@ mod tests {
         assert_eq!(
             merge_multi_key_sumsquares(
                 &[(10, format!("{prefix}west\ta\t-1\n").into_bytes())],
-                &dimensions(), "amount", "Int64", 10
+                &dimensions(),
+                "amount",
+                "Int64",
+                10
             ),
             Err(MergeError::InvalidGroupedSum)
         );
         assert_eq!(
             merge_multi_key_sumsquares(
                 &[(10, format!("{prefix}west\t9\n").into_bytes())],
-                &dimensions(), "amount", "UInt64", 10
+                &dimensions(),
+                "amount",
+                "UInt64",
+                10
             ),
             Err(MergeError::InvalidGroupedSum)
         );
         assert_eq!(
             merge_multi_key_sumsquares(
                 &[(1, format!("{prefix}west\ta\t9\n").into_bytes())],
-                &dimensions(), "amount", "UInt64", 10
+                &dimensions(),
+                "amount",
+                "UInt64",
+                10
             ),
             Err(MergeError::ShardRowLimit)
         );

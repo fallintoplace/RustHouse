@@ -113,13 +113,15 @@ fn inverse_comparison_operator(operator: &Operator) -> Operator {
 
 fn inverse(predicate: &Predicate) -> Branches {
     let opposite = match predicate {
-        Predicate::ColumnComparison { column, operator, other } => {
-            Predicate::ColumnComparison {
-                column: column.clone(),
-                operator: inverse_comparison_operator(operator),
-                other: other.clone(),
-            }
-        }
+        Predicate::ColumnComparison {
+            column,
+            operator,
+            other,
+        } => Predicate::ColumnComparison {
+            column: column.clone(),
+            operator: inverse_comparison_operator(operator),
+            other: other.clone(),
+        },
         Predicate::Comparison {
             column,
             operator,
@@ -242,7 +244,9 @@ fn parse_atom(
     let mut predicates = Vec::new();
     let prefix_not = parser.keyword("NOT");
     if parser.keyword("EXISTS") {
-        return Err(ParseError("EXISTS and NOT EXISTS subqueries are not yet supported".into()));
+        return Err(ParseError(
+            "EXISTS and NOT EXISTS subqueries are not yet supported".into(),
+        ));
     }
     let column = parser.word()?;
     let postfix_not = parser.keyword("NOT");
@@ -365,8 +369,11 @@ fn parse_atom(
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected '(' after IN".into()));
         }
-        if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT")) {
-            return Err(ParseError("IN (SELECT ...) and NOT IN (SELECT ...) are not yet supported".into()));
+        if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT"))
+        {
+            return Err(ParseError(
+                "IN (SELECT ...) and NOT IN (SELECT ...) are not yet supported".into(),
+            ));
         }
         let mut values = Vec::new();
         loop {
@@ -417,26 +424,42 @@ fn parse_atom(
         if parser.tokens.get(parser.index) == Some(&Token::LParen)
             && matches!(parser.tokens.get(parser.index + 1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT"))
         {
-            return Err(ParseError("scalar WHERE subqueries are not yet supported".into()));
+            return Err(ParseError(
+                "scalar WHERE subqueries are not yet supported".into(),
+            ));
         }
         // A bare identifier after a relational operator is another column,
         // not a string literal. CAST and typed DATE/TIMESTAMP literals retain
         // their existing parser paths.
         let other = match parser.tokens.get(parser.index) {
-            Some(Token::Word(word)) if !matches!(
-                word.to_ascii_uppercase().as_str(),
-                "CAST" | "DATE" | "TIMESTAMP" | "NULL" | "TRUE" | "FALSE" | "INTERVAL"
-            ) => Some(parser.word()?),
+            Some(Token::Word(word))
+                if !matches!(
+                    word.to_ascii_uppercase().as_str(),
+                    "CAST" | "DATE" | "TIMESTAMP" | "NULL" | "TRUE" | "FALSE" | "INTERVAL"
+                ) =>
+            {
+                Some(parser.word()?)
+            }
             Some(Token::QuotedWord(_)) => Some(parser.word()?),
             _ => None,
         };
         predicates.push(if let Some(other) = other {
             if matches!(operator, Operator::Modulo(_) | Operator::ModuloNe(_)) {
-                return Err(ParseError("column comparisons do not support modulo".into()));
+                return Err(ParseError(
+                    "column comparisons do not support modulo".into(),
+                ));
             }
-            Predicate::ColumnComparison { column, operator, other }
+            Predicate::ColumnComparison {
+                column,
+                operator,
+                other,
+            }
         } else {
-            Predicate::Comparison { column, operator, value: parser.literal()? }
+            Predicate::Comparison {
+                column,
+                operator,
+                value: parser.literal()?,
+            }
         });
     }
     *conditions = conditions
@@ -782,7 +805,6 @@ mod streaming_dnf_absorption_tests {
     }
 }
 
-
 #[cfg(test)]
 mod asymmetric_between_tests {
     use crate::parse_select;
@@ -801,10 +823,9 @@ mod asymmetric_between_tests {
             assert_eq!(plain.predicates, explicit.predicates);
             assert_eq!(plain.or_predicates, explicit.or_predicates);
         }
-        assert!(parse_select(
-            "SELECT * FROM numbers(10) WHERE number BETWEEN ASYMMETRIC 1"
-        )
-        .is_err());
+        assert!(
+            parse_select("SELECT * FROM numbers(10) WHERE number BETWEEN ASYMMETRIC 1").is_err()
+        );
     }
 }
 
@@ -825,7 +846,10 @@ mod tpch_where_subquery_diagnostic_9 {
 
     #[test]
     fn unsupported_subquery_has_specific_diagnostic() {
-        let err = parse_select("SELECT count(*) FROM orders WHERE o_orderkey IN (SELECT l_orderkey FROM lineitem)").unwrap_err();
+        let err = parse_select(
+            "SELECT count(*) FROM orders WHERE o_orderkey IN (SELECT l_orderkey FROM lineitem)",
+        )
+        .unwrap_err();
         assert!(err.0.contains("IN (SELECT ...) and NOT IN"), "{err}");
     }
 }

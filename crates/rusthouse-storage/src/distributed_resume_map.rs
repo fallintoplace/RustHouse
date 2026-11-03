@@ -443,7 +443,6 @@ impl ResumeMap {
         missing.extend(self.remaining_indices());
         missing
     }
-
 }
 
 impl ResumeMap {
@@ -478,7 +477,10 @@ impl ResumeMap {
                 }
             }
             if chunks % 8 != 0 {
-                let last = result.completed.last_mut().expect("nonempty partial bitmap");
+                let last = result
+                    .completed
+                    .last_mut()
+                    .expect("nonempty partial bitmap");
                 *last &= low_bit_mask(chunks % 8);
             }
             return Ok(result);
@@ -512,7 +514,10 @@ impl ResumeMap {
             *out = greater | equal;
         }
         if chunks % 8 != 0 {
-            let last = result.completed.last_mut().expect("nonempty partial bitmap");
+            let last = result
+                .completed
+                .last_mut()
+                .expect("nonempty partial bitmap");
             *last &= low_bit_mask(chunks % 8);
         }
         Ok(result)
@@ -542,14 +547,21 @@ mod checkpoint_quorum_tests {
                 for required in [1, members / 2 + 1, members] {
                     let quorum = ResumeMap::quorum_verified(&refs, required).unwrap();
                     assert_eq!(quorum.len(), chunks);
-                    assert_eq!(quorum.encode_binary_checked().len(), 12 + chunks.div_ceil(8));
+                    assert_eq!(
+                        quorum.encode_binary_checked().len(),
+                        12 + chunks.div_ceil(8)
+                    );
                     for chunk in 0..chunks {
-                        let votes = maps.iter().filter(|map| {
-                            map.completed[chunk / 8] & (1 << (chunk % 8)) != 0
-                        }).count();
+                        let votes = maps
+                            .iter()
+                            .filter(|map| map.completed[chunk / 8] & (1 << (chunk % 8)) != 0)
+                            .count();
                         let is_verified = quorum.completed[chunk / 8] & (1 << (chunk % 8)) != 0;
-                        assert_eq!(is_verified, votes >= required,
-                            "chunks={chunks}, members={members}, required={required}, chunk={chunk}");
+                        assert_eq!(
+                            is_verified,
+                            votes >= required,
+                            "chunks={chunks}, members={members}, required={required}, chunk={chunk}"
+                        );
                     }
                     assert_eq!(
                         ResumeMap::decode_binary_checked(&quorum.encode_binary_checked()).unwrap(),
@@ -1455,7 +1467,6 @@ impl ResumeMap {
     }
 }
 
-
 impl ResumeMap {
     /// Select the nth unfinished transfer chunk at or after a continuation cursor.
     ///
@@ -1494,10 +1505,7 @@ impl ResumeMap {
             return Ok(Some(word * 64 + missing.trailing_zeros() as usize));
         }
         let tail_base = full_words * 64;
-        for (byte_index, &completed) in self.completed[full_words * 8..]
-            .iter()
-            .enumerate()
-        {
+        for (byte_index, &completed) in self.completed[full_words * 8..].iter().enumerate() {
             let position = tail_base + byte_index * 8;
             let live = (self.chunks - position).min(8);
             let mut missing = !completed & low_bit_mask(live);

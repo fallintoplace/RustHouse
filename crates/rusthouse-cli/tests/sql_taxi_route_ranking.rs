@@ -3,10 +3,7 @@ use std::process::Command;
 
 #[test]
 fn taxi_three_key_group_having_and_rank_matches_reference() {
-    let db = std::env::temp_dir().join(format!(
-        "rusthouse-taxi-route-rank-{}",
-        std::process::id()
-    ));
+    let db = std::env::temp_dir().join(format!("rusthouse-taxi-route-rank-{}", std::process::id()));
     let sql = |statement: &str| {
         Command::new(env!("CARGO_BIN_EXE_rusthouse"))
             .args(["sql", statement, "--database"])
@@ -31,9 +28,14 @@ fn taxi_three_key_group_having_and_rank_matches_reference() {
     );
 
     // HAVING eliminates all groups, but preserves the output schema.
-    let empty = sql("SELECT pickup_day, pickup_zone, dropoff_zone, COUNT(*) AS rides FROM trips WHERE fare_cents >= 99999 GROUP BY pickup_day, pickup_zone, dropoff_zone HAVING COUNT(*) >= 3 ORDER BY rides DESC, pickup_day, pickup_zone, dropoff_zone LIMIT 20");
+    let empty = sql(
+        "SELECT pickup_day, pickup_zone, dropoff_zone, COUNT(*) AS rides FROM trips WHERE fare_cents >= 99999 GROUP BY pickup_day, pickup_zone, dropoff_zone HAVING COUNT(*) >= 3 ORDER BY rides DESC, pickup_day, pickup_zone, dropoff_zone LIMIT 20",
+    );
     assert!(empty.status.success(), "{empty:?}");
-    assert_eq!(empty.stdout, b"pickup_day\tpickup_zone\tdropoff_zone\trides\n");
+    assert_eq!(
+        empty.stdout,
+        b"pickup_day\tpickup_zone\tdropoff_zone\trides\n"
+    );
 
     fs::remove_dir_all(db).unwrap();
 }

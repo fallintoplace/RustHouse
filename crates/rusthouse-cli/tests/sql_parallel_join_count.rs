@@ -29,7 +29,10 @@ fn parallel_inner_count_probe_preserves_duplicate_rows() {
         sql("INSERT INTO facts VALUES (1), (2), (3)", &db);
     }
     assert_eq!(
-        sql("SELECT count(*) FROM facts f INNER JOIN dims d ON f.id = d.id", &db),
+        sql(
+            "SELECT count(*) FROM facts f INNER JOIN dims d ON f.id = d.id",
+            &db
+        ),
         "count\n120\n"
     );
     assert_eq!(

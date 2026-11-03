@@ -7,17 +7,14 @@ use crate::distributed_copy_diff::{ObjectMetadata, plan_replica_copies};
 type Digest = [u8; 32];
 
 const ROUND_CONSTANTS: [u32; 64] = [
-    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1,
-    0x923f82a4, 0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3,
-    0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786,
-    0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147,
-    0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13,
-    0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
-    0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a,
-    0x5b9cca4f, 0x682e6ff3, 0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208,
-    0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
+    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+    0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+    0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+    0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+    0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+    0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+    0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2,
 ];
 
 // Self-contained SHA-256 for canonical bounded manifest nodes, without
@@ -31,8 +28,8 @@ fn sha256(bytes: &[u8]) -> Digest {
     }
     padded.extend_from_slice(&((bytes.len() as u64) * 8).to_be_bytes());
     let mut state: [u32; 8] = [
-        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a,
-        0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19,
+        0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+        0x5be0cd19,
     ];
     for block in padded.chunks_exact(64) {
         let mut words = [0u32; 64];
@@ -70,10 +67,7 @@ fn sha256(bytes: &[u8]) -> Digest {
             b = a;
             a = t1.wrapping_add(t2);
         }
-        for (slot, value) in state
-            .iter_mut()
-            .zip([a, b, c, d, e, f, g, h])
-        {
+        for (slot, value) in state.iter_mut().zip([a, b, c, d, e, f, g, h]) {
             *slot = slot.wrapping_add(value);
         }
     }
@@ -166,7 +160,6 @@ impl MerkleInventory {
         width == 1 && digest == root
     }
 
-
     pub fn new(entries: &[ObjectMetadata]) -> Result<Self, &'static str> {
         // Reuse the existing canonical key grammar and duplicate detection.
         let objects = plan_replica_copies(entries, &[])?;
@@ -240,12 +233,21 @@ mod tests {
     use super::*;
 
     fn entry(key: &str, bytes: u64, crc32c: u32) -> ObjectMetadata {
-        ObjectMetadata { key: key.into(), bytes, crc32c }
+        ObjectMetadata {
+            key: key.into(),
+            bytes,
+            crc32c,
+        }
     }
 
     #[test]
     fn sha256_matches_independent_nist_vectors() {
-        let hex = |digest: Digest| digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        let hex = |digest: Digest| {
+            digest
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
         assert_eq!(
             hex(sha256(b"")),
             "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -296,21 +298,35 @@ mod tests {
             assert!(inventory.proof(count).is_none());
             for (index, object) in inventory.objects().iter().enumerate() {
                 let proof = inventory.proof(index).unwrap();
-                assert!(MerkleInventory::verify_proof(inventory.root(), object, &proof));
+                assert!(MerkleInventory::verify_proof(
+                    inventory.root(),
+                    object,
+                    &proof
+                ));
 
                 let mut changed_object = object.clone();
                 changed_object.crc32c ^= 1;
                 assert!(!MerkleInventory::verify_proof(
-                    inventory.root(), &changed_object, &proof
+                    inventory.root(),
+                    &changed_object,
+                    &proof
                 ));
 
                 let mut bad_count = proof.clone();
                 bad_count.leaf_count = 0;
-                assert!(!MerkleInventory::verify_proof(inventory.root(), object, &bad_count));
+                assert!(!MerkleInventory::verify_proof(
+                    inventory.root(),
+                    object,
+                    &bad_count
+                ));
 
                 let mut extra = proof.clone();
                 extra.siblings.push([0; 32]);
-                assert!(!MerkleInventory::verify_proof(inventory.root(), object, &extra));
+                assert!(!MerkleInventory::verify_proof(
+                    inventory.root(),
+                    object,
+                    &extra
+                ));
             }
         }
     }
@@ -322,7 +338,9 @@ mod tests {
         let mut proof = inventory.proof(2).unwrap();
         proof.siblings[0] = [9; 32];
         assert!(!MerkleInventory::verify_proof(
-            inventory.root(), &inventory.objects()[2], &proof
+            inventory.root(),
+            &inventory.objects()[2],
+            &proof
         ));
     }
 
@@ -338,7 +356,6 @@ mod tests {
         assert_eq!(first.differing_positions(&second), Some(vec![513]));
     }
 }
-
 
 /// Canonical compact proof for multiple inventory leaves. Each shared
 /// subtree is sent at most once, unlike independent inclusion proofs.
@@ -398,10 +415,7 @@ impl MerkleInventory {
         if objects.is_empty()
             || proof.leaf_count == 0
             || objects.len() != proof.indices.len()
-            || proof
-                .indices
-                .windows(2)
-                .any(|pair| pair[0] >= pair[1])
+            || proof.indices.windows(2).any(|pair| pair[0] >= pair[1])
         {
             return false;
         }
@@ -422,7 +436,8 @@ impl MerkleInventory {
                 let adjacent = if index & 1 == 0 {
                     positions.get(at + 1)
                 } else {
-                    at.checked_sub(1).and_then(|previous| positions.get(previous))
+                    at.checked_sub(1)
+                        .and_then(|previous| positions.get(previous))
                 };
                 let sibling = match adjacent {
                     Some(&(other_index, digest)) if other_index == sibling_index => digest,
@@ -454,9 +469,7 @@ impl MerkleInventory {
             positions = next;
             width = width.div_ceil(2);
         }
-        consumed == proof.siblings.len()
-            && positions.len() == 1
-            && positions[0] == (0, root)
+        consumed == proof.siblings.len() && positions.len() == 1 && positions[0] == (0, root)
     }
 }
 
@@ -489,21 +502,28 @@ mod compact_multiproof_tests {
                     .map(|&index| (index, entries[index].clone()))
                     .collect::<Vec<_>>();
                 assert!(MerkleInventory::verify_multi_proof(
-                    tree.root(), &selected, &proof
+                    tree.root(),
+                    &selected,
+                    &proof
                 ));
                 let mut changed = selected.clone();
                 changed[0].1.bytes ^= 1;
                 assert!(!MerkleInventory::verify_multi_proof(
-                    tree.root(), &changed, &proof
+                    tree.root(),
+                    &changed,
+                    &proof
                 ));
                 let mut extra = proof.clone();
                 extra.siblings.push([0; 32]);
                 assert!(!MerkleInventory::verify_multi_proof(
-                    tree.root(), &selected, &extra
+                    tree.root(),
+                    &selected,
+                    &extra
                 ));
-                let individual = selection.iter().map(|&index| {
-                    tree.proof(index).unwrap().siblings.len()
-                }).sum::<usize>();
+                let individual = selection
+                    .iter()
+                    .map(|&index| tree.proof(index).unwrap().siblings.len())
+                    .sum::<usize>();
                 assert!(proof.siblings.len() <= individual);
             }
         }
@@ -521,7 +541,11 @@ mod compact_multiproof_tests {
             .iter()
             .map(|&index| (index, entries[index].clone()))
             .collect::<Vec<_>>();
-        assert!(MerkleInventory::verify_multi_proof(tree.root(), &selected, &proof));
+        assert!(MerkleInventory::verify_multi_proof(
+            tree.root(),
+            &selected,
+            &proof
+        ));
         for &position in &[0usize, 1, 8, 1024] {
             let alone = tree.multi_proof(&[position]).unwrap();
             assert!(MerkleInventory::verify_multi_proof(
@@ -544,7 +568,9 @@ mod compact_multiproof_tests {
         let selected = vec![(0, entries[0].clone()), (4, entries[4].clone())];
         proof.siblings.pop();
         assert!(!MerkleInventory::verify_multi_proof(
-            tree.root(), &selected, &proof
+            tree.root(),
+            &selected,
+            &proof
         ));
     }
 }

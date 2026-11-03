@@ -16,7 +16,10 @@ fn show_tables_ilike_matches_ascii_case_without_changing_names() {
     let db = std::env::temp_dir().join(format!(
         "rusthouse-show-tables-ilike-{}-{}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     for sql_text in [
         "CREATE TABLE Events (id UInt64)",
@@ -26,7 +29,10 @@ fn show_tables_ilike_matches_ascii_case_without_changing_names() {
         let result = sql(&db, sql_text);
         assert!(result.status.success(), "{result:?}");
     }
-    assert_eq!(sql(&db, "SHOW TABLES ILIKE 'EV%'").stdout, b"name\nEvents\n");
+    assert_eq!(
+        sql(&db, "SHOW TABLES ILIKE 'EV%'").stdout,
+        b"name\nEvents\n"
+    );
     assert_eq!(sql(&db, "SHOW TABLES LIKE 'EV%'").stdout, b"name\n");
     assert_eq!(
         sql(&db, "SHOW TABLES NOT ILIKE 'EV%'").stdout,

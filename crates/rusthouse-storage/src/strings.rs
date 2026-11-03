@@ -213,17 +213,6 @@ pub(crate) fn read_legacy_strings_buffered<R: BufRead>(
 }
 
 fn read_varuint_buffered<R: BufRead>(reader: &mut R) -> Result<u64, StringReadError> {
-    // Most legacy String lengths fit in a single byte. Consume that byte
-    // directly instead of initializing the general ten-group decoder.
-    let first = reader.fill_buf()?;
-    match first.first().copied() {
-        Some(byte) if byte < 0x80 => {
-            reader.consume(1);
-            return Ok(u64::from(byte));
-        }
-        None => return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into()),
-        _ => {}
-    }
     let mut result = 0u64;
     let mut group = 0usize;
     while group < 10 {
@@ -231,6 +220,11 @@ fn read_varuint_buffered<R: BufRead>(reader: &mut R) -> Result<u64, StringReadEr
         // calling fill_buf again. Most string lengths fit in one buffer.
         let (consumed, finished, invalid) = {
             let bytes = reader.fill_buf()?;
+            if group == 0 && bytes.first().is_some_and(|byte| *byte < 0x80) {
+                let value = u64::from(bytes[0]);
+                reader.consume(1);
+                return Ok(value);
+            }
             if bytes.is_empty() {
                 return Err(io::Error::from(io::ErrorKind::UnexpectedEof).into());
             }
@@ -373,7 +367,10 @@ mod buffered_legacy_string_tests {
         for length in [0u8, 1, 63, 127] {
             let bytes = [length, 0xaa];
             let mut source = BufferOnly(&bytes);
-            assert_eq!(read_varuint_buffered(&mut source).unwrap(), u64::from(length));
+            assert_eq!(
+                read_varuint_buffered(&mut source).unwrap(),
+                u64::from(length)
+            );
             assert_eq!(source.0, &[0xaa]);
         }
     }

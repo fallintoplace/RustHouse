@@ -701,13 +701,17 @@ fn parse_bit_test_any(parser: &mut Parser, depth: usize) -> Result<i64, ParseErr
     let mut positions = 0usize;
     loop {
         if positions >= 64 {
-            return Err(ParseError("bitTestAny supports at most 64 positions".into()));
+            return Err(ParseError(
+                "bitTestAny supports at most 64 positions".into(),
+            ));
         }
         let index = expression(parser, depth + 1)?;
         let bit = u32::try_from(index)
             .map_err(|_| ParseError("bitTestAny position must be between 0 and 63".into()))?;
         if bit >= 64 {
-            return Err(ParseError("bitTestAny position must be between 0 and 63".into()));
+            return Err(ParseError(
+                "bitTestAny position must be between 0 and 63".into(),
+            ));
         }
         any |= value & (1_u64 << bit) != 0;
         positions += 1;
@@ -776,7 +780,8 @@ fn parse_int_exp2(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     require_token(parser, Token::RParen, "intExp2 requires ')'")?;
     let exponent = u32::try_from(exponent)
         .map_err(|_| ParseError("intExp2 exponent must be nonnegative".into()))?;
-    1_i64.checked_shl(exponent)
+    1_i64
+        .checked_shl(exponent)
         .filter(|result| *result > 0)
         .ok_or_else(overflow)
 }
@@ -999,13 +1004,17 @@ fn parse_bit_test_all(parser: &mut Parser, depth: usize) -> Result<i64, ParseErr
     let mut positions = 0usize;
     loop {
         if positions >= 64 {
-            return Err(ParseError("bitTestAll supports at most 64 positions".into()));
+            return Err(ParseError(
+                "bitTestAll supports at most 64 positions".into(),
+            ));
         }
         let index = expression(parser, depth + 1)?;
         let bit = u32::try_from(index)
             .map_err(|_| ParseError("bitTestAll position must be between 0 and 63".into()))?;
         if bit >= 64 {
-            return Err(ParseError("bitTestAll position must be between 0 and 63".into()));
+            return Err(ParseError(
+                "bitTestAll position must be between 0 and 63".into(),
+            ));
         }
         all &= value & (1_u64 << bit) != 0;
         positions += 1;

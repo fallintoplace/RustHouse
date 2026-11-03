@@ -83,11 +83,18 @@ pub fn validate_joint_quorums(
     Ok(JointQuorumSafety {
         writes_intersect: intersect(&shared, before_only, after_only, old.writes, new.writes),
         old_reads_intersect_new_writes: intersect(
-            &shared, before_only, after_only, old.reads, new.writes,
+            &shared,
+            before_only,
+            after_only,
+            old.reads,
+            new.writes,
         ),
         new_reads_intersect_old_writes: intersect(
             &shared.iter().map(|&(a, b)| (b, a)).collect::<Vec<_>>(),
-            after_only, before_only, new.reads, old.writes,
+            after_only,
+            before_only,
+            new.reads,
+            old.writes,
         ),
     })
 }
@@ -97,16 +104,25 @@ mod tests {
     use super::*;
 
     fn members(names: &[(&str, u16)]) -> Vec<Member> {
-        names.iter().map(|&(node, weight)| Member {
-            node: node.to_owned(), zone: "z".into(), weight
-        }).collect()
+        names
+            .iter()
+            .map(|&(node, weight)| Member {
+                node: node.to_owned(),
+                zone: "z".into(),
+                weight,
+            })
+            .collect()
     }
 
     #[test]
     fn identical_majorities_intersect_in_all_directions() {
         let group = members(&[("a", 1), ("b", 1), ("c", 1)]);
         let quorum = WeightedQuorumPolicy::new(&group, 2, 2).unwrap();
-        assert!(validate_joint_quorums(&group, quorum, &group, quorum).unwrap().safe());
+        assert!(
+            validate_joint_quorums(&group, quorum, &group, quorum)
+                .unwrap()
+                .safe()
+        );
     }
 
     #[test]
@@ -114,7 +130,11 @@ mod tests {
         let old = members(&[("a", 1), ("b", 1), ("c", 1)]);
         let new = members(&[("b", 1), ("c", 1), ("d", 1)]);
         let policy = WeightedQuorumPolicy::new(&old, 2, 2).unwrap();
-        assert!(!validate_joint_quorums(&old, policy, &new, policy).unwrap().safe());
+        assert!(
+            !validate_joint_quorums(&old, policy, &new, policy)
+                .unwrap()
+                .safe()
+        );
     }
 
     #[test]
@@ -124,9 +144,18 @@ mod tests {
         let policy = WeightedQuorumPolicy::new(&old, 3, 5).unwrap();
         let result = validate_joint_quorums(&old, policy, &new, policy).unwrap();
         assert!(!result.writes_intersect);
-        assert!(validate_joint_quorums(
-            &old, WeightedQuorumPolicy { reads: 1, writes: 1 }, &new, policy
-        ).is_err());
+        assert!(
+            validate_joint_quorums(
+                &old,
+                WeightedQuorumPolicy {
+                    reads: 1,
+                    writes: 1
+                },
+                &new,
+                policy
+            )
+            .is_err()
+        );
     }
 
     #[test]

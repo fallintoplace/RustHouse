@@ -22,7 +22,8 @@ pub fn plan_snapshot_reachability(
     if pinned_heads.is_empty() || pinned_heads.len() > MAX_PINNED_HEADS {
         return Err("snapshot reachability needs bounded live heads");
     }
-    let by_id: HashMap<(u64, u64), SnapshotParent> = records.iter()
+    let by_id: HashMap<(u64, u64), SnapshotParent> = records
+        .iter()
         .map(|&record| ((record.snapshot.epoch, record.snapshot.generation), record))
         .collect();
     let mut reachable = HashSet::new();
@@ -61,16 +62,32 @@ pub fn plan_snapshot_reachability(
 mod tests {
     use super::*;
     fn v(generation: u64) -> SnapshotVersion {
-        SnapshotVersion { epoch: 1, generation, fingerprint: generation as u128 }
+        SnapshotVersion {
+            epoch: 1,
+            generation,
+            fingerprint: generation as u128,
+        }
     }
 
     #[test]
     fn pinned_branch_keeps_ancestors_but_not_unrelated_sibling() {
         let nodes = [
-            SnapshotParent { snapshot: v(1), parent: None },
-            SnapshotParent { snapshot: v(2), parent: Some(v(1)) },
-            SnapshotParent { snapshot: v(3), parent: Some(v(1)) },
-            SnapshotParent { snapshot: v(4), parent: Some(v(2)) },
+            SnapshotParent {
+                snapshot: v(1),
+                parent: None,
+            },
+            SnapshotParent {
+                snapshot: v(2),
+                parent: Some(v(1)),
+            },
+            SnapshotParent {
+                snapshot: v(3),
+                parent: Some(v(1)),
+            },
+            SnapshotParent {
+                snapshot: v(4),
+                parent: Some(v(2)),
+            },
         ];
         let plan = plan_snapshot_reachability(&nodes, &[v(4)]).unwrap();
         assert_eq!(plan.keep, [v(1), v(2), v(4)]);
@@ -81,12 +98,22 @@ mod tests {
 
     #[test]
     fn unknown_or_rewritten_pins_cannot_trigger_deletion() {
-        let nodes = [SnapshotParent { snapshot: v(1), parent: None }];
+        let nodes = [SnapshotParent {
+            snapshot: v(1),
+            parent: None,
+        }];
         assert!(plan_snapshot_reachability(&nodes, &[]).is_err());
         assert!(plan_snapshot_reachability(&nodes, &[v(2)]).is_err());
-        assert!(plan_snapshot_reachability(
-            &nodes, &[SnapshotVersion { fingerprint: 99, ..v(1) }]
-        ).is_err());
+        assert!(
+            plan_snapshot_reachability(
+                &nodes,
+                &[SnapshotVersion {
+                    fingerprint: 99,
+                    ..v(1)
+                }]
+            )
+            .is_err()
+        );
     }
 }
 
@@ -96,15 +123,21 @@ mod duplicate_live_head_tests {
 
     #[test]
     fn many_readers_may_pin_the_same_snapshot() {
-        let version = SnapshotVersion { epoch: 1, generation: 1, fingerprint: 19 };
-        let records = [SnapshotParent { snapshot: version, parent: None }];
+        let version = SnapshotVersion {
+            epoch: 1,
+            generation: 1,
+            fingerprint: 19,
+        };
+        let records = [SnapshotParent {
+            snapshot: version,
+            parent: None,
+        }];
         let duplicate_pins = vec![version; 128];
         let plan = plan_snapshot_reachability(&records, &duplicate_pins).unwrap();
         assert_eq!(plan.keep, [version]);
         assert!(plan.candidates.is_empty());
-        assert!(plan_snapshot_reachability(
-            &records,
-            &vec![version; MAX_PINNED_HEADS + 1],
-        ).is_err());
+        assert!(
+            plan_snapshot_reachability(&records, &vec![version; MAX_PINNED_HEADS + 1],).is_err()
+        );
     }
 }

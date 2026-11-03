@@ -30,7 +30,8 @@ fn grouped_join_can_order_by_count_alias_and_break_ties_on_keys() {
         ),
         (
             "SELECT t.pickup_day, z.borough, COUNT(*) AS n FROM trips t JOIN zones z ON t.pickup_zone = z.zone_id GROUP BY t.pickup_day, z.borough ORDER BY n DESC, t.pickup_day, z.borough LIMIT 3",
-            b"t.pickup_day\tz.borough\tn\n1\tBrooklyn\t2\n1\tManhattan\t2\n2\tQueens\t1\n".as_slice(),
+            b"t.pickup_day\tz.borough\tn\n1\tBrooklyn\t2\n1\tManhattan\t2\n2\tQueens\t1\n"
+                .as_slice(),
         ),
         (
             "SELECT z.borough, COUNT(*) FROM trips t JOIN zones z ON t.pickup_zone = z.zone_id GROUP BY z.borough ORDER BY COUNT(*) DESC, z.borough LIMIT 1",

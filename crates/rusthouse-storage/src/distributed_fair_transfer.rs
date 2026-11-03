@@ -109,10 +109,7 @@ pub fn replay_verified_transfer_slices(
 ) -> Result<Vec<ShardProgress>, &'static str> {
     use std::collections::HashMap;
 
-    if progress.is_empty()
-        || progress.len() > MAX_SHARDS
-        || verified_slices.len() > MAX_SHARDS
-    {
+    if progress.is_empty() || progress.len() > MAX_SHARDS || verified_slices.len() > MAX_SHARDS {
         return Err("invalid verified transfer replay limits");
     }
     let mut by_name = HashMap::with_capacity(progress.len());
@@ -156,20 +153,41 @@ mod tests {
 
     #[test]
     fn long_shard_does_not_starve_short_shards() {
-        let jobs = [job("large", 0, 100), job("small", 0, 2), job("middle", 0, 5)];
+        let jobs = [
+            job("large", 0, 100),
+            job("small", 0, 2),
+            job("middle", 0, 5),
+        ];
         let batch = plan_fair_transfers(&jobs, 0, 3, 10, 10).unwrap();
         assert_eq!(
             batch.slices,
             vec![
-                TransferSlice { shard: "large".into(), offset: 0, length: 3 },
-                TransferSlice { shard: "small".into(), offset: 0, length: 2 },
-                TransferSlice { shard: "middle".into(), offset: 0, length: 3 },
-                TransferSlice { shard: "large".into(), offset: 3, length: 2 },
+                TransferSlice {
+                    shard: "large".into(),
+                    offset: 0,
+                    length: 3
+                },
+                TransferSlice {
+                    shard: "small".into(),
+                    offset: 0,
+                    length: 2
+                },
+                TransferSlice {
+                    shard: "middle".into(),
+                    offset: 0,
+                    length: 3
+                },
+                TransferSlice {
+                    shard: "large".into(),
+                    offset: 3,
+                    length: 2
+                },
             ]
         );
         assert_eq!(batch.next_cursor, 1);
         assert_eq!(jobs[0].completed, 0);
-        let followup = plan_fair_transfers(&batch.next_progress, batch.next_cursor, 3, 3, 10).unwrap();
+        let followup =
+            plan_fair_transfers(&batch.next_progress, batch.next_cursor, 3, 3, 10).unwrap();
         assert_eq!(followup.slices[0].shard, "middle");
         assert_eq!(followup.slices[0].offset, 3);
     }
@@ -198,7 +216,16 @@ mod tests {
                 assert_eq!(slice.offset, end);
                 end += slice.length;
             }
-            assert_eq!(end, if shard == "a" { 17 } else if shard == "b" { 3 } else { 21 });
+            assert_eq!(
+                end,
+                if shard == "a" {
+                    17
+                } else if shard == "b" {
+                    3
+                } else {
+                    21
+                }
+            );
         }
     }
 
@@ -248,7 +275,6 @@ mod tests {
     }
 }
 
-
 /// Durable state for weighted deficit-round-robin byte scheduling.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct WeightedShardProgress {
@@ -269,7 +295,7 @@ pub struct WeightedTransferBatch {
 
 /// Schedule proportional replica bandwidth without starving small shards.
 ///
-/// Every visited shard receives `quantum * weight` credits before transferring.
+/// Each new shard turn receives `quantum * weight` credits before transferring.
 /// Remaining credits survive a partial batch; only persist the returned state
 /// after the corresponding bytes have been verified. No input is modified.
 pub fn plan_weighted_transfers(
@@ -315,7 +341,11 @@ pub fn plan_weighted_transfers(
         };
         let item = &mut next_progress[index];
         let credit = quantum * u64::from(item.weight);
-        item.deficit = item.deficit.saturating_add(credit).min(MAX_CREDIT);
+        // A replayable slice can be smaller than a weighted turn. Do not
+        // grant a second credit while continuing the same turn.
+        if item.deficit < MAX_QUANTUM {
+            item.deficit = item.deficit.saturating_add(credit).min(MAX_CREDIT);
+        }
         let length = item
             .deficit
             .min(item.total - item.completed)
@@ -429,9 +459,7 @@ mod weighted_replay_slice_bounds_tests {
             weight: 64,
             deficit: 0,
         }];
-        let plan = plan_weighted_transfers(
-            &source, 0, MAX_QUANTUM, MAX_QUANTUM * 2, 2,
-        ).unwrap();
+        let plan = plan_weighted_transfers(&source, 0, MAX_QUANTUM, MAX_QUANTUM * 2, 2).unwrap();
         assert_eq!(plan.slices.len(), 2);
         assert!(plan.slices.iter().all(|slice| slice.length <= MAX_QUANTUM));
         let checkpoint = [ShardProgress {
@@ -441,6 +469,36 @@ mod weighted_replay_slice_bounds_tests {
         }];
         let replayed = replay_verified_transfer_slices(&checkpoint, &plan.slices).unwrap();
         assert_eq!(replayed[0].completed, plan.next_progress[0].completed);
+    }
+
+    #[test]
+    fn split_weighted_turn_resumes_without_granting_extra_credit() {
+        let mut progress = vec![
+            WeightedShardProgress {
+                shard: "fast".into(),
+                completed: 0,
+                total: MAX_QUANTUM * 100,
+                weight: 64,
+                deficit: 0,
+            },
+            WeightedShardProgress {
+                shard: "slow".into(),
+                completed: 0,
+                total: MAX_QUANTUM * 100,
+                weight: 1,
+                deficit: 0,
+            },
+        ];
+        let mut cursor = 0;
+        for _ in 0..65 {
+            let batch =
+                plan_weighted_transfers(&progress, cursor, MAX_QUANTUM, MAX_QUANTUM, 1).unwrap();
+            assert_eq!(batch.slices.len(), 1);
+            progress = batch.next_progress;
+            cursor = batch.next_cursor;
+        }
+        assert_eq!(progress[0].completed, 64 * MAX_QUANTUM);
+        assert_eq!(progress[1].completed, MAX_QUANTUM);
     }
 
     #[test]
@@ -461,16 +519,25 @@ mod weighted_replay_slice_bounds_tests {
                 deficit: 0,
             },
         ];
-        let batch = plan_weighted_transfers(
-            &source, 0, MAX_QUANTUM, MAX_QUANTUM * 65, 65,
-        ).unwrap();
+        let batch = plan_weighted_transfers(&source, 0, MAX_QUANTUM, MAX_QUANTUM * 65, 65).unwrap();
         assert_eq!(batch.slices.len(), 65);
-        assert_eq!(batch.slices.iter().filter(|s| s.shard == "fast").count(), 64);
+        assert_eq!(
+            batch.slices.iter().filter(|s| s.shard == "fast").count(),
+            64
+        );
         assert_eq!(batch.slices.iter().filter(|s| s.shard == "slow").count(), 1);
         assert!(batch.slices.iter().all(|slice| slice.length <= MAX_QUANTUM));
         let checkpoint = [
-            ShardProgress { shard: "fast".into(), completed: 0, total: MAX_QUANTUM * 100 },
-            ShardProgress { shard: "slow".into(), completed: 0, total: MAX_QUANTUM * 100 },
+            ShardProgress {
+                shard: "fast".into(),
+                completed: 0,
+                total: MAX_QUANTUM * 100,
+            },
+            ShardProgress {
+                shard: "slow".into(),
+                completed: 0,
+                total: MAX_QUANTUM * 100,
+            },
         ];
         let replayed = replay_verified_transfer_slices(&checkpoint, &batch.slices).unwrap();
         for (replayed, planned) in replayed.iter().zip(&batch.next_progress) {

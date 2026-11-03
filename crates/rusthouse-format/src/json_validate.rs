@@ -66,7 +66,10 @@ impl Parser<'_> {
                         } else if (0xDC00..=0xDFFF).contains(&first) {
                             return Err(invalid());
                         }
-                    } else if !matches!(escape, b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't') {
+                    } else if !matches!(
+                        escape,
+                        b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't'
+                    ) {
                         return Err(invalid());
                     }
                 }
@@ -118,18 +121,16 @@ impl Parser<'_> {
 
     fn digits(&mut self) -> usize {
         let start = self.offset;
-        while self
-            .input
-            .get(self.offset)
-            .is_some_and(u8::is_ascii_digit)
-        {
+        while self.input.get(self.offset).is_some_and(u8::is_ascii_digit) {
             self.offset += 1;
         }
         self.offset - start
     }
 
     fn keyword(&mut self, literal: &[u8]) -> io::Result<()> {
-        if self.input.get(self.offset..self.offset.saturating_add(literal.len()))
+        if self
+            .input
+            .get(self.offset..self.offset.saturating_add(literal.len()))
             != Some(literal)
         {
             return Err(invalid());
@@ -205,7 +206,10 @@ pub(crate) fn validate_json_value(row: &[u8]) -> io::Result<()> {
     if std::str::from_utf8(row).is_err() {
         return Err(invalid());
     }
-    let mut parser = Parser { input: row, offset: 0 };
+    let mut parser = Parser {
+        input: row,
+        offset: 0,
+    };
     parser.value(0)?;
     parser.whitespace();
     if parser.offset != row.len() {
@@ -277,7 +281,10 @@ mod tests {
             br#"{"x":1}{"y":2}"#.as_slice(),
             br#"{"x":[,]}"#.as_slice(),
         ] {
-            assert_eq!(validate_json_object(row).unwrap_err().kind(), io::ErrorKind::InvalidData);
+            assert_eq!(
+                validate_json_object(row).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
         }
     }
 
@@ -315,7 +322,10 @@ mod surrogate_pair_tests {
             br#"{"x":"\uD800\uD800"}"#.as_slice(),
             br#"{"x":"\uD800\u"}"#.as_slice(),
         ] {
-            assert_eq!(validate_json_object(row).unwrap_err().kind(), io::ErrorKind::InvalidData);
+            assert_eq!(
+                validate_json_object(row).unwrap_err().kind(),
+                io::ErrorKind::InvalidData
+            );
         }
     }
 }

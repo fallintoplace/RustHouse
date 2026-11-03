@@ -59,8 +59,7 @@ fn add_group(
             let variable = group_value_bytes(value);
             *bytes = bytes
                 .checked_add(
-                    std::mem::size_of::<(typed::Key, typed::Cell, u64)>()
-                        .saturating_add(variable),
+                    std::mem::size_of::<(typed::Key, typed::Cell, u64)>().saturating_add(variable),
                 )
                 .ok_or_else(|| invalid("JOIN group memory overflow"))?;
             if *bytes > MAX_JOIN_GROUP_BYTES {
@@ -118,8 +117,11 @@ where
         .iter()
         .map(|column| retained.binary_search(column).expect("JOIN key retained"))
         .collect::<Vec<_>>();
-    let group_batch = (group_index < width)
-        .then(|| retained.binary_search(&group_index).expect("group key retained"));
+    let group_batch = (group_index < width).then(|| {
+        retained
+            .binary_search(&group_index)
+            .expect("group key retained")
+    });
     let filter_batch = null_filter.and_then(|(column, _)| {
         (column < width).then(|| retained.binary_search(&column).expect("filter retained"))
     });
@@ -200,25 +202,41 @@ fn execute_multi<W: Write>(
     null_filter: Option<(usize, bool)>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    let columns = query.grouped_count.as_ref().ok_or_else(|| invalid("JOIN group keys missing"))?;
+    let columns = query
+        .grouped_count
+        .as_ref()
+        .ok_or_else(|| invalid("JOIN group keys missing"))?;
     if columns.len() < 2 || query.kind != JoinType::Inner || query.where_comparison.is_some() {
-        return Err(invalid("multi-key grouped JOIN requires a two-table INNER JOIN without comparison WHERE"));
+        return Err(invalid(
+            "multi-key grouped JOIN requires a two-table INNER JOIN without comparison WHERE",
+        ));
     }
     let width = left_names.len();
     let left_meta = inspect_query_source(left_path)?;
     let right_meta = inspect_query_source(right_path)?;
-    let indices = columns.iter()
+    let indices = columns
+        .iter()
         .map(|column| resolve(query, column, left_names, right_names))
         .collect::<Result<Vec<_>, _>>()?;
-    let data_types = indices.iter().map(|&index| {
-        if index < width {
-            left_meta.columns[index].data_type.as_str()
-        } else {
-            right_meta.columns[index - width].data_type.as_str()
-        }
-    }).collect::<Vec<_>>();
-    let names = columns.iter().map(|column| format!("{}.{}", column.relation, column.name)).collect::<Vec<_>>();
-    let selected = indices.iter().zip(&names).map(|(&index, name)| (index, name.clone(), None)).collect::<Vec<_>>();
+    let data_types = indices
+        .iter()
+        .map(|&index| {
+            if index < width {
+                left_meta.columns[index].data_type.as_str()
+            } else {
+                right_meta.columns[index - width].data_type.as_str()
+            }
+        })
+        .collect::<Vec<_>>();
+    let names = columns
+        .iter()
+        .map(|column| format!("{}.{}", column.relation, column.name))
+        .collect::<Vec<_>>();
+    let selected = indices
+        .iter()
+        .zip(&names)
+        .map(|(&index, name)| (index, name.clone(), None))
+        .collect::<Vec<_>>();
     let keep = retained_build_columns(right_names, right_keys, &selected, null_filter, width);
     let right_rows = read_projected_build_rows(
         right_path,
@@ -229,7 +247,11 @@ fn execute_multi<W: Write>(
         MAX_STREAM_BUILD_BYTES,
     )?;
     let hash = build_grouped_join_hash(&right_rows, right_keys, query.any);
-    let left_columns = indices.iter().filter(|&&index| index < width).copied().collect::<Vec<_>>();
+    let left_columns = indices
+        .iter()
+        .filter(|&&index| index < width)
+        .copied()
+        .collect::<Vec<_>>();
     let mut groups: HashMap<Vec<typed::Key>, (Vec<typed::Cell>, u64)> = HashMap::new();
     let mut probe_key = Vec::with_capacity(indices.len());
     let mut retained = 0usize;
@@ -260,7 +282,9 @@ fn execute_multi<W: Write>(
                     probe_key.push(value.key());
                 }
                 if let Some(group) = groups.get_mut(probe_key.as_slice()) {
-                    group.1 = group.1.checked_add(1)
+                    group.1 = group
+                        .1
+                        .checked_add(1)
                         .ok_or_else(|| invalid("grouped JOIN count overflow"))?;
                 } else {
                     if groups.len() >= MAX_JOIN_GROUPS {
@@ -275,12 +299,16 @@ fn execute_multi<W: Write>(
                         used.checked_add(group_value_bytes(value))
                             .ok_or_else(|| invalid("JOIN group key size overflow"))
                     })?;
-                    retained = retained.checked_add(
-                        std::mem::size_of::<(Vec<typed::Key>, Vec<typed::Cell>, u64)>()
-                            .saturating_add(indices.len().saturating_mul(
-                                std::mem::size_of::<typed::Key>() + std::mem::size_of::<typed::Cell>()
-                            )).saturating_add(variable)
-                    ).ok_or_else(|| invalid("JOIN group memory overflow"))?;
+                    retained = retained
+                        .checked_add(
+                            std::mem::size_of::<(Vec<typed::Key>, Vec<typed::Cell>, u64)>()
+                                .saturating_add(indices.len().saturating_mul(
+                                    std::mem::size_of::<typed::Key>()
+                                        + std::mem::size_of::<typed::Cell>(),
+                                ))
+                                .saturating_add(variable),
+                        )
+                        .ok_or_else(|| invalid("JOIN group memory overflow"))?;
                     if retained > MAX_JOIN_GROUP_BYTES {
                         return Err(invalid("JOIN grouped hash memory budget exceeded"));
                     }
@@ -302,25 +330,33 @@ fn execute_multi<W: Write>(
     }
 
     let ordering = if query.order_by.is_empty() {
-        (0..indices.len()).map(|index| (Some(index), false, Some(false))).collect::<Vec<_>>()
+        (0..indices.len())
+            .map(|index| (Some(index), false, Some(false)))
+            .collect::<Vec<_>>()
     } else {
-        query.order_by.iter().map(|(column, descending, nulls)| {
-            let index = if column.is_count_order() {
-                None
-            } else {
-                Some(columns.iter().position(|key| key == column)
-                    .ok_or_else(|| invalid("JOIN ORDER BY must use a group key"))?)
-            };
-            Ok((index, *descending, *nulls))
-        }).collect::<Result<Vec<_>, ExecutionError>>()?
+        query
+            .order_by
+            .iter()
+            .map(|(column, descending, nulls)| {
+                let index = if column.is_count_order() {
+                    None
+                } else {
+                    Some(
+                        columns
+                            .iter()
+                            .position(|key| key == column)
+                            .ok_or_else(|| invalid("JOIN ORDER BY must use a group key"))?,
+                    )
+                };
+                Ok((index, *descending, *nulls))
+            })
+            .collect::<Result<Vec<_>, ExecutionError>>()?
     };
     let mut rows = groups.into_values().collect::<Vec<_>>();
     let compare = |left: &(Vec<typed::Cell>, u64), right: &(Vec<typed::Cell>, u64)| {
         for &(index, descending, nulls_first) in &ordering {
             let order = if let Some(index) = index {
-                typed::compare_order_cells(
-                    &left.0[index], &right.0[index], descending, nulls_first,
-                )
+                typed::compare_order_cells(&left.0[index], &right.0[index], descending, nulls_first)
             } else {
                 let value = left.1.cmp(&right.1);
                 if descending { value.reverse() } else { value }
@@ -335,14 +371,18 @@ fn execute_multi<W: Write>(
         .limit
         .and_then(|limit| query.offset.checked_add(limit))
         .filter(|&end| end < rows.len())
-        .map(|end| super::super::sorted_group_positions(&rows, end, &compare));
+        .map(|end| super::super::sorted_group_positions(&rows, end, compare));
     for (index, name) in names.iter().enumerate() {
         if index != 0 {
             output.write_all(b"\t")?;
         }
         output.write_all(name.as_bytes())?;
     }
-    writeln!(output, "\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+    writeln!(
+        output,
+        "\t{}",
+        query.aggregate_alias.as_deref().unwrap_or("count")
+    )?;
     let mut write_group = |values: &[typed::Cell], count: u64| -> Result<(), ExecutionError> {
         for (index, value) in values.iter().enumerate() {
             if index != 0 {
@@ -388,15 +428,29 @@ pub(super) fn execute<W: Write>(
         .as_ref()
         .ok_or_else(|| invalid("JOIN group key missing"))?;
     if keys.len() > 1 {
-        return execute_multi(query, left_path, right_path, left_names, right_names, left_keys, right_keys, null_filter, output);
+        return execute_multi(
+            query,
+            left_path,
+            right_path,
+            left_names,
+            right_names,
+            left_keys,
+            right_keys,
+            null_filter,
+            output,
+        );
     }
     let key_column = &keys[0];
     let width = left_names.len();
     let index = resolve(query, key_column, left_names, right_names)?;
     let group_type = if index < width {
-        inspect_query_source(left_path)?.columns[index].data_type.clone()
+        inspect_query_source(left_path)?.columns[index]
+            .data_type
+            .clone()
     } else {
-        inspect_query_source(right_path)?.columns[index - width].data_type.clone()
+        inspect_query_source(right_path)?.columns[index - width]
+            .data_type
+            .clone()
     };
     let group_name = format!("{}.{}", key_column.relation, key_column.name);
     let comparison_filter = query
@@ -405,7 +459,9 @@ pub(super) fn execute<W: Write>(
         .map(|(column, operator, text)| {
             let index = resolve(query, column, left_names, right_names)?;
             if index >= width {
-                return Err(invalid("grouped JOIN comparison filter must reference the fact table"));
+                return Err(invalid(
+                    "grouped JOIN comparison filter must reference the fact table",
+                ));
             }
             let metadata = inspect_query_source(left_path)?;
             let literal = typed::parse_literal(&metadata.columns[index].data_type, text)?;
@@ -413,7 +469,11 @@ pub(super) fn execute<W: Write>(
         })
         .transpose()?;
     if query.limit == Some(0) {
-        writeln!(output, "{group_name}\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+        writeln!(
+            output,
+            "{group_name}\t{}",
+            query.aggregate_alias.as_deref().unwrap_or("count")
+        )?;
         return Ok(());
     }
     let selected = [(index, group_name.clone(), None)];
@@ -441,7 +501,9 @@ pub(super) fn execute<W: Write>(
             &hash,
             index,
             null_filter,
-            comparison_filter.as_ref().map(|(column, operator, literal)| (*column, *operator, literal)),
+            comparison_filter
+                .as_ref()
+                .map(|(column, operator, literal)| (*column, *operator, literal)),
             query.kind == JoinType::Left,
             query.any,
             |value| add_group(&mut groups, value, &mut group_count, &mut bytes),
@@ -494,8 +556,12 @@ pub(super) fn execute<W: Write>(
         .limit
         .and_then(|limit| query.offset.checked_add(limit))
         .filter(|&end| end < rows.len())
-        .map(|end| super::super::sorted_group_positions(&rows, end, &compare));
-    writeln!(output, "{group_name}\t{}", query.aggregate_alias.as_deref().unwrap_or("count"))?;
+        .map(|end| super::super::sorted_group_positions(&rows, end, compare));
+    writeln!(
+        output,
+        "{group_name}\t{}",
+        query.aggregate_alias.as_deref().unwrap_or("count")
+    )?;
     if let Some(indices) = bounded {
         for index in indices.into_iter().skip(query.offset) {
             let (group, count) = &rows[index];
@@ -572,7 +638,7 @@ mod bounded_grouped_join_page_tests {
             baseline.sort_by(|&a, &b| compare(&rows[a], &rows[b]));
             for end in 1..rows.len() {
                 assert_eq!(
-                    super::super::super::sorted_group_positions(&rows, end, &compare),
+                    super::super::super::sorted_group_positions(&rows, end, compare),
                     baseline[..end],
                 );
             }

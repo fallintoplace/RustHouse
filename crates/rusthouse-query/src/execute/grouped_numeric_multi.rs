@@ -1,6 +1,6 @@
 //! Multiple grouped numeric aggregates over one typed scan.
-use super::typed::{self, Cell};
 use super::grouped_filter::bind_grouped_filters;
+use super::typed::{self, Cell};
 use super::{AggregateState, ExecutionError, Number};
 use crate::{AggregateFunction, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
@@ -96,7 +96,10 @@ fn reserve_group(
 enum GroupSlots {
     // Each nullable numeric domain adds exactly one extra NULL key.
     Byte(Box<[usize; 257]>),
-    WideSparse { map: HashMap<usize, usize>, probes: usize },
+    WideSparse {
+        map: HashMap<usize, usize>,
+        probes: usize,
+    },
     WideDense(Vec<usize>),
 }
 
@@ -104,7 +107,10 @@ impl GroupSlots {
     fn for_type(kind: &str) -> Option<Self> {
         match typed::base_type(kind) {
             "UInt8" | "Int8" => Some(Self::Byte(Box::new([usize::MAX; 257]))),
-            "UInt16" | "Int16" => Some(Self::WideSparse { map: HashMap::new(), probes: 0 }),
+            "UInt16" | "Int16" => Some(Self::WideSparse {
+                map: HashMap::new(),
+                probes: 0,
+            }),
             _ => None,
         }
     }
@@ -156,16 +162,26 @@ fn numeric_group_slot(column: &TypedColumn, row: usize) -> Option<usize> {
         _ => return None,
     };
     match values {
-        NumericColumn::UInt8(values) => Some(if is_null { 256 } else { usize::from(values[row]) }),
-        NumericColumn::Int8(values) => {
-            Some(if is_null { 256 } else { usize::from(values[row] as u8) })
-        }
-        NumericColumn::UInt16(values) => {
-            Some(if is_null { 65_536 } else { usize::from(values[row]) })
-        }
-        NumericColumn::Int16(values) => {
-            Some(if is_null { 65_536 } else { usize::from(values[row] as u16) })
-        }
+        NumericColumn::UInt8(values) => Some(if is_null {
+            256
+        } else {
+            usize::from(values[row])
+        }),
+        NumericColumn::Int8(values) => Some(if is_null {
+            256
+        } else {
+            usize::from(values[row] as u8)
+        }),
+        NumericColumn::UInt16(values) => Some(if is_null {
+            65_536
+        } else {
+            usize::from(values[row])
+        }),
+        NumericColumn::Int16(values) => Some(if is_null {
+            65_536
+        } else {
+            usize::from(values[row] as u16)
+        }),
         _ => None,
     }
 }
@@ -248,7 +264,12 @@ pub(super) fn execute<W: Write>(
             write!(output, "\t{alias}")?;
         } else {
             if let Some(filter) = filters.get(index).and_then(Option::as_ref) {
-                write!(output, "\t{}If({value_column}, {})", function.name(), filter.label())?;
+                write!(
+                    output,
+                    "\t{}If({value_column}, {})",
+                    function.name(),
+                    filter.label()
+                )?;
             } else {
                 write!(output, "\t{}({value_column})", function.name())?;
             }
@@ -385,7 +406,10 @@ pub(super) fn execute<W: Write>(
                         // CASE ... ELSE 0 contributes a zero for unmatched rows.
                         // Plain SUMIF and CASE without ELSE still skip the row.
                         if *function != AggregateFunction::Count
-                            && matches!(filters.get(metric), Some(Some(crate::GroupedFilter::CaseElseZero { .. })))
+                            && matches!(
+                                filters.get(metric),
+                                Some(Some(crate::GroupedFilter::CaseElseZero { .. }))
+                            )
                         {
                             if *function == AggregateFunction::Sum {
                                 state.update_sum(Number::Unsigned(0))?;
@@ -740,10 +764,18 @@ mod nullable_numeric_group_slots_tests {
             values: NumericColumn::UInt16(vec![0, 65_535, 0]),
             nulls: vec![0, 0, 1],
         };
-        assert_eq!((0..4).map(|i| numeric_group_slot(&bytes, i)).collect::<Vec<_>>(),
-            vec![Some(255), Some(0), Some(127), Some(256)]);
-        assert_eq!((0..3).map(|i| numeric_group_slot(&shorts, i)).collect::<Vec<_>>(),
-            vec![Some(0), Some(65_535), Some(65_536)]);
+        assert_eq!(
+            (0..4)
+                .map(|i| numeric_group_slot(&bytes, i))
+                .collect::<Vec<_>>(),
+            vec![Some(255), Some(0), Some(127), Some(256)]
+        );
+        assert_eq!(
+            (0..3)
+                .map(|i| numeric_group_slot(&shorts, i))
+                .collect::<Vec<_>>(),
+            vec![Some(0), Some(65_535), Some(65_536)]
+        );
     }
 
     #[test]
@@ -789,10 +821,13 @@ mod native_conditional_filter_tests {
                 assert_eq!(filter_enabled(column, row).unwrap(), enabled);
             }
         }
-        assert!(filter_enabled(
-            &TypedColumn::Numeric(NumericColumn::UInt128(vec![u128::MAX])),
-            0
-        ).unwrap());
+        assert!(
+            filter_enabled(
+                &TypedColumn::Numeric(NumericColumn::UInt128(vec![u128::MAX])),
+                0
+            )
+            .unwrap()
+        );
     }
 }
 

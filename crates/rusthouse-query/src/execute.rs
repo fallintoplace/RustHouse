@@ -55,10 +55,10 @@ use std::path::Path;
 use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
 
 mod grouped_distinct;
+mod grouped_filter;
 mod grouped_generated;
 mod grouped_multi;
 mod grouped_multi_distinct;
-mod grouped_filter;
 mod grouped_numeric_keys;
 mod grouped_numeric_multi;
 mod join;
@@ -157,16 +157,17 @@ fn parallel_ordered_numeric_topk(
                         let mut top = SortedRows::with_offset(
                             query.limit,
                             query.offset.unwrap_or(0),
-                            query.order_by.as_ref().is_some_and(|order| order.descending),
+                            query
+                                .order_by
+                                .as_ref()
+                                .is_some_and(|order| order.descending),
                         )?;
                         top.set_extra_directions(
                             query.order_by_extra.iter().map(|order| order.descending),
                         );
                         for path in paths {
-                            let mut reader = rusthouse_storage::NumericPartReader::open(
-                                path,
-                                scan_columns,
-                            )?;
+                            let mut reader =
+                                rusthouse_storage::NumericPartReader::open(path, scan_columns)?;
                             while let Some(batch) = reader.next_batch()? {
                                 for row in 0..batch[0].len() {
                                     if !no_filters && !batch_matches(&batch, row, comparisons) {
@@ -205,9 +206,9 @@ fn parallel_ordered_numeric_topk(
         handles
             .into_iter()
             .map(|handle| {
-                handle.join().map_err(|_| {
-                    ExecutionError::Invalid("parallel Top-K worker panicked".into())
-                })?
+                handle
+                    .join()
+                    .map_err(|_| ExecutionError::Invalid("parallel Top-K worker panicked".into()))?
             })
             .collect::<Result<Vec<_>, _>>()
     })?;
@@ -1211,21 +1212,25 @@ fn execute_into<W: Write>(
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
     })?;
-    let has_column_comparison = query.predicates.iter()
+    let has_column_comparison = query
+        .predicates
+        .iter()
         .chain(query.or_predicates.iter().flatten())
         .any(|predicate| matches!(predicate, Predicate::ColumnComparison { .. }));
-    if has_column_comparison && matches!(
-        query.projection,
-        Projection::Histogram { .. }
-            | Projection::GroupedDistinctCount { .. }
-            | Projection::GroupedMultiDistinctCount { .. }
-            | Projection::GroupedMultiCount { .. }
-            | Projection::GroupedAggregates { .. }
-            | Projection::GroupedMultiAggregates { .. }
-            | Projection::StringLength { .. }
-    ) {
+    if has_column_comparison
+        && matches!(
+            query.projection,
+            Projection::Histogram { .. }
+                | Projection::GroupedDistinctCount { .. }
+                | Projection::GroupedMultiDistinctCount { .. }
+                | Projection::GroupedMultiCount { .. }
+                | Projection::GroupedAggregates { .. }
+                | Projection::GroupedMultiAggregates { .. }
+                | Projection::StringLength { .. }
+        )
+    {
         return Err(ExecutionError::Invalid(
-            "column-to-column filters are not yet supported by this aggregate plan".into()
+            "column-to-column filters are not yet supported by this aggregate plan".into(),
         ));
     }
     if matches!(query.projection, Projection::Histogram { .. }) {
@@ -1238,12 +1243,20 @@ fn execute_into<W: Write>(
     ) {
         return typed::execute_typed(query, part, output);
     }
-    if let Some(count) = if has_column_comparison { None } else { parallel_filtered_count(query, part)? } {
+    if let Some(count) = if has_column_comparison {
+        None
+    } else {
+        parallel_filtered_count(query, part)?
+    } {
         write_header(query, output, "count")?;
         writeln!(output, "{count}")?;
         return Ok(());
     }
-    if let Some(extremum) = if has_column_comparison { None } else { parallel_integer_minmax(query, part)? } {
+    if let Some(extremum) = if has_column_comparison {
+        None
+    } else {
+        parallel_integer_minmax(query, part)?
+    } {
         let Projection::Aggregate { function, column } = &query.projection else {
             unreachable!("parallel_integer_minmax accepts only aggregate projections");
         };
@@ -1255,7 +1268,11 @@ fn execute_into<W: Write>(
         }
         return Ok(());
     }
-    if let Some(sum) = if has_column_comparison { None } else { parallel_integer_sum(query, part)? } {
+    if let Some(sum) = if has_column_comparison {
+        None
+    } else {
+        parallel_integer_sum(query, part)?
+    } {
         let Projection::Aggregate { column, .. } = &query.projection else {
             unreachable!("parallel_integer_sum only accepts SUM projections");
         };
@@ -1869,11 +1886,11 @@ fn execute_numbers<W: Write>(
                     step,
                 )
                 .is_some());
-        if !(scalar_count && simple_result && arithmetic_count)
-            && !bounded_page
-            && !grouped_page
-            && !direct_aggregate
-            && !bounded_multi_aggregate
+        if !(bounded_page
+            || grouped_page
+            || direct_aggregate
+            || bounded_multi_aggregate
+            || (scalar_count && simple_result && arithmetic_count))
         {
             return Err(ExecutionError::Invalid(
                 "virtual inputs over 10000000 rows require an exact aggregate or bounded page query".into(),
@@ -2266,8 +2283,7 @@ fn checked_aggregate_sum(left: Number, right: Number) -> Result<Number, Executio
             .map(Number::Signed)
             .ok_or_else(|| ExecutionError::Invalid("signed SUM overflow".into())),
         (Number::Float(a), Number::Float(b)) => Ok(Number::Float(a + b)),
-        (Number::Unsigned(a), Number::Signed(b))
-        | (Number::Signed(b), Number::Unsigned(a)) => {
+        (Number::Unsigned(a), Number::Signed(b)) | (Number::Signed(b), Number::Unsigned(a)) => {
             if b >= 0 {
                 return a
                     .checked_add(b as u128)
@@ -3055,7 +3071,11 @@ mod grouped_sum_specialization_tests {
     #[test]
     fn direct_sum_matches_general_sum_for_all_numeric_variants() {
         for values in [
-            vec![Number::Unsigned(1), Number::Unsigned(100), Number::Unsigned(u64::MAX as u128)],
+            vec![
+                Number::Unsigned(1),
+                Number::Unsigned(100),
+                Number::Unsigned(u64::MAX as u128),
+            ],
             vec![Number::Signed(-5), Number::Signed(7), Number::Signed(-2)],
             vec![Number::Float(1.5), Number::Float(-2.0), Number::Float(3.25)],
         ] {
@@ -3076,11 +3096,15 @@ mod grouped_sum_specialization_tests {
         sum.update_sum(Number::Unsigned(u128::MAX)).unwrap();
         assert!(sum.update_sum(Number::Unsigned(1)).is_err());
         assert_eq!(sum.count, 1);
-        assert_eq!(sum.value.map(|value| value.to_string()).unwrap(), u128::MAX.to_string());
+        assert_eq!(
+            sum.value.map(|value| value.to_string()).unwrap(),
+            u128::MAX.to_string()
+        );
 
         let mut mixed = AggregateState::new(AggregateFunction::Sum);
         mixed.update_sum(Number::Signed(1)).unwrap();
-        assert!(mixed.update_sum(Number::Unsigned(1)).is_err());
-        assert_eq!(mixed.count, 1);
+        mixed.update_sum(Number::Unsigned(1)).unwrap();
+        assert_eq!(mixed.count, 2);
+        assert_eq!(mixed.render(), "2");
     }
 }

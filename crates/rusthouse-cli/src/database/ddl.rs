@@ -220,4 +220,3 @@ pub(crate) fn apply_ddl(database: &Path, ddl: &Ddl) -> Result<(), String> {
         _ => Err("database mode does not support ALTER yet".into()),
     }
 }
-

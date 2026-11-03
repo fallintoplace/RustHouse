@@ -53,7 +53,10 @@ impl ScalarExpr {
         seen: &mut Option<HashSet<String>>,
     ) {
         match self {
-            Self::Column(name) | Self::TextLength(name) | Self::TextCompare { column: name, .. } | Self::TextLike { column: name, .. } => {
+            Self::Column(name)
+            | Self::TextLength(name)
+            | Self::TextCompare { column: name, .. }
+            | Self::TextLike { column: name, .. } => {
                 if let Some(index) = seen.as_mut() {
                     if index.insert(name.clone()) {
                         out.push(name.clone());
@@ -186,10 +189,14 @@ fn parse_comparison_tokens_at_depth(
     let ilike = !like && parser.keyword("ILIKE");
     if like || ilike {
         let ScalarExpr::Column(column) = left else {
-            return Err(ParseError("LIKE in scalar expressions requires a String column".into()));
+            return Err(ParseError(
+                "LIKE in scalar expressions requires a String column".into(),
+            ));
         };
         let Some(Token::String(pattern)) = parser.tokens.get(parser.index) else {
-            return Err(ParseError("LIKE in scalar expressions requires a string literal".into()));
+            return Err(ParseError(
+                "LIKE in scalar expressions requires a string literal".into(),
+            ));
         };
         let pattern = pattern.clone();
         parser.index += 1;
@@ -218,7 +225,11 @@ fn parse_comparison_tokens_at_depth(
             };
             let value = value.clone();
             parser.index += 1;
-            return Ok(ScalarExpr::TextCompare { column, operator, value });
+            return Ok(ScalarExpr::TextCompare {
+                column,
+                operator,
+                value,
+            });
         }
         let right = parse_arithmetic_tokens(parser, depth)?;
         Ok(ScalarExpr::Compare(
@@ -237,7 +248,9 @@ fn parse_and_tokens_at_depth(parser: &mut Parser, depth: usize) -> Result<Scalar
     while parser.keyword("AND") {
         count += 1;
         if count > 128 {
-            return Err(ParseError("AND expression exceeds complexity budget".into()));
+            return Err(ParseError(
+                "AND expression exceeds complexity budget".into(),
+            ));
         }
         let right = parse_comparison_tokens_at_depth(parser, depth)?;
         result = ScalarExpr::And(Box::new(result), Box::new(right));

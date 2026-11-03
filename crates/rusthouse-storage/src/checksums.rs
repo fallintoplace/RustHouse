@@ -133,7 +133,8 @@ pub fn read_checksums(path: impl AsRef<Path>) -> Result<PartChecksums, PartError
             ),
         });
     }
-    let mut file = open_immutable_checksums(path).map_err(|source| checksums_io_error(path, source))?;
+    let mut file =
+        open_immutable_checksums(path).map_err(|source| checksums_io_error(path, source))?;
     let opened = file
         .metadata()
         .map_err(|source| checksums_io_error(path, source))?;
@@ -789,6 +790,12 @@ mod manifest_file_count_budget_tests {
         // check; the explicit object-count budget must reject first.
         content.resize(content.len() + (MAX_MANIFEST_FILES + 1) * 20, 0);
         let error = parse_checksums(&content, Path::new("checksums.txt")).unwrap_err();
-        assert!(matches!(error, PartError::InvalidChecksums { reason: "manifest file count exceeds limit", .. }));
+        assert!(matches!(
+            error,
+            PartError::InvalidChecksums {
+                reason: "manifest file count exceeds limit",
+                ..
+            }
+        ));
     }
 }

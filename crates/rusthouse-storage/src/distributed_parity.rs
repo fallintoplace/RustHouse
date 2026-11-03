@@ -16,7 +16,9 @@ fn valid_stripe_count(count: usize) -> bool {
 pub fn xor_parity_into(sources: &[&[u8]], destination: &mut [u8]) -> Result<(), &'static str> {
     if !valid_stripe_count(sources.len())
         || destination.len() > MAX_SHARD_BYTES
-        || sources.iter().any(|source| source.len() > destination.len())
+        || sources
+            .iter()
+            .any(|source| source.len() > destination.len())
     {
         return Err("invalid XOR parity stripe layout");
     }
@@ -125,7 +127,8 @@ mod tests {
                 .enumerate()
                 .map(|(index, &shard)| (index != missing).then_some(shard))
                 .collect::<Vec<_>>();
-            let recovered = recover_one_missing(&available, &parity, shards[missing].len()).unwrap();
+            let recovered =
+                recover_one_missing(&available, &parity, shards[missing].len()).unwrap();
             assert_eq!(recovered, shards[missing]);
         }
     }
@@ -145,12 +148,14 @@ mod tests {
     fn can_use_preallocated_buffer_and_zero_length_shards() {
         let shards: [&[u8]; 3] = [b"", b"", b""];
         assert_eq!(encode_xor_parity(&shards).unwrap(), Vec::<u8>::new());
-        assert_eq!(recover_one_missing(&[None, Some(b""), Some(b"")], &[], 0).unwrap(), b"");
+        assert_eq!(
+            recover_one_missing(&[None, Some(b""), Some(b"")], &[], 0).unwrap(),
+            b""
+        );
         let mut destination = [0xff; 4];
         xor_parity_into(&[b"test", b"test"], &mut destination).unwrap();
         assert_eq!(destination, [0; 4]);
     }
-
 
     #[test]
     fn complete_parity_verification_catches_corruption_without_recovery() {
@@ -179,7 +184,6 @@ mod tests {
         assert!(encode_xor_parity(&[&large, b""]).is_err());
     }
 }
-
 
 /// Two independent parity shards over GF(2^8), with primitive polynomial
 /// x^8 + x^4 + x^3 + x^2 + 1. These are not integrity signatures.
@@ -378,9 +382,7 @@ mod double_parity_tests {
                 let shards = originals
                     .iter()
                     .enumerate()
-                    .map(|(index, &part)| {
-                        (index != left && index != right).then_some(part)
-                    })
+                    .map(|(index, &part)| (index != left && index != right).then_some(part))
                     .collect::<Vec<_>>();
                 let recovery = recover_double_erasure(&shards, &lengths, &parity).unwrap();
                 assert_eq!(recovery[0], (left, originals[left].to_vec()));
@@ -395,36 +397,22 @@ mod double_parity_tests {
     fn catches_bad_layouts_padding_and_single_syndrome_corruption() {
         let originals: [&[u8]; 3] = [b"aa", b"bbb", b"c"];
         let parity = encode_double_parity(&originals).unwrap();
-        assert!(recover_double_erasure(
-            &[None, None, None],
-            &[2, 3, 1],
-            &parity
-        )
-        .is_err());
-        assert!(recover_double_erasure(
-            &[None, Some(b"bb"), Some(b"c")],
-            &[2, 3, 1],
-            &parity
-        )
-        .is_err());
+        assert!(recover_double_erasure(&[None, None, None], &[2, 3, 1], &parity).is_err());
+        assert!(
+            recover_double_erasure(&[None, Some(b"bb"), Some(b"c")], &[2, 3, 1], &parity).is_err()
+        );
         let mut altered = parity.clone();
         altered.weighted[0] ^= 1;
-        assert!(recover_double_erasure(
-            &[None, Some(b"bbb"), Some(b"c")],
-            &[2, 3, 1],
-            &altered
-        )
-        .is_err());
-        assert!(recover_double_erasure(
-            &[None, Some(b"bbb"), Some(b"c")],
-            &[1, 3, 1],
-            &parity
-        )
-        .is_err());
+        assert!(
+            recover_double_erasure(&[None, Some(b"bbb"), Some(b"c")], &[2, 3, 1], &altered)
+                .is_err()
+        );
+        assert!(
+            recover_double_erasure(&[None, Some(b"bbb"), Some(b"c")], &[1, 3, 1], &parity).is_err()
+        );
         assert!(encode_double_parity(&[b"only-one"]).is_err());
     }
 }
-
 
 /// Three parity equations for recovery of up to three erased data shards.
 /// A parity checksum alone is not a proof of authentic object contents.
@@ -565,8 +553,7 @@ pub fn recover_triple_erasure(
         for row in 0..count {
             for equation in 0..count {
                 let factor = matrix[row][count + equation];
-                products[row][equation] =
-                    std::array::from_fn(|byte| gf256_mul(factor, byte as u8));
+                products[row][equation] = std::array::from_fn(|byte| gf256_mul(factor, byte as u8));
             }
         }
         for (row, output) in recovered.iter_mut().enumerate() {
@@ -600,9 +587,8 @@ pub fn recover_triple_erasure(
             }
         } else {
             // The table amortizes eight GF256 shift/xor rounds per byte.
-            let products: [[u8; 256]; 3] = factors.map(|factor| {
-                std::array::from_fn(|byte| gf256_mul(factor, byte as u8))
-            });
+            let products: [[u8; 256]; 3] =
+                factors.map(|factor| std::array::from_fn(|byte| gf256_mul(factor, byte as u8)));
             for offset in 0..width {
                 let mut actual = 0u8;
                 for (value, table) in recovered.iter().zip(&products) {
@@ -651,25 +637,43 @@ mod triple_parity_tests {
                 expected[1] ^= gf256_mul(coefficient, byte);
                 expected[2] ^= gf256_mul(gf256_mul(coefficient, coefficient), byte);
             }
-            assert_eq!([encoded.xor[offset], encoded.weighted[offset], encoded.squared[offset]], expected);
+            assert_eq!(
+                [
+                    encoded.xor[offset],
+                    encoded.weighted[offset],
+                    encoded.squared[offset]
+                ],
+                expected
+            );
         }
         let lengths = sources.iter().map(Vec::len).collect::<Vec<_>>();
         let available = [None, Some(references[1]), None, Some(references[3])];
-        let decoded = recover_double_erasure(
-            &available,
-            &lengths,
-            &double,
-        ).unwrap();
-        assert_eq!(decoded, vec![(0, sources[0].clone()), (2, sources[2].clone())]);
+        let decoded = recover_double_erasure(&available, &lengths, &double).unwrap();
+        assert_eq!(
+            decoded,
+            vec![(0, sources[0].clone()), (2, sources[2].clone())]
+        );
         let triple_available = [None, Some(references[1]), None, None];
         let decoded = recover_triple_erasure(&triple_available, &lengths, &encoded).unwrap();
-        assert_eq!(decoded, vec![(0, sources[0].clone()), (2, sources[2].clone()), (3, sources[3].clone())]);
+        assert_eq!(
+            decoded,
+            vec![
+                (0, sources[0].clone()),
+                (2, sources[2].clone()),
+                (3, sources[3].clone())
+            ]
+        );
     }
 
     #[test]
     fn all_one_two_and_three_erasures_reconstruct_exact_bytes() {
         let originals: [&[u8]; 6] = [
-            b"short", b"", b"longer-payload", b"abc", b"binary\x00\xff", b"z"
+            b"short",
+            b"",
+            b"longer-payload",
+            b"abc",
+            b"binary\x00\xff",
+            b"z",
         ];
         let parity = encode_triple_parity(&originals).unwrap();
         let lengths = originals.iter().map(|part| part.len()).collect::<Vec<_>>();
@@ -706,9 +710,7 @@ mod triple_parity_tests {
             let damaged = slices
                 .iter()
                 .enumerate()
-                .map(|(index, &source)| {
-                    (!missing.contains(&index)).then_some(source)
-                })
+                .map(|(index, &source)| (!missing.contains(&index)).then_some(source))
                 .collect::<Vec<_>>();
             let recovered = recover_triple_erasure(&damaged, &lengths, &parity).unwrap();
             for (index, bytes) in recovered {
@@ -750,13 +752,20 @@ mod triple_parity_tests {
         let originals: [&[u8]; 4] = [b"one", b"two", b"longest", b""];
         let parity = encode_triple_parity(&originals).unwrap();
         let lengths = originals.iter().map(|part| part.len()).collect::<Vec<_>>();
-        let damaged = [None, Some(originals[1]), Some(originals[2]), Some(originals[3])];
+        let damaged = [
+            None,
+            Some(originals[1]),
+            Some(originals[2]),
+            Some(originals[3]),
+        ];
         let mut corrupt = parity.clone();
         corrupt.squared[0] ^= 1;
         assert!(recover_triple_erasure(&damaged, &lengths, &corrupt).is_err());
         assert!(recover_triple_erasure(&[None, None, None, None], &lengths, &parity).is_err());
         assert!(recover_triple_erasure(&damaged, &[3, 3, 7], &parity).is_err());
-        assert!(recover_triple_erasure(&[Some(b"x"), None, None, None], &lengths, &parity).is_err());
+        assert!(
+            recover_triple_erasure(&[Some(b"x"), None, None, None], &lengths, &parity).is_err()
+        );
         assert!(encode_triple_parity(&[b"only"]).is_err());
     }
 }

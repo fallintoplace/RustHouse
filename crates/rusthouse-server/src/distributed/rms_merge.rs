@@ -27,20 +27,25 @@ pub(super) fn merge_global_rms(
             return Err(MergeError::InvalidSum);
         }
         let count_text = std::str::from_utf8(raw_count).map_err(|_| MergeError::InvalidSum)?;
-        let count = count_text.parse::<u128>().map_err(|_| MergeError::InvalidSum)?;
+        let count = count_text
+            .parse::<u128>()
+            .map_err(|_| MergeError::InvalidSum)?;
         if count.to_string() != count_text || (count == 0) != (raw_rms == b"NULL") {
             return Err(MergeError::InvalidSum);
         }
         if count == 0 {
             continue;
         }
-        let value = std::str::from_utf8(raw_rms).map_err(|_| MergeError::InvalidSum)?
+        let value = std::str::from_utf8(raw_rms)
+            .map_err(|_| MergeError::InvalidSum)?
             .parse::<f64>()
             .map_err(|_| MergeError::InvalidSum)?;
         if !value.is_finite() || value < 0.0 {
             return Err(MergeError::InvalidSum);
         }
-        let next_count = total_count.checked_add(count).ok_or(MergeError::CountOverflow)?;
+        let next_count = total_count
+            .checked_add(count)
+            .ok_or(MergeError::CountOverflow)?;
         let previous_weight = (total_count as f64 / next_count as f64).sqrt();
         let incoming_weight = (count as f64 / next_count as f64).sqrt();
         root_mean_square = (root_mean_square * previous_weight).hypot(value * incoming_weight);
@@ -83,24 +88,22 @@ mod tests {
             (10, b"rms(x)\tcount(x)\nNULL\t0\n".to_vec()),
             (10, b"rms(x)\tcount(x)\n5\t2\n".to_vec()),
         ];
+        assert_eq!(merge_global_rms(&shards, "x").unwrap(), b"rms(x)\n5\n");
         assert_eq!(
-            merge_global_rms(&shards, "x").unwrap(),
-            b"rms(x)\n5\n"
-        );
-        assert_eq!(
-            merge_global_rms(
-                &[(10, b"rms(x)\tcount(x)\nNULL\t0\n".to_vec())], "x",
-            ).unwrap(),
+            merge_global_rms(&[(10, b"rms(x)\tcount(x)\nNULL\t0\n".to_vec())], "x",).unwrap(),
             b"rms(x)\nNULL\n"
         );
     }
 
     #[test]
     fn rejects_malformed_nan_and_negative_rms_states() {
-        for row in ["NaN\t2", "-1\t2", "inf\t2", "2\t0", "NULL\t1", "2\t01", "2\t1\t0"] {
+        for row in [
+            "NaN\t2", "-1\t2", "inf\t2", "2\t0", "NULL\t1", "2\t01", "2\t1\t0",
+        ] {
             assert_eq!(
                 merge_global_rms(
-                    &[(10, format!("rms(x)\tcount(x)\n{row}\n").into_bytes())], "x"
+                    &[(10, format!("rms(x)\tcount(x)\n{row}\n").into_bytes())],
+                    "x"
                 ),
                 Err(MergeError::InvalidSum),
                 "{row}"

@@ -1,4 +1,3 @@
-pub mod memory_budget;
 mod copy;
 mod date_scalar;
 mod ddl;
@@ -10,6 +9,7 @@ mod insert;
 mod insert_select;
 mod join;
 mod json;
+pub mod memory_budget;
 pub use json::parse_json_each_row_fields;
 mod lexer;
 mod literal;
@@ -151,7 +151,9 @@ pub enum GroupedFilter {
 impl GroupedFilter {
     pub(crate) fn column(&self) -> &str {
         match self {
-            Self::Truthy(column) | Self::Comparison { column, .. } | Self::CaseElseZero { column, .. }
+            Self::Truthy(column)
+            | Self::Comparison { column, .. }
+            | Self::CaseElseZero { column, .. }
             | Self::CaseElseZeroCombined { column, .. } => column,
         }
     }
@@ -159,18 +161,39 @@ impl GroupedFilter {
     pub(crate) fn label(&self) -> String {
         match self {
             Self::Truthy(column) => column.clone(),
-            Self::CaseElseZeroCombined { column, comparisons, all } => {
+            Self::CaseElseZeroCombined {
+                column,
+                comparisons,
+                all,
+            } => {
                 let separator = if *all { " AND " } else { " OR " };
-                comparisons.iter().map(|(operator, literal)| {
-                    let symbol = match operator {
-                        Operator::Eq => "=", Operator::Ne => "!=", Operator::Lt => "<",
-                        Operator::Le => "<=", Operator::Gt => ">", Operator::Ge => ">=", _ => "?",
-                    };
-                    format!("{column} {symbol} {literal}")
-                }).collect::<Vec<_>>().join(separator)
+                comparisons
+                    .iter()
+                    .map(|(operator, literal)| {
+                        let symbol = match operator {
+                            Operator::Eq => "=",
+                            Operator::Ne => "!=",
+                            Operator::Lt => "<",
+                            Operator::Le => "<=",
+                            Operator::Gt => ">",
+                            Operator::Ge => ">=",
+                            _ => "?",
+                        };
+                        format!("{column} {symbol} {literal}")
+                    })
+                    .collect::<Vec<_>>()
+                    .join(separator)
             }
-            Self::Comparison { column, operator, literal }
-            | Self::CaseElseZero { column, operator, literal } => {
+            Self::Comparison {
+                column,
+                operator,
+                literal,
+            }
+            | Self::CaseElseZero {
+                column,
+                operator,
+                literal,
+            } => {
                 let symbol = match operator {
                     Operator::Eq => "=",
                     Operator::Ne => "!=",
@@ -386,7 +409,11 @@ impl Select {
                 return source;
             }
         }
-        if self.alias.as_deref().is_some_and(|alias| alias.eq_ignore_ascii_case(column)) {
+        if self
+            .alias
+            .as_deref()
+            .is_some_and(|alias| alias.eq_ignore_ascii_case(column))
+        {
             if let Projection::Columns(columns) = &self.projection {
                 if let [source] = columns.as_slice() {
                     return source;
@@ -898,12 +925,21 @@ fn grouped_metric_filter(parser: &mut Parser) -> Result<GroupedFilter, ParseErro
     let column = parser.bounded_word()?;
     if let Some(Token::Operator(operator)) = parser.tokens.get(parser.index) {
         let operator = *operator;
-        if !matches!(operator, Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge) {
-            return Err(ParseError("unsupported conditional aggregate comparison".into()));
+        if !matches!(
+            operator,
+            Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge
+        ) {
+            return Err(ParseError(
+                "unsupported conditional aggregate comparison".into(),
+            ));
         }
         parser.index += 1;
         let literal = parser.literal()?;
-        Ok(GroupedFilter::Comparison { column, operator, literal })
+        Ok(GroupedFilter::Comparison {
+            column,
+            operator,
+            literal,
+        })
     } else {
         Ok(GroupedFilter::Truthy(column))
     }
@@ -954,12 +990,19 @@ fn grouped_metric_value(
         return Ok((grouped_metric_column(parser, function)?, None));
     }
     if function != AggregateFunction::Sum || !parser.keyword("WHEN") {
-        return Err(ParseError("grouped CASE requires SUM(CASE WHEN ...)".into()));
+        return Err(ParseError(
+            "grouped CASE requires SUM(CASE WHEN ...)".into(),
+        ));
     }
     let column = parser.bounded_word()?;
     let operator = parser.operator()?;
-    if !matches!(operator, Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge) {
-        return Err(ParseError("grouped CASE requires a comparison condition".into()));
+    if !matches!(
+        operator,
+        Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge
+    ) {
+        return Err(ParseError(
+            "grouped CASE requires a comparison condition".into(),
+        ));
     }
     let literal = parser.literal()?;
     let mut comparisons = vec![(operator, literal.clone())];
@@ -973,19 +1016,30 @@ fn grouped_metric_value(
             break;
         };
         if all.is_some_and(|previous| previous != conjunction) {
-            return Err(ParseError("grouped CASE cannot mix AND and OR without parentheses".into()));
+            return Err(ParseError(
+                "grouped CASE cannot mix AND and OR without parentheses".into(),
+            ));
         }
         all = Some(conjunction);
         if comparisons.len() >= 8 {
-            return Err(ParseError("grouped CASE supports at most 8 comparisons".into()));
+            return Err(ParseError(
+                "grouped CASE supports at most 8 comparisons".into(),
+            ));
         }
         let next_column = parser.bounded_word()?;
         if next_column != column {
-            return Err(ParseError("grouped CASE comparisons must use the same column".into()));
+            return Err(ParseError(
+                "grouped CASE comparisons must use the same column".into(),
+            ));
         }
         let next_operator = parser.operator()?;
-        if !matches!(next_operator, Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge) {
-            return Err(ParseError("grouped CASE requires a comparison condition".into()));
+        if !matches!(
+            next_operator,
+            Operator::Eq | Operator::Ne | Operator::Lt | Operator::Le | Operator::Gt | Operator::Ge
+        ) {
+            return Err(ParseError(
+                "grouped CASE requires a comparison condition".into(),
+            ));
         }
         comparisons.push((next_operator, parser.literal()?));
     }
@@ -994,7 +1048,8 @@ fn grouped_metric_value(
     }
     // SUM(CASE ... THEN 1 ELSE 0 END) counts matching rows, including
     // groups with zero matches. Reuse the filtered COUNT(*) state.
-    let unit_count = matches!(parser.tokens.get(parser.index), Some(Token::Number(value)) if value == "1");
+    let unit_count =
+        matches!(parser.tokens.get(parser.index), Some(Token::Number(value)) if value == "1");
     let metric = if unit_count {
         parser.index += 1;
         "*".to_string()
@@ -1019,13 +1074,27 @@ fn grouped_metric_value(
     }
     let filter = if let Some(all) = all {
         if !unit_count || !else_zero {
-            return Err(ParseError("combined grouped CASE requires THEN 1 ELSE 0".into()));
+            return Err(ParseError(
+                "combined grouped CASE requires THEN 1 ELSE 0".into(),
+            ));
         }
-        GroupedFilter::CaseElseZeroCombined { column, comparisons, all }
+        GroupedFilter::CaseElseZeroCombined {
+            column,
+            comparisons,
+            all,
+        }
     } else if else_zero {
-        GroupedFilter::CaseElseZero { column, operator, literal }
+        GroupedFilter::CaseElseZero {
+            column,
+            operator,
+            literal,
+        }
     } else {
-        GroupedFilter::Comparison { column, operator, literal }
+        GroupedFilter::Comparison {
+            column,
+            operator,
+            literal,
+        }
     };
     Ok((metric, Some(filter)))
 }
@@ -1033,14 +1102,16 @@ fn grouped_metric_value(
 fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     if !parser.keyword("SELECT") {
-        if matches!(parser.tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("WITH")) {
-            return Err(ParseError("WITH common table expressions are not yet supported".into()));
+        if matches!(parser.tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("WITH"))
+        {
+            return Err(ParseError(
+                "WITH common table expressions are not yet supported".into(),
+            ));
         }
         return Err(ParseError("only SELECT statements are supported".into()));
     }
-    let mut distinct = parser.keyword("DISTINCT")
-        || parser.keyword("DISTINCTROW")
-        || parser.keyword("UNIQUE");
+    let mut distinct =
+        parser.keyword("DISTINCT") || parser.keyword("DISTINCTROW") || parser.keyword("UNIQUE");
     if !distinct {
         parser.keyword("ALL");
     }
@@ -1050,7 +1121,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !count.bytes().all(|byte| byte.is_ascii_digit()) {
             return Err(ParseError("TOP must be a non-negative integer".into()));
         }
-        let count = count.parse::<usize>().map_err(|_| ParseError("TOP is too large".into()))?;
+        let count = count
+            .parse::<usize>()
+            .map_err(|_| ParseError("TOP is too large".into()))?;
         if parenthesized && !parser.take(Token::RParen) {
             return Err(ParseError("TOP requires closing ')'".into()));
         }
@@ -1218,7 +1291,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 return Err(ParseError("SELECT supports at most 64 constants".into()));
             }
             let value = match parser.tokens.get(parser.index) {
-                Some(Token::Number(number)) if number.contains('.') || number.contains('e') || number.contains('E') => {
+                Some(Token::Number(number))
+                    if number.contains('.') || number.contains('e') || number.contains('E') =>
+                {
                     let number = number.clone();
                     if !number.parse::<f64>().is_ok_and(f64::is_finite) {
                         return Err(ParseError("SELECT decimal literal must be finite".into()));
@@ -1419,8 +1494,10 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                         if !parser.take(Token::LParen) {
                             return Err(ParseError("expected '(' after aggregate name".into()));
                         }
-                        let (value_column, case_filter) = grouped_metric_value(&mut parser, function)?;
-                        let function = if function == AggregateFunction::Sum && value_column == "*" {
+                        let (value_column, case_filter) =
+                            grouped_metric_value(&mut parser, function)?;
+                        let function = if function == AggregateFunction::Sum && value_column == "*"
+                        {
                             AggregateFunction::Count
                         } else {
                             function
@@ -1588,11 +1665,16 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
 
     let source = if parser.keyword("FROM") {
         if parser.tokens.get(parser.index) == Some(&Token::LParen) {
-            return Err(ParseError("derived tables in FROM are not yet supported".into()));
+            return Err(ParseError(
+                "derived tables in FROM are not yet supported".into(),
+            ));
         }
         let name = parser.word()?;
         if name.eq_ignore_ascii_case("DUAL")
-            && matches!(projection, Projection::Literal(_) | Projection::Constants(_))
+            && matches!(
+                projection,
+                Projection::Literal(_) | Projection::Constants(_)
+            )
         {
             None
         } else if name.eq_ignore_ascii_case("numbers") {
@@ -1740,16 +1822,29 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         ));
     }
     if source.is_none()
-        && matches!(projection, Projection::Aggregate { .. } | Projection::MultipleAggregates(_))
-        && matches!(parser.tokens.get(parser.index), Some(Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Percent))
+        && matches!(
+            projection,
+            Projection::Aggregate { .. } | Projection::MultipleAggregates(_)
+        )
+        && matches!(
+            parser.tokens.get(parser.index),
+            Some(Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Percent)
+        )
     {
-        return Err(ParseError("arithmetic on aggregate results is not yet supported".into()));
+        return Err(ParseError(
+            "arithmetic on aggregate results is not yet supported".into(),
+        ));
     }
     if source.is_none()
         && matches!(projection, Projection::Constants(_))
-        && matches!(parser.tokens.get(parser.index), Some(Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Percent))
+        && matches!(
+            parser.tokens.get(parser.index),
+            Some(Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Percent)
+        )
     {
-        return Err(ParseError("arithmetic after SELECT decimal constants is not yet supported".into()));
+        return Err(ParseError(
+            "arithmetic after SELECT decimal constants is not yet supported".into(),
+        ));
     }
     if source.is_none()
         && !matches!(
@@ -1879,16 +1974,23 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
             match &projection {
                 Projection::GroupedMultiCount { columns }
                     if columns.len() == group_columns.len()
-                        && columns.iter().zip(&group_columns).all(|(a, b)| a.eq_ignore_ascii_case(b)) => {}
+                        && columns
+                            .iter()
+                            .zip(&group_columns)
+                            .all(|(a, b)| a.eq_ignore_ascii_case(b)) => {}
                 Projection::GroupedMultiAggregates { columns, .. }
                 | Projection::GroupedMultiDistinctCount { columns, .. }
                     if columns.len() == group_columns.len()
-                        && columns.iter().zip(&group_columns).all(|(a, b)| a.eq_ignore_ascii_case(b)) => {}
+                        && columns
+                            .iter()
+                            .zip(&group_columns)
+                            .all(|(a, b)| a.eq_ignore_ascii_case(b)) => {}
                 Projection::GroupedCount { column }
                 | Projection::GroupedDistinctCount { column, .. }
                 | Projection::GroupedAggregate { column, .. }
                 | Projection::GroupedAggregates { column, .. }
-                    if group_columns.len() == 1 && column.eq_ignore_ascii_case(&group_columns[0]) => {}
+                    if group_columns.len() == 1
+                        && column.eq_ignore_ascii_case(&group_columns[0]) => {}
                 Projection::GroupedCount { .. }
                 | Projection::GroupedDistinctCount { .. }
                 | Projection::GroupedMultiDistinctCount { .. }
@@ -1935,8 +2037,8 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 if !parser.keyword("COUNT") || !parser.take(Token::LParen) {
                     return Err(ParseError("HAVING requires COUNT(*)".into()));
                 }
-                if !parser.take(Token::RParen)
-                    && !(parser.take(Token::Star) && parser.take(Token::RParen))
+                if !(parser.take(Token::RParen)
+                    || (parser.take(Token::Star) && parser.take(Token::RParen)))
                 {
                     return Err(ParseError("HAVING requires COUNT() or COUNT(*)".into()));
                 }
@@ -2312,7 +2414,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         limit = Some(count);
     }
     if top_limit.is_some() && (limit.is_some() || offset.is_some()) {
-        return Err(ParseError("TOP cannot be combined with LIMIT, OFFSET or FETCH".into()));
+        return Err(ParseError(
+            "TOP cannot be combined with LIMIT, OFFSET or FETCH".into(),
+        ));
     }
     limit = top_limit.or(limit);
     parser.take(Token::Semicolon);
@@ -2487,7 +2591,7 @@ mod tpch_interval_unit_tests {
         }
     }
 }
-    
+
 #[cfg(test)]
 mod where_boolean_literal_tests {
     use super::*;
@@ -2519,13 +2623,18 @@ mod parenthesized_predicate_literal_tests {
             ("d = (DATE '2000-01-01')", "d = DATE '2000-01-01'"),
         ] {
             let sql = |condition: &str| format!("SELECT count(*) FROM t WHERE {condition}");
-            assert_eq!(parse_select(&sql(wrapped)).unwrap(), parse_select(&sql(bare)).unwrap(), "{wrapped}");
+            assert_eq!(
+                parse_select(&sql(wrapped)).unwrap(),
+                parse_select(&sql(bare)).unwrap(),
+                "{wrapped}"
+            );
         }
     }
 
     #[test]
     fn malformed_or_deeply_parenthesized_literals_fail() {
-        for expression in ["(2", "(2 + 1)", "(())"] {
+        assert!(parse_select("SELECT count(*) FROM t WHERE number = (2 + 1)").is_ok());
+        for expression in ["(2", "(())"] {
             let sql = format!("SELECT count(*) FROM t WHERE number = {expression}");
             assert!(parse_select(&sql).is_err(), "{sql}");
         }
@@ -2541,7 +2650,10 @@ mod tpch_parser_first_stop_7 {
     #[test]
     fn reports_the_unsupported_sql_feature() {
         let err = parse_select("SELECT 100.00 * sum(l_extendedprice) FROM lineitem").unwrap_err();
-        assert!(err.0.contains("arithmetic after SELECT decimal constants"), "{err}");
+        assert!(
+            err.0.contains("arithmetic after SELECT decimal constants"),
+            "{err}"
+        );
     }
 }
 
@@ -2551,7 +2663,8 @@ mod tpch_parser_first_stop_6 {
 
     #[test]
     fn reports_the_unsupported_sql_feature() {
-        let err = parse_select("SELECT sum(l_extendedprice) / 7.0 AS avg_yearly FROM lineitem").unwrap_err();
+        let err = parse_select("SELECT sum(l_extendedprice) / 7.0 AS avg_yearly FROM lineitem")
+            .unwrap_err();
         assert!(err.0.contains("arithmetic on aggregate results"), "{err}");
     }
 }
@@ -2562,7 +2675,8 @@ mod tpch_parser_first_stop_5 {
 
     #[test]
     fn reports_the_unsupported_sql_feature() {
-        let err = parse_select("SELECT nation FROM (SELECT n_name AS nation FROM nation) AS x").unwrap_err();
+        let err = parse_select("SELECT nation FROM (SELECT n_name AS nation FROM nation) AS x")
+            .unwrap_err();
         assert!(err.0.contains("derived tables in FROM"), "{err}");
     }
 }
@@ -2573,7 +2687,10 @@ mod tpch_parser_first_stop_4 {
 
     #[test]
     fn unsupported_construct_has_specific_error() {
-        let error = parse_select("WITH revenue AS (SELECT supplier_no FROM supplier) SELECT supplier_no FROM revenue").unwrap_err();
+        let error = parse_select(
+            "WITH revenue AS (SELECT supplier_no FROM supplier) SELECT supplier_no FROM revenue",
+        )
+        .unwrap_err();
         assert!(error.0.contains("WITH common table expressions"), "{error}");
     }
 }
@@ -2595,8 +2712,14 @@ mod tpch_parser_first_stop_2 {
 
     #[test]
     fn unsupported_construct_has_specific_error() {
-        let error = parse_select("SELECT category, SUM(price * (1 - discount)) FROM sales GROUP BY category").unwrap_err();
-        assert!(error.0.contains("computed grouped aggregate arguments"), "{error}");
+        let error = parse_select(
+            "SELECT category, SUM(price * (1 - discount)) FROM sales GROUP BY category",
+        )
+        .unwrap_err();
+        assert!(
+            error.0.contains("computed grouped aggregate arguments"),
+            "{error}"
+        );
     }
 }
 

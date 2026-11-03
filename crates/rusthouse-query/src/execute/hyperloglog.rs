@@ -121,7 +121,7 @@ impl HyperLogLog {
                 SMALL_UNSIGNED_HASHES[value as usize]
             }
             Number::Signed(value) => Self::hash(&value.to_le_bytes()),
-            Number::Float(value) if value == 0.0 => ZERO_FLOAT_HASH,
+            Number::Float(0.0) => ZERO_FLOAT_HASH,
             Number::Float(value) if value.is_nan() => NAN_FLOAT_HASH,
             Number::Float(value) => Self::hash(&value.to_bits().to_le_bytes()),
         };
@@ -218,9 +218,7 @@ impl HyperLogLog {
             .iter()
             .enumerate()
             .filter(|&(_, &count)| count != 0)
-            .map(|(rank, &count)| {
-                f64::from(count) * f64::from_bits((1023 - rank as u64) << 52)
-            })
+            .map(|(rank, &count)| f64::from(count) * f64::from_bits((1023 - rank as u64) << 52))
             .sum::<f64>();
         let alpha = 0.7213 / (1.0 + 1.079 / register_count);
         let raw_estimate = alpha * register_count * register_count / harmonic;
@@ -625,8 +623,20 @@ mod rank_frequency_estimate_tests {
                     1 => 1,
                     2 => MAX_REGISTER_RANK,
                     3 => (index % (MAX_REGISTER_RANK as usize + 1)) as u8,
-                    4 => if index % 31 == 0 { MAX_REGISTER_RANK } else { 0 },
-                    _ => if index % 2 == 0 { 2 } else { 27 },
+                    4 => {
+                        if index % 31 == 0 {
+                            MAX_REGISTER_RANK
+                        } else {
+                            0
+                        }
+                    }
+                    _ => {
+                        if index % 2 == 0 {
+                            2
+                        } else {
+                            27
+                        }
+                    }
                 };
             }
             let expected = scalar_reference(&sketch.registers);

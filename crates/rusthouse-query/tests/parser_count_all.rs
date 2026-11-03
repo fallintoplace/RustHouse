@@ -1,4 +1,4 @@
-use rusthouse_query::{execute, parse_select, Projection};
+use rusthouse_query::{Projection, execute, parse_select};
 
 fn run(sql: &str) -> String {
     let mut output = Vec::new();

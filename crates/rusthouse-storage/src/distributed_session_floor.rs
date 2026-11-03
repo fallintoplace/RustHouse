@@ -9,10 +9,7 @@ pub struct SnapshotSessionFloor {
 }
 
 impl SnapshotSessionFloor {
-    pub fn new(
-        records: &[SnapshotParent],
-        initial: SnapshotVersion,
-    ) -> Result<Self, &'static str> {
+    pub fn new(records: &[SnapshotParent], initial: SnapshotVersion) -> Result<Self, &'static str> {
         let ancestry = SnapshotAncestry::new(records)?;
         if !ancestry.is_ancestor(initial, initial)? {
             return Err("invalid initial session snapshot");
@@ -20,7 +17,9 @@ impl SnapshotSessionFloor {
         Ok(Self { floor: initial })
     }
 
-    pub fn required_snapshot(&self) -> SnapshotVersion { self.floor }
+    pub fn required_snapshot(&self) -> SnapshotVersion {
+        self.floor
+    }
 
     /// A newer generation is not enough: it must descend from the last
     /// accepted snapshot in the same explicitly verified ancestry forest.
@@ -51,14 +50,30 @@ impl SnapshotSessionFloor {
 mod tests {
     use super::*;
     fn v(generation: u64) -> SnapshotVersion {
-        SnapshotVersion { epoch: 1, generation, fingerprint: generation as u128 }
+        SnapshotVersion {
+            epoch: 1,
+            generation,
+            fingerprint: generation as u128,
+        }
     }
     fn ancestry() -> Vec<SnapshotParent> {
         vec![
-            SnapshotParent { snapshot: v(1), parent: None },
-            SnapshotParent { snapshot: v(2), parent: Some(v(1)) },
-            SnapshotParent { snapshot: v(3), parent: Some(v(1)) },
-            SnapshotParent { snapshot: v(4), parent: Some(v(2)) },
+            SnapshotParent {
+                snapshot: v(1),
+                parent: None,
+            },
+            SnapshotParent {
+                snapshot: v(2),
+                parent: Some(v(1)),
+            },
+            SnapshotParent {
+                snapshot: v(3),
+                parent: Some(v(1)),
+            },
+            SnapshotParent {
+                snapshot: v(4),
+                parent: Some(v(2)),
+            },
         ]
     }
 
@@ -80,7 +95,10 @@ mod tests {
         let records = ancestry();
         let ancestry = SnapshotAncestry::new(&records).unwrap();
         let mut session = SnapshotSessionFloor::new(&records, v(1)).unwrap();
-        let unknown = SnapshotVersion { fingerprint: 0, ..v(4) };
+        let unknown = SnapshotVersion {
+            fingerprint: 0,
+            ..v(4)
+        };
         assert!(session.advance(&ancestry, unknown).is_err());
         assert_eq!(session.required_snapshot(), v(1));
     }

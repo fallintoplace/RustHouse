@@ -1177,7 +1177,6 @@ mod ordered_repair_validation_tests {
     }
 }
 
-
 /// Schedule targeted repairs under node, failure-zone and global byte budgets.
 ///
 /// This computes an admission plan only. The coordinator must still reserve
@@ -1302,18 +1301,12 @@ mod zone_budgeted_targeted_repair_tests {
         let budgets = [("east", 8), ("west", 10)];
         let expected = [job("critical", "a", 8, 2), job("critical", "c", 8, 2)];
         assert_eq!(
-            plan_zone_budgeted_targeted_repairs(
-                &jobs, &capacity, &zones, &budgets, 18, 4
-            )
-            .unwrap(),
+            plan_zone_budgeted_targeted_repairs(&jobs, &capacity, &zones, &budgets, 18, 4).unwrap(),
             expected
         );
         jobs.reverse();
         assert_eq!(
-            plan_zone_budgeted_targeted_repairs(
-                &jobs, &capacity, &zones, &budgets, 18, 4
-            )
-            .unwrap(),
+            plan_zone_budgeted_targeted_repairs(&jobs, &capacity, &zones, &budgets, 18, 4).unwrap(),
             expected
         );
     }
@@ -1325,16 +1318,11 @@ mod zone_budgeted_targeted_repair_tests {
         let zones = [("a", "east"), ("b", "west")];
         let budgets = [("east", 5), ("west", 5)];
         assert!(
-            plan_zone_budgeted_targeted_repairs(
-                &jobs, &capacity, &zones, &budgets, 0, 0
-            )
-            .is_ok()
+            plan_zone_budgeted_targeted_repairs(&jobs, &capacity, &zones, &budgets, 0, 0).is_ok()
         );
         assert!(
-            plan_zone_budgeted_targeted_repairs(
-                &jobs, &capacity, &[("a", "east")], &budgets, 0, 0
-            )
-            .is_err()
+            plan_zone_budgeted_targeted_repairs(&jobs, &capacity, &[("a", "east")], &budgets, 0, 0)
+                .is_err()
         );
         assert!(
             plan_zone_budgeted_targeted_repairs(
@@ -1349,15 +1337,18 @@ mod zone_budgeted_targeted_repair_tests {
         );
         assert!(
             plan_zone_budgeted_targeted_repairs(
-                &jobs, &capacity, &zones, &[("east", 5), ("east", 5)], 0, 0
+                &jobs,
+                &capacity,
+                &zones,
+                &[("east", 5), ("east", 5)],
+                0,
+                0
             )
             .is_err()
         );
         assert!(
-            plan_zone_budgeted_targeted_repairs(
-                &jobs, &capacity, &zones, &[("east", 5)], 0, 0
-            )
-            .is_err()
+            plan_zone_budgeted_targeted_repairs(&jobs, &capacity, &zones, &[("east", 5)], 0, 0)
+                .is_err()
         );
     }
 

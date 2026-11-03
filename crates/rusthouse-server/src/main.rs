@@ -63,7 +63,8 @@ fn usage() -> &'static str {
 fn valid_configured_token(value: &str) -> bool {
     (16..=128).contains(&value.len())
         && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'+' | b'/' | b'=')
+            byte.is_ascii_alphanumeric()
+                || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'+' | b'/' | b'=')
         })
 }
 
@@ -91,7 +92,10 @@ mod http_auth_tests {
     fn checks_exact_bearer_token_without_prefix_acceptance() {
         let secret = "0123456789abcdef";
         assert!(valid_configured_token(secret));
-        assert!(bearer_token_matches(secret, Some("Bearer 0123456789abcdef")));
+        assert!(bearer_token_matches(
+            secret,
+            Some("Bearer 0123456789abcdef")
+        ));
         for supplied in [
             None,
             Some(""),
@@ -417,11 +421,20 @@ fn read_request_with_deadline(
         ));
     }
     if let Some(token) = std::env::var_os("RUSTHOUSE_HTTP_TOKEN") {
-        let expected = token.to_str().filter(|value| valid_configured_token(value)).ok_or_else(|| {
-            Response::text("503 Service Unavailable", "invalid server auth configuration\n")
-        })?;
+        let expected = token
+            .to_str()
+            .filter(|value| valid_configured_token(value))
+            .ok_or_else(|| {
+                Response::text(
+                    "503 Service Unavailable",
+                    "invalid server auth configuration\n",
+                )
+            })?;
         if !bearer_token_matches(expected, authorization) {
-            return Err(Response::text("401 Unauthorized", "authentication required\n"));
+            return Err(Response::text(
+                "401 Unauthorized",
+                "authentication required\n",
+            ));
         }
     }
     if transfer_encoding {
@@ -585,7 +598,6 @@ fn serve(mut stream: TcpStream, config: &Config, cluster: &Cluster) {
     let _ = respond(&mut stream, response, accept_lz4);
 }
 
-
 // The accept thread must never perform a blocking write. When an overloaded
 // client's receive window is full, best-effort delivery is safer than
 // preventing other clients from connecting.
@@ -604,11 +616,17 @@ mod nonblocking_overload_tests {
     #[test]
     fn busy_response_has_a_valid_bounded_content_length() {
         let (head, body) = BUSY_RESPONSE.split_at(
-            BUSY_RESPONSE.windows(4).position(|bytes| bytes == b"\r\n\r\n").unwrap() + 4
+            BUSY_RESPONSE
+                .windows(4)
+                .position(|bytes| bytes == b"\r\n\r\n")
+                .unwrap()
+                + 4,
         );
         assert!(head.starts_with(b"HTTP/1.1 503 Service Unavailable\r\n"));
-        assert!(head.windows(b"Content-Length: 12\r\n".len())
-            .any(|part| part == b"Content-Length: 12\r\n"));
+        assert!(
+            head.windows(b"Content-Length: 12\r\n".len())
+                .any(|part| part == b"Content-Length: 12\r\n")
+        );
         assert_eq!(body, b"server busy\n");
     }
 

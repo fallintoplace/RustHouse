@@ -1,6 +1,6 @@
 //! Numeric aggregates grouped by multiple typed columns.
-use super::typed::{self, Cell, Key};
 use super::grouped_filter::bind_grouped_filters;
+use super::typed::{self, Cell, Key};
 use super::{AggregateState, ExecutionError, Number};
 use crate::{AggregateFunction, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
@@ -111,10 +111,12 @@ fn numeric_filter_enabled(column: &TypedColumn, row: usize) -> Result<bool, Exec
         TypedColumn::Numeric(NumericColumn::UInt8(values)) => Ok(values[row] != 0),
         TypedColumn::Numeric(NumericColumn::Int8(values)) => Ok(values[row] != 0),
         TypedColumn::NullableNumeric {
-            values: NumericColumn::UInt8(values), nulls
+            values: NumericColumn::UInt8(values),
+            nulls,
         } => Ok(nulls[row] == 0 && values[row] != 0),
         TypedColumn::NullableNumeric {
-            values: NumericColumn::Int8(values), nulls
+            values: NumericColumn::Int8(values),
+            nulls,
         } => Ok(nulls[row] == 0 && values[row] != 0),
         column => Ok(match numeric_value_at(column, row)? {
             Some(Number::Unsigned(value)) => value != 0,
@@ -145,22 +147,34 @@ pub(super) fn append_group_component(column: &TypedColumn, row: usize, buffer: &
             buffer.extend_from_slice(values[row].as_bytes());
         }
         TypedColumn::Numeric(NumericColumn::UInt8(values))
-        | TypedColumn::NullableNumeric { values: NumericColumn::UInt8(values), .. } => {
+        | TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt8(values),
+            ..
+        } => {
             buffer.push(3);
             buffer.extend_from_slice(&u128::from(values[row]).to_le_bytes());
         }
         TypedColumn::Numeric(NumericColumn::Int8(values))
-        | TypedColumn::NullableNumeric { values: NumericColumn::Int8(values), .. } => {
+        | TypedColumn::NullableNumeric {
+            values: NumericColumn::Int8(values),
+            ..
+        } => {
             buffer.push(4);
             buffer.extend_from_slice(&i128::from(values[row]).to_le_bytes());
         }
         TypedColumn::Numeric(NumericColumn::UInt16(values))
-        | TypedColumn::NullableNumeric { values: NumericColumn::UInt16(values), .. } => {
+        | TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt16(values),
+            ..
+        } => {
             buffer.push(3);
             buffer.extend_from_slice(&u128::from(values[row]).to_le_bytes());
         }
         TypedColumn::Numeric(NumericColumn::Int16(values))
-        | TypedColumn::NullableNumeric { values: NumericColumn::Int16(values), .. } => {
+        | TypedColumn::NullableNumeric {
+            values: NumericColumn::Int16(values),
+            ..
+        } => {
             buffer.push(4);
             buffer.extend_from_slice(&i128::from(values[row]).to_le_bytes());
         }
@@ -281,7 +295,12 @@ pub(super) fn execute<W: Write>(
             write!(output, "\t{alias}")?;
         } else {
             if let Some(filter) = filters.get(index).and_then(Option::as_ref) {
-                write!(output, "\t{}If({column}, {})", function.name(), filter.label())?;
+                write!(
+                    output,
+                    "\t{}If({column}, {})",
+                    function.name(),
+                    filter.label()
+                )?;
             } else {
                 write!(output, "\t{}({column})", function.name())?;
             }
@@ -476,7 +495,10 @@ pub(super) fn execute<W: Write>(
                     if !filter.passes(&batch, row, numeric_filter_enabled)? {
                         // CASE ... ELSE 0 contributes a zero for unmatched rows.
                         // Plain SUMIF and CASE without ELSE still skip the row.
-                        if matches!(filters.get(metric), Some(Some(crate::GroupedFilter::CaseElseZero { .. }))) {
+                        if matches!(
+                            filters.get(metric),
+                            Some(Some(crate::GroupedFilter::CaseElseZero { .. }))
+                        ) {
                             state.update(Number::Unsigned(0))?;
                         }
                         continue;
@@ -815,8 +837,16 @@ mod narrow_composite_group_encoding_tests {
     #[test]
     fn narrow_numeric_group_components_use_canonical_wide_encoding() {
         let cases = [
-            (TypedColumn::Numeric(NumericColumn::UInt8(vec![255])), 3u8, 255u128.to_le_bytes()),
-            (TypedColumn::Numeric(NumericColumn::UInt16(vec![65_535])), 3, 65_535u128.to_le_bytes()),
+            (
+                TypedColumn::Numeric(NumericColumn::UInt8(vec![255])),
+                3u8,
+                255u128.to_le_bytes(),
+            ),
+            (
+                TypedColumn::Numeric(NumericColumn::UInt16(vec![65_535])),
+                3,
+                65_535u128.to_le_bytes(),
+            ),
         ];
         for (column, tag, body) in cases {
             let mut encoded = Vec::new();
@@ -893,7 +923,10 @@ mod compact_pair_group_tests {
             .collect::<std::collections::HashSet<_>>();
         assert_eq!(keys.len(), 4);
         let signed = TypedColumn::Numeric(NumericColumn::Int8(vec![-1, 1]));
-        assert_ne!(compact_numeric_group_key(&signed, 0), compact_numeric_group_key(&signed, 1));
+        assert_ne!(
+            compact_numeric_group_key(&signed, 0),
+            compact_numeric_group_key(&signed, 1)
+        );
         let nullable = TypedColumn::NullableNumeric {
             values: NumericColumn::UInt16(vec![1]),
             nulls: vec![0],

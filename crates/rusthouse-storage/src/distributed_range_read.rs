@@ -235,10 +235,7 @@ mod direct_batched_range_buffers_tests {
         let mut unchanged = [0xcc; 8];
         let mut ok = [0xaa; 2];
         {
-            let mut invalid = [
-                (0, ok.as_mut_slice()),
-                (252, unchanged.as_mut_slice()),
-            ];
+            let mut invalid = [(0, ok.as_mut_slice()), (252, unchanged.as_mut_slice())];
             assert!(read_object_ranges_into(&path, &mut invalid, 10).is_err());
             assert!(read_object_ranges_into(&path, &mut invalid, 9).is_err());
         }
@@ -1353,7 +1350,6 @@ mod windows_immutable_object_handle_tests {
     }
 }
 
-
 /// One disjoint physical read covering one or more logical range requests.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CoalescedReadSpan {
@@ -1452,9 +1448,11 @@ mod coalesced_object_read_tests {
                 .map(|index| ((index * 13 % 201) as u64, index * 7 % 17))
                 .collect::<Vec<_>>();
             let spans = plan_coalesced_object_ranges(&ranges, 256, 8 * 1024 * 1024).unwrap();
-            assert!(spans.windows(2).all(|pair| {
-                pair[0].offset + (pair[0].length as u64) < pair[1].offset
-            }));
+            assert!(
+                spans
+                    .windows(2)
+                    .all(|pair| { pair[0].offset + (pair[0].length as u64) < pair[1].offset })
+            );
             let mut expected = [false; 256];
             let mut actual = [false; 256];
             for &(offset, length) in &ranges {
@@ -1508,20 +1506,13 @@ mod coalesced_object_read_tests {
         let mut good = [0xabu8; 4];
         let mut bad = [0xcdu8; 8];
         {
-            let mut requests = [
-                (0u64, good.as_mut_slice()),
-                (30, bad.as_mut_slice()),
-            ];
+            let mut requests = [(0u64, good.as_mut_slice()), (30, bad.as_mut_slice())];
             assert!(read_coalesced_object_ranges_into(&path, &mut requests, 12).is_err());
         }
         assert_eq!(good, [0xab; 4]);
         assert_eq!(bad, [0xcd; 8]);
-        assert!(
-            plan_coalesced_object_ranges(&[(u64::MAX, 2)], u64::MAX, 10).is_err()
-        );
-        assert!(
-            plan_coalesced_object_ranges(&[(0, 5), (0, 5)], 32, 9).is_err()
-        );
+        assert!(plan_coalesced_object_ranges(&[(u64::MAX, 2)], u64::MAX, 10).is_err());
+        assert!(plan_coalesced_object_ranges(&[(0, 5), (0, 5)], 32, 9).is_err());
         fs::remove_file(path).unwrap();
     }
 }

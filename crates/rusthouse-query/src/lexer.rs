@@ -710,10 +710,7 @@ mod dollar_quoted_string_tests {
             tokenize("$q$first $wrong$ second$q$").unwrap(),
             vec![Token::String("first $wrong$ second".into())]
         );
-        assert_eq!(
-            tokenize("$$ $$").unwrap(),
-            vec![Token::String(" ".into())]
-        );
+        assert_eq!(tokenize("$$ $$").unwrap(), vec![Token::String(" ".into())]);
     }
 
     #[test]
@@ -757,7 +754,6 @@ mod bulk_comment_span_tests {
         assert!(tokenize(&deep).is_err());
     }
 }
-
 
 #[cfg(test)]
 mod positive_radix_literal_tests {
@@ -827,4 +823,3 @@ mod radix_literal_tests {
         }
     }
 }
-

@@ -333,11 +333,14 @@ fn median_inner(
     // A 16-bit digit needs 1 MiB but halves the number of full part scans.
     // Keep the small stack histogram for short columns and small queries.
     let wide_digits = bytes >= 8 && n >= 131_072;
-    let mut wide_histograms =
-        wide_digits.then(|| [vec![0u64; 65_536], vec![0u64; 65_536]]);
+    let mut wide_histograms = wide_digits.then(|| [vec![0u64; 65_536], vec![0u64; 65_536]]);
     let mut remaining_bytes = bytes;
     while remaining_bytes != 0 {
-        let digit_bytes = if wide_digits && remaining_bytes >= 2 { 2 } else { 1 };
+        let digit_bytes = if wide_digits && remaining_bytes >= 2 {
+            2
+        } else {
+            1
+        };
         remaining_bytes -= digit_bytes;
         let shift = remaining_bytes * 8;
         let prefix_mask = if shift + digit_bytes * 8 >= 128 {
@@ -364,8 +367,9 @@ fn median_inner(
                         values,
                         Some(nulls),
                         |row| {
-                            typed_filtered
-                                .is_none_or(|(_, conditions)| typed::passes(&batch, row, conditions))
+                            typed_filtered.is_none_or(|(_, conditions)| {
+                                typed::passes(&batch, row, conditions)
+                            })
                         },
                         bits,
                         shift,
@@ -378,8 +382,9 @@ fn median_inner(
                         values,
                         Some(nulls),
                         |row| {
-                            typed_filtered
-                                .is_none_or(|(_, conditions)| typed::passes(&batch, row, conditions))
+                            typed_filtered.is_none_or(|(_, conditions)| {
+                                typed::passes(&batch, row, conditions)
+                            })
                         },
                         bits,
                         shift,
@@ -398,8 +403,9 @@ fn median_inner(
                         &batch[0],
                         None,
                         |row| {
-                            filtered
-                                .is_none_or(|(_, conditions)| batch_matches(&batch, row, conditions))
+                            filtered.is_none_or(|(_, conditions)| {
+                                batch_matches(&batch, row, conditions)
+                            })
                         },
                         bits,
                         shift,
@@ -412,8 +418,9 @@ fn median_inner(
                         &batch[0],
                         None,
                         |row| {
-                            filtered
-                                .is_none_or(|(_, conditions)| batch_matches(&batch, row, conditions))
+                            filtered.is_none_or(|(_, conditions)| {
+                                batch_matches(&batch, row, conditions)
+                            })
                         },
                         bits,
                         shift,
@@ -651,8 +658,7 @@ mod wide_digit_histogram_tests {
             .collect::<Vec<_>>();
         let column = NumericColumn::UInt64(values.clone());
         let mut actual = [vec![0u64; 65_536], vec![0u64; 65_536]];
-        count_column_wide(&column, None, |_| true, 64, 48, 0, &[0, 0], &mut actual)
-            .unwrap();
+        count_column_wide(&column, None, |_| true, 64, 48, 0, &[0, 0], &mut actual).unwrap();
         let mut expected = vec![0u64; 65_536];
         for value in values {
             expected[(value >> 48) as usize] += 1;
@@ -665,10 +671,7 @@ mod wide_digit_histogram_tests {
     fn divergent_prefix_and_nullable_filters_keep_exact_digit_counts() {
         let column = NumericColumn::Int64(vec![-131_073, -131_072, -1, 0, 1, 2]);
         let nulls = [0, 1, 0, 0, 0, 0];
-        let targets = [
-            sorted_key_signed(-131_073, 64),
-            sorted_key_signed(1, 64),
-        ];
+        let targets = [sorted_key_signed(-131_073, 64), sorted_key_signed(1, 64)];
         let mut counts = [vec![0u64; 65_536], vec![0u64; 65_536]];
         count_column_wide(
             &column,

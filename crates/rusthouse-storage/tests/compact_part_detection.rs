@@ -5,7 +5,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn shared_streams_are_identified_before_wide_part_scan() {
-    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let root = std::env::temp_dir().join(format!(
         "rusthouse-compact-layout-{}-{unique}",
         std::process::id()
@@ -30,7 +33,10 @@ fn shared_streams_are_identified_before_wide_part_scan() {
 
 #[test]
 fn incomplete_compact_marks_are_rejected() {
-    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let root = std::env::temp_dir().join(format!(
         "rusthouse-compact-missing-data-{}-{unique}",
         std::process::id()

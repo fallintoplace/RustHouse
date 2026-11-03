@@ -43,7 +43,9 @@ fn parse_case(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseErro
                 parser.tokens.get(parser.index),
                 Some(Token::Word(word)) if word.eq_ignore_ascii_case("NULL")
             ) {
-                return Err(ParseError("simple CASE NULL matches are unsupported".into()));
+                return Err(ParseError(
+                    "simple CASE NULL matches are unsupported".into(),
+                ));
             }
             if let Some(Token::String(value)) = parser.tokens.get(parser.index) {
                 let ScalarExpr::Column(column) = operand else {
@@ -60,11 +62,7 @@ fn parse_case(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseErro
                 }
             } else {
                 let value = parse_expression_tokens_at_depth(parser, depth + 1)?;
-                ScalarExpr::Compare(
-                    Box::new(operand.clone()),
-                    Operator::Eq,
-                    Box::new(value),
-                )
+                ScalarExpr::Compare(Box::new(operand.clone()), Operator::Eq, Box::new(value))
             }
         } else {
             parse_expression_tokens_at_depth(parser, depth + 1)?
@@ -309,10 +307,9 @@ mod simple_case_expression_tests {
 
     #[test]
     fn text_simple_case_uses_existing_string_equality_predicate() {
-        let expr = parse_scalar_expression(
-            "CASE country WHEN 'DE' THEN 1 WHEN 'FR' THEN 2 ELSE 0 END"
-        )
-        .unwrap();
+        let expr =
+            parse_scalar_expression("CASE country WHEN 'DE' THEN 1 WHEN 'FR' THEN 2 ELSE 0 END")
+                .unwrap();
         let ScalarExpr::Case { branches, .. } = expr else {
             panic!("expected CASE");
         };

@@ -37,9 +37,7 @@ pub(super) fn merge_multi_key_sums(
         }
         let mut count = 0usize;
         for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
-            count = count
-                .checked_add(1)
-                .ok_or(MergeError::CoordinatorLimit)?;
+            count = count.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
             if count >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
@@ -49,9 +47,7 @@ pub(super) fn merge_multi_key_sums(
             }
             let normalized = fields[..columns.len()]
                 .iter()
-                .map(|field| {
-                    normalized_group_key(field).map_err(|_| MergeError::InvalidGroupedSum)
-                })
+                .map(|field| normalized_group_key(field).map_err(|_| MergeError::InvalidGroupedSum))
                 .collect::<Result<Vec<_>, _>>()?;
             let wire = fields[columns.len()];
             let key_len = row
@@ -81,10 +77,13 @@ pub(super) fn merge_multi_key_sums(
                 let number = digits
                     .parse::<u128>()
                     .map_err(|_| MergeError::InvalidGroupedSum)?;
-                groups[id].2 = Some(groups[id].2
-                    .unwrap_or(0)
-                    .checked_add(number)
-                    .ok_or(MergeError::SumOverflow)?);
+                groups[id].2 = Some(
+                    groups[id]
+                        .2
+                        .unwrap_or(0)
+                        .checked_add(number)
+                        .ok_or(MergeError::SumOverflow)?,
+                );
             } else {
                 let number = digits
                     .parse::<i128>()
@@ -105,7 +104,8 @@ pub(super) fn merge_multi_key_sums(
         let value = if unsigned {
             unsigned_sum.map(|value| value.to_string())
         } else {
-            signed.map(WideSignedSum::to_i128)
+            signed
+                .map(WideSignedSum::to_i128)
                 .transpose()?
                 .map(|value| value.to_string())
         }
@@ -136,8 +136,14 @@ mod tests {
     #[test]
     fn sums_shared_composite_keys_and_retains_null_only_groups() {
         let shards = [
-            (10, b"region\tcategory\tsum(amount)\nwest\ta\t4\neast\tb\tNULL\n".to_vec()),
-            (10, b"region\tcategory\tsum(amount)\nwest\ta\t-2\neast\tb\t7\n".to_vec()),
+            (
+                10,
+                b"region\tcategory\tsum(amount)\nwest\ta\t4\neast\tb\tNULL\n".to_vec(),
+            ),
+            (
+                10,
+                b"region\tcategory\tsum(amount)\nwest\ta\t-2\neast\tb\t7\n".to_vec(),
+            ),
         ];
         assert_eq!(
             merge_multi_key_sums(&shards, &dimensions(), "amount", "Int64", 10).unwrap(),
@@ -173,14 +179,20 @@ mod tests {
         assert_eq!(
             merge_multi_key_sums(
                 &[(10, format!("{prefix}west\t1\n").into_bytes())],
-                &dimensions(), "amount", "UInt64", 10,
+                &dimensions(),
+                "amount",
+                "UInt64",
+                10,
             ),
             Err(MergeError::InvalidGroupedSum)
         );
         assert_eq!(
             merge_multi_key_sums(
                 &[(1, format!("{prefix}west\ta\t1\n").into_bytes())],
-                &dimensions(), "amount", "Int64", 10,
+                &dimensions(),
+                "amount",
+                "Int64",
+                10,
             ),
             Err(MergeError::ShardRowLimit)
         );

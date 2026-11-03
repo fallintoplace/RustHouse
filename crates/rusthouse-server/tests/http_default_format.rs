@@ -1,7 +1,10 @@
 use rusthouse_server::{Config, handle_request};
 
 fn config() -> Config {
-    Config { max_rows: 100, ..Config::default() }
+    Config {
+        max_rows: 100,
+        ..Config::default()
+    }
 }
 
 #[test]

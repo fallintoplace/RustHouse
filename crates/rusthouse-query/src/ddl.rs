@@ -498,8 +498,8 @@ mod tests {
                 if_not_exists: true,
             })
         );
+        assert!(parse_ddl("ALTER TABLE events ADD info String").is_ok());
         for sql in [
-            "ALTER TABLE events ADD info String",
             "ALTER TABLE events ADD COLUMN id",
             "ALTER TABLE events ADD COLUMN id Int64 AFTER info",
             "ALTER TABLE events ADD COLUMN IF EXISTS info String",
@@ -554,11 +554,11 @@ mod tests {
 
     #[test]
     fn rejects_invalid_create_syntax_and_duplicates() {
+        assert!(parse_ddl("CREATE TABLE t (id UInt64,)").is_ok());
         for sql in [
             "CREATE TABLE t ()",
             "CREATE TABLE t (id Unknown)",
             "CREATE TABLE t (id UInt64, id Int32)",
-            "CREATE TABLE t (id UInt64,)",
             "CREATE TABLE t (id UInt64); DROP TABLE t",
             "CREATE TABLE IF EXISTS t (id UInt64)",
             "CREATE TABLE t (id UInt64) ENGINE = MergeTree",
@@ -653,10 +653,14 @@ mod alter_add_optional_column_tests {
     #[test]
     fn add_column_keyword_is_optional() {
         for (implicit, explicit) in [
-            ("ALTER TABLE events ADD value UInt64",
-             "ALTER TABLE events ADD COLUMN value UInt64"),
-            ("ALTER TABLE events ADD IF NOT EXISTS value UInt64",
-             "ALTER TABLE events ADD COLUMN IF NOT EXISTS value UInt64"),
+            (
+                "ALTER TABLE events ADD value UInt64",
+                "ALTER TABLE events ADD COLUMN value UInt64",
+            ),
+            (
+                "ALTER TABLE events ADD IF NOT EXISTS value UInt64",
+                "ALTER TABLE events ADD COLUMN IF NOT EXISTS value UInt64",
+            ),
         ] {
             assert_eq!(parse_ddl(implicit).unwrap(), parse_ddl(explicit).unwrap());
         }

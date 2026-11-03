@@ -18,17 +18,21 @@ pub struct VersionVector {
 }
 
 fn valid_node(node: &str) -> bool {
-    !node.is_empty() && node.len() <= 64
-        && node.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+    !node.is_empty()
+        && node.len() <= 64
+        && node
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
 
 impl VersionVector {
     pub fn from_counters(entries: &[(&str, u64)]) -> Result<Self, &'static str> {
-        if entries.len() > MAX_NODES { return Err("too many version-vector members"); }
+        if entries.len() > MAX_NODES {
+            return Err("too many version-vector members");
+        }
         let mut counters = BTreeMap::new();
         for &(node, count) in entries {
-            if !valid_node(node) || count == 0
-                || counters.insert(node.to_owned(), count).is_some()
+            if !valid_node(node) || count == 0 || counters.insert(node.to_owned(), count).is_some()
             {
                 return Err("invalid or duplicate version-vector entry");
             }
@@ -47,7 +51,9 @@ impl VersionVector {
         if !self.counters.contains_key(node) && self.counters.len() == MAX_NODES {
             return Err("version-vector membership limit reached");
         }
-        let next = self.counter(node).checked_add(1)
+        let next = self
+            .counter(node)
+            .checked_add(1)
             .ok_or("version-vector counter overflow")?;
         self.counters.insert(node.to_owned(), next);
         Ok(next)
@@ -55,8 +61,13 @@ impl VersionVector {
 
     /// Merge by component-wise maximum. The receiver is unchanged on error.
     pub fn merge(&mut self, other: &Self) -> Result<(), &'static str> {
-        if self.counters.len() + other.counters.keys()
-            .filter(|node| !self.counters.contains_key(*node)).count() > MAX_NODES
+        if self.counters.len()
+            + other
+                .counters
+                .keys()
+                .filter(|node| !self.counters.contains_key(*node))
+                .count()
+            > MAX_NODES
         {
             return Err("merged version-vector membership limit reached");
         }

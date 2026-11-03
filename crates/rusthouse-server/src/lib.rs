@@ -195,9 +195,14 @@ impl QueryFormat {
     }
 }
 
-fn query_parameters(
-    target: &str,
-) -> Result<(String, Option<String>, Option<QueryFormat>, Option<QueryFormat>), &'static str> {
+type QueryParameters = (
+    String,
+    Option<String>,
+    Option<QueryFormat>,
+    Option<QueryFormat>,
+);
+
+fn query_parameters(target: &str) -> Result<QueryParameters, &'static str> {
     let (path, query) = target.split_once('?').unwrap_or((target, ""));
     if path != "/" && path != "/explain" {
         return Err("unknown SQL endpoint");
@@ -405,7 +410,9 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
             Err(message) => return Response::text("400 Bad Request", message),
         }
     } else {
-        request_format.or(default_format).unwrap_or(QueryFormat::Tsv)
+        request_format
+            .or(default_format)
+            .unwrap_or(QueryFormat::Tsv)
     };
     let sql = statement.to_owned();
     // DESCRIBE uses the same read lock and schema validation as SQL SELECT.

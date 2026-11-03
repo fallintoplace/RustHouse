@@ -11,7 +11,10 @@ fn value(sql: &str) -> ConstantValue {
 fn formats_bounded_automatic_and_indexed_fields() {
     for (sql, expected) in [
         ("SELECT format('{} {}', 'hello', 'world')", "hello world"),
-        ("SELECT format('{1} {0} {1}', 'World', 'Hello')", "Hello World Hello"),
+        (
+            "SELECT format('{1} {0} {1}', 'World', 'Hello')",
+            "Hello World Hello",
+        ),
         ("SELECT format('{{literal}} {0}', 5)", "{literal} 5"),
         ("SELECT format('{{{0}}}', 'café')", "{café}"),
         ("SELECT format('no fields')", "no fields"),

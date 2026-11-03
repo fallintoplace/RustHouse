@@ -7,14 +7,18 @@ fn sql_show_tables_uses_read_only_schema_discovery() {
     let db = std::env::temp_dir().join(format!(
         "rusthouse-http-show-tables-{}-{}",
         std::process::id(),
-        SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
     ));
     fs::create_dir_all(&db).unwrap();
     for name in ["logs", "events"] {
         fs::write(
             db.join(format!("{name}.schema")),
             b"rusthouse-schema-v1\nid\tUInt64\n",
-        ).unwrap();
+        )
+        .unwrap();
         fs::create_dir(db.join(format!("{name}.parts"))).unwrap();
     }
     let config = Config {

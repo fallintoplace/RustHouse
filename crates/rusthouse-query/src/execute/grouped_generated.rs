@@ -50,7 +50,11 @@ pub(super) fn execute<W: Write>(
     aliases: &[Option<String>],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    if column != "number" || items.iter().any(|(_, name)| name != "number") {
+    if column != "number"
+        || items.iter().any(|(function, name)| {
+            name != "number" && !(*function == AggregateFunction::Count && name == "*")
+        })
+    {
         return Err(ExecutionError::Invalid(
             "generated grouped analytics supports only the number column".into(),
         ));

@@ -57,27 +57,18 @@ pub fn prove_absence(
 /// Verify that a missing key lies exactly between two authenticated,
 /// adjacent leaves, or before the first or after the last authenticated leaf.
 /// Forged indexes, bounds and proofs are rejected even if key ordering holds.
-pub fn verify_absence(
-    trusted_root: [u8; 32],
-    key: &str,
-    proof: &MerkleAbsenceProof,
-) -> bool {
+pub fn verify_absence(trusted_root: [u8; 32], key: &str, proof: &MerkleAbsenceProof) -> bool {
     if key.is_empty() {
         return false;
     }
     if proof.leaf_count == 0 {
         return proof.before.is_none()
             && proof.after.is_none()
-            && MerkleInventory::new(&[])
-                .is_ok_and(|inventory| inventory.root() == trusted_root);
+            && MerkleInventory::new(&[]).is_ok_and(|inventory| inventory.root() == trusted_root);
     }
     let verified = |neighbor: &ProvenNeighbor| {
         neighbor.proof.leaf_count == proof.leaf_count
-            && MerkleInventory::verify_proof(
-                trusted_root,
-                &neighbor.object,
-                &neighbor.proof,
-            )
+            && MerkleInventory::verify_proof(trusted_root, &neighbor.object, &neighbor.proof)
     };
     match (&proof.before, &proof.after) {
         (Some(before), Some(after)) => {
@@ -85,18 +76,14 @@ pub fn verify_absence(
                 && verified(after)
                 && before.object.key.as_str() < key
                 && key < after.object.key.as_str()
-                && before.proof.leaf_index.checked_add(1)
-                    == Some(after.proof.leaf_index)
+                && before.proof.leaf_index.checked_add(1) == Some(after.proof.leaf_index)
         }
         (None, Some(after)) => {
-            verified(after)
-                && after.proof.leaf_index == 0
-                && key < after.object.key.as_str()
+            verified(after) && after.proof.leaf_index == 0 && key < after.object.key.as_str()
         }
         (Some(before), None) => {
             verified(before)
-                && before.proof.leaf_index.checked_add(1)
-                    == Some(proof.leaf_count)
+                && before.proof.leaf_index.checked_add(1) == Some(proof.leaf_count)
                 && before.object.key.as_str() < key
         }
         (None, None) => false,
@@ -117,11 +104,7 @@ mod tests {
 
     #[test]
     fn proves_absence_before_between_and_after_known_leaves() {
-        for keys in [
-            vec!["m"],
-            vec!["a", "m"],
-            vec!["a", "c", "f", "m", "z"],
-        ] {
+        for keys in [vec!["m"], vec!["a", "m"], vec!["a", "c", "f", "m", "z"]] {
             let objects = keys.iter().map(|key| entry(key)).collect::<Vec<_>>();
             let inventory = MerkleInventory::new(&objects).unwrap();
             for candidate in ["0", "b", "d", "k", "n", "zz"] {
@@ -141,9 +124,8 @@ mod tests {
 
     #[test]
     fn rejects_forged_neighbors_and_missing_boundary_proofs() {
-        let inventory = MerkleInventory::new(
-            &[entry("a"), entry("c"), entry("e"), entry("g")],
-        ).unwrap();
+        let inventory =
+            MerkleInventory::new(&[entry("a"), entry("c"), entry("e"), entry("g")]).unwrap();
         let mut proof = prove_absence(&inventory, "d").unwrap();
         assert!(verify_absence(inventory.root(), "d", &proof));
 
@@ -190,8 +172,11 @@ mod empty_inventory_absence_tests {
     fn nonempty_inventory_root_cannot_validate_empty_proof() {
         let empty = MerkleInventory::new(&[]).unwrap();
         let nonempty = MerkleInventory::new(&[ObjectMetadata {
-            key: "part/data.bin".into(), bytes: 1, crc32c: 1,
-        }]).unwrap();
+            key: "part/data.bin".into(),
+            bytes: 1,
+            crc32c: 1,
+        }])
+        .unwrap();
         let proof = prove_absence(&empty, "missing").unwrap();
         assert!(!verify_absence(nonempty.root(), "missing", &proof));
     }

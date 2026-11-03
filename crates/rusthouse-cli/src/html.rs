@@ -643,7 +643,10 @@ mod html_crlf_record_tests {
         let mut writer = HtmlWriter::new(Vec::new());
         writer.write_all(b"head\r\nplain\r\n").unwrap();
         let html = writer.finish().unwrap();
-        assert!(html.windows(b"<td>plain</td>".len()).any(|span| span == b"<td>plain</td>"));
+        assert!(
+            html.windows(b"<td>plain</td>".len())
+                .any(|span| span == b"<td>plain</td>")
+        );
         assert!(!html.windows(b"&#13;".len()).any(|span| span == b"&#13;"));
     }
 }

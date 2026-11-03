@@ -8,8 +8,14 @@ fn run(sql: &str) -> String {
 
 #[test]
 fn standard_trim_supports_leading_trailing_and_both() {
-    assert_eq!(run("SELECT TRIM(LEADING 'x' FROM 'xxabxx') AS t"), "t\nabxx\n");
-    assert_eq!(run("SELECT TRIM(TRAILING 'x' FROM 'xxabxx') AS t"), "t\nxxab\n");
+    assert_eq!(
+        run("SELECT TRIM(LEADING 'x' FROM 'xxabxx') AS t"),
+        "t\nabxx\n"
+    );
+    assert_eq!(
+        run("SELECT TRIM(TRAILING 'x' FROM 'xxabxx') AS t"),
+        "t\nxxab\n"
+    );
     assert_eq!(run("SELECT TRIM(BOTH 'x' FROM 'xxabxx') AS t"), "t\nab\n");
     assert_eq!(run("SELECT TRIM(BOTH FROM '  ab  ') AS t"), "t\nab\n");
     assert_eq!(run("SELECT TRIM('x' FROM 'xxabxx') AS t"), "t\nab\n");

@@ -1,8 +1,8 @@
 //! Write one JSON array per bounded TSV result row.
-use super::write_json_string;
-use rusthouse_format::decode_tsv_field_into;
 #[cfg(test)]
 use super::jsonl::decode_tsv_value;
+use super::write_json_string;
+use rusthouse_format::decode_tsv_field_into;
 use std::io::{self, Write};
 
 const MAX_LINE_BYTES: usize = 1024 * 1024;
@@ -125,7 +125,13 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
             self.line.clear();
             return Ok(());
         };
-        write_compact_row_into(&mut self.output, &self.line, columns, &mut self.encoded, &mut self.decoded)?;
+        write_compact_row_into(
+            &mut self.output,
+            &self.line,
+            columns,
+            &mut self.encoded,
+            &mut self.decoded,
+        )?;
         self.line.clear();
         Ok(())
     }
@@ -166,7 +172,13 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
             }
             if complete && self.line.is_empty() {
                 if let Some(columns) = self.columns {
-                    write_compact_row_into(&mut self.output, fragment, columns, &mut self.encoded, &mut self.decoded)?;
+                    write_compact_row_into(
+                        &mut self.output,
+                        fragment,
+                        columns,
+                        &mut self.encoded,
+                        &mut self.decoded,
+                    )?;
                     continue;
                 }
             }
@@ -308,7 +320,8 @@ mod overwide_row_tests {
     fn overwide_compact_rows_leave_the_output_untouched() {
         let mut output = Vec::new();
         let mut row = Vec::new();
-        let error = write_compact_row_into(&mut output, b"one\ttwo", 1, &mut row, &mut Vec::new()).unwrap_err();
+        let error = write_compact_row_into(&mut output, b"one\ttwo", 1, &mut row, &mut Vec::new())
+            .unwrap_err();
         assert_eq!(error.kind(), io::ErrorKind::InvalidData);
         assert!(output.is_empty());
         write_compact_row_into(&mut output, b"one", 1, &mut row, &mut Vec::new()).unwrap();
@@ -335,7 +348,7 @@ mod safe_ascii_compact_field_tests {
     fn unsafe_ascii_unicode_null_and_invalid_utf8_keep_existing_rules() {
         for source in [
             b"\"quote\"".as_slice(),
-            b"back\\slash".as_slice(),
+            b"back\\\\slash".as_slice(),
             b"".as_slice(),
             b"caf\xc3\xa9".as_slice(),
             b"line\x01break".as_slice(),
@@ -400,13 +413,16 @@ mod reusable_compact_json_escape_tests {
         let mut output = Vec::new();
         let mut encoded = Vec::new();
         let mut decoded = Vec::new();
-        assert!(write_compact_row_into(
-            &mut output,
-            b"ok\\tfield\tbad\\q",
-            2,
-            &mut encoded,
-            &mut decoded,
-        ).is_err());
+        assert!(
+            write_compact_row_into(
+                &mut output,
+                b"ok\\tfield\tbad\\q",
+                2,
+                &mut encoded,
+                &mut decoded,
+            )
+            .is_err()
+        );
         assert!(output.is_empty());
         write_compact_row_into(
             &mut output,
@@ -414,7 +430,8 @@ mod reusable_compact_json_escape_tests {
             2,
             &mut encoded,
             &mut decoded,
-        ).unwrap();
+        )
+        .unwrap();
         assert_eq!(output, b"[\"ok\\tfield\",\"good\\nvalue\"]\n");
     }
 }

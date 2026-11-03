@@ -30,8 +30,9 @@ pub struct IdempotencyLedger {
 }
 
 impl IdempotencyLedger {
-    pub fn new() -> Self { Self::default() }
-
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// Validate a batch without partially changing local replay or epoch state.
     /// Callers must still commit external effects and this ledger durably.
@@ -60,15 +61,27 @@ impl IdempotencyLedger {
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<Admission, &'static str> {
-        if key.node.is_empty() || key.node.len() > 64
-            || !key.node.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
-            || key.epoch == 0 || key.nonce == 0 || ttl_ms == 0
+        if key.node.is_empty()
+            || key.node.len() > 64
+            || !key
+                .node
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            || key.epoch == 0
+            || key.nonce == 0
+            || ttl_ms == 0
             || now_ms < self.last_time_ms
         {
             return Err("invalid or regressing replica request");
         }
-        let expiry = now_ms.checked_add(ttl_ms).ok_or("idempotency TTL overflow")?;
-        if self.highest_epoch.get(&key.node).is_some_and(|&epoch| key.epoch < epoch) {
+        let expiry = now_ms
+            .checked_add(ttl_ms)
+            .ok_or("idempotency TTL overflow")?;
+        if self
+            .highest_epoch
+            .get(&key.node)
+            .is_some_and(|&epoch| key.epoch < epoch)
+        {
             return Err("replica request belongs to fenced epoch");
         }
         if let Some(existing) = self.requests.get(&key) {
@@ -80,15 +93,24 @@ impl IdempotencyLedger {
                 return Ok(Admission::Replayed);
             }
         }
-        self.requests.retain(|_, entry| entry.expires_at_ms > now_ms);
+        self.requests
+            .retain(|_, entry| entry.expires_at_ms > now_ms);
         if self.requests.len() >= MAX_REQUESTS
             || (self.highest_epoch.len() >= MAX_REQUESTS
                 && !self.highest_epoch.contains_key(&key.node))
         {
             return Err("replica idempotency ledger is full");
         }
-        self.requests.insert(key.clone(), Entry { fingerprint: payload_fingerprint, expires_at_ms: expiry });
-        self.highest_epoch.entry(key.node).and_modify(|epoch| *epoch = (*epoch).max(key.epoch))
+        self.requests.insert(
+            key.clone(),
+            Entry {
+                fingerprint: payload_fingerprint,
+                expires_at_ms: expiry,
+            },
+        );
+        self.highest_epoch
+            .entry(key.node)
+            .and_modify(|epoch| *epoch = (*epoch).max(key.epoch))
             .or_insert(key.epoch);
         self.last_time_ms = now_ms;
         Ok(Admission::New)
@@ -99,13 +121,23 @@ impl IdempotencyLedger {
 mod tests {
     use super::*;
     fn key(epoch: u64, nonce: u128) -> RequestKey {
-        RequestKey { node: "replica".into(), epoch, nonce }
+        RequestKey {
+            node: "replica".into(),
+            epoch,
+            nonce,
+        }
     }
     #[test]
     fn duplicate_retry_is_idempotent_but_conflicting_payload_fails() {
         let mut ledger = IdempotencyLedger::new();
-        assert_eq!(ledger.admit(key(1, 1), 10, 100, 100).unwrap(), Admission::New);
-        assert_eq!(ledger.admit(key(1, 1), 10, 101, 100).unwrap(), Admission::Replayed);
+        assert_eq!(
+            ledger.admit(key(1, 1), 10, 100, 100).unwrap(),
+            Admission::New
+        );
+        assert_eq!(
+            ledger.admit(key(1, 1), 10, 101, 100).unwrap(),
+            Admission::Replayed
+        );
         assert!(ledger.admit(key(1, 1), 99, 102, 100).is_err());
     }
     #[test]
@@ -160,7 +192,11 @@ mod idempotency_batch_tests {
     use super::*;
 
     fn key(epoch: u64, nonce: u128) -> RequestKey {
-        RequestKey { node: "replica".into(), epoch, nonce }
+        RequestKey {
+            node: "replica".into(),
+            epoch,
+            nonce,
+        }
     }
 
     #[test]
@@ -172,10 +208,17 @@ mod idempotency_batch_tests {
         assert!(ledger.highest_epoch.is_empty());
         assert_eq!(ledger.last_time_ms, 0);
 
-        let admitted = ledger.admit_batch(&[
-            (key(1, 1), 10), (key(1, 1), 10), (key(2, 2), 20),
-        ], 100, 10).unwrap();
-        assert_eq!(admitted, [Admission::New, Admission::Replayed, Admission::New]);
+        let admitted = ledger
+            .admit_batch(
+                &[(key(1, 1), 10), (key(1, 1), 10), (key(2, 2), 20)],
+                100,
+                10,
+            )
+            .unwrap();
+        assert_eq!(
+            admitted,
+            [Admission::New, Admission::Replayed, Admission::New]
+        );
         assert!(ledger.admit(key(1, 3), 10, 101, 10).is_err());
     }
 
@@ -184,11 +227,16 @@ mod idempotency_batch_tests {
         let mut ledger = IdempotencyLedger::new();
         ledger.admit(key(1, 1), 10, 100, 20).unwrap();
         let before_time = ledger.last_time_ms;
-        assert!(ledger.admit_batch(&[
-            (key(2, 2), 20), (key(0, 3), 30),
-        ], 110, 20).is_err());
+        assert!(
+            ledger
+                .admit_batch(&[(key(2, 2), 20), (key(0, 3), 30),], 110, 20)
+                .is_err()
+        );
         assert_eq!(ledger.last_time_ms, before_time);
         assert_eq!(ledger.highest_epoch["replica"], 1);
-        assert_eq!(ledger.admit(key(1, 3), 30, 105, 20).unwrap(), Admission::New);
+        assert_eq!(
+            ledger.admit(key(1, 3), 30, 105, 20).unwrap(),
+            Admission::New
+        );
     }
 }

@@ -1,8 +1,8 @@
 //! Single-writer local database mode.
 //! Tables use existing .schema metadata and immutable, atomically published wide parts.
 use crate::catalog;
-mod rewrite;
 mod ddl;
+mod rewrite;
 pub(super) use self::ddl::apply_ddl;
 use rusthouse_query::{Ddl, Insert, RowPredicate, Select, Source, Update, UpdateValue};
 use rusthouse_storage::{

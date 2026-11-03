@@ -11,11 +11,26 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn trim_supports_custom_characters_and_keeps_space_only_default() {
     for (query, expected) in [
-        ("SELECT trim(' xxAlphaxx ')", ConstantValue::Text("xxAlphaxx".into())),
-        ("SELECT trim('xxAlphaxx', 'x')", ConstantValue::Text("Alpha".into())),
-        ("SELECT trim('XXAlphaxx', 'xX')", ConstantValue::Text("Alpha".into())),
-        ("SELECT trim('  Alpha  ', 'x')", ConstantValue::Text("  Alpha  ".into())),
-        ("SELECT trim('\tAlpha\t')", ConstantValue::Text("\tAlpha\t".into())),
+        (
+            "SELECT trim(' xxAlphaxx ')",
+            ConstantValue::Text("xxAlphaxx".into()),
+        ),
+        (
+            "SELECT trim('xxAlphaxx', 'x')",
+            ConstantValue::Text("Alpha".into()),
+        ),
+        (
+            "SELECT trim('XXAlphaxx', 'xX')",
+            ConstantValue::Text("Alpha".into()),
+        ),
+        (
+            "SELECT trim('  Alpha  ', 'x')",
+            ConstantValue::Text("  Alpha  ".into()),
+        ),
+        (
+            "SELECT trim('\tAlpha\t')",
+            ConstantValue::Text("\tAlpha\t".into()),
+        ),
         ("SELECT trim('abc', '')", ConstantValue::Text("abc".into())),
         ("SELECT trim(NULL)", ConstantValue::Null),
         ("SELECT trim('abc', NULL)", ConstantValue::Null),

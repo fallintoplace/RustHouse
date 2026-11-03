@@ -21,9 +21,9 @@ def source_limit(name):
 
 class JoinDocumentedLimitsTests(unittest.TestCase):
     def test_join_limits_match_executor_source(self):
-        document = (ROOT / "README.md").read_text(encoding="utf-8")
+        document = (ROOT / "docs" / "reference.md").read_text(encoding="utf-8").replace("**", "")
         section = document.split("## Bounded SQL joins", 1)[1].split("## Query frozen parts", 1)[0]
-        self.assertIn(f"{source_limit('MAX_STREAM_JOIN_BUILD_ROWS'):,} build-side rows", section)
+        self.assertIn(f"{source_limit('MAX_STREAM_JOIN_BUILD_ROWS'):,} rows", section)
         self.assertIn(f"{source_limit('MAX_BUFFERED_JOIN_ROWS'):,} rows per input", section)
         self.assertIn(f"{source_limit('MAX_JOIN_RESULT_ROWS'):,} matched rows", section)
         mib = 1024 * 1024

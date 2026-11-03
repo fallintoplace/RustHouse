@@ -19,12 +19,17 @@ pub struct TimedLeaseLedger {
 }
 
 fn identifier(value: &str) -> bool {
-    !value.is_empty() && value.len() <= 64
-        && value.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    !value.is_empty()
+        && value.len() <= 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
 impl TimedLeaseLedger {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     pub fn apply(
         &mut self,
@@ -32,9 +37,12 @@ impl TimedLeaseLedger {
         now_ms: u64,
         max_ttl_ms: u64,
     ) -> Result<(), &'static str> {
-        if !identifier(&proposed.resource) || !identifier(&proposed.holder)
-            || proposed.token.epoch == 0 || proposed.token.sequence == 0
-            || now_ms < self.last_now_ms || max_ttl_ms == 0
+        if !identifier(&proposed.resource)
+            || !identifier(&proposed.holder)
+            || proposed.token.epoch == 0
+            || proposed.token.sequence == 0
+            || now_ms < self.last_now_ms
+            || max_ttl_ms == 0
             || proposed.expires_at_ms <= now_ms
             || proposed.expires_at_ms > now_ms.saturating_add(max_ttl_ms)
         {
@@ -56,7 +64,6 @@ impl TimedLeaseLedger {
         Ok(())
     }
 
-
     /// Apply a set of externally fenced leases without partial local writes.
     pub fn apply_batch(
         &mut self,
@@ -68,7 +75,10 @@ impl TimedLeaseLedger {
             return Err("replica lease batch exceeds limit");
         }
         let mut seen = HashSet::new();
-        if leases.iter().any(|lease| !seen.insert(lease.resource.as_str())) {
+        if leases
+            .iter()
+            .any(|lease| !seen.insert(lease.resource.as_str()))
+        {
             return Err("duplicate resource in replica lease batch");
         }
         let mut staged = self.clone();
@@ -81,7 +91,9 @@ impl TimedLeaseLedger {
 
     /// Expiry does not remove high-water tokens from the ledger.
     pub fn active(&self, resource: &str, now_ms: u64) -> Option<&TimedLease> {
-        self.entries.get(resource).filter(|entry| entry.expires_at_ms > now_ms)
+        self.entries
+            .get(resource)
+            .filter(|entry| entry.expires_at_ms > now_ms)
     }
 }
 
@@ -90,8 +102,13 @@ mod tests {
     use super::*;
     fn lease(holder: &str, seq: u64, expires: u64) -> TimedLease {
         TimedLease {
-            resource: "shard".into(), holder: holder.into(),
-            token: FenceToken { epoch: 1, sequence: seq }, expires_at_ms: expires,
+            resource: "shard".into(),
+            holder: holder.into(),
+            token: FenceToken {
+                epoch: 1,
+                sequence: seq,
+            },
+            expires_at_ms: expires,
         }
     }
 
@@ -123,7 +140,10 @@ mod lease_batch_tests {
         TimedLease {
             resource: resource.into(),
             holder: holder.into(),
-            token: FenceToken { epoch: 1, sequence: token },
+            token: FenceToken {
+                epoch: 1,
+                sequence: token,
+            },
             expires_at_ms: expiry,
         }
     }
@@ -135,11 +155,17 @@ mod lease_batch_tests {
         let before = ledger.clone();
         let new_lease = lease("other", "b", 1, 145);
         let bad = lease("shard", "b", 5, 145);
-        assert!(ledger.apply_batch(&[new_lease.clone(), bad], 110, 50).is_err());
+        assert!(
+            ledger
+                .apply_batch(&[new_lease.clone(), bad], 110, 50)
+                .is_err()
+        );
         assert_eq!(ledger.entries, before.entries);
         assert_eq!(ledger.last_now_ms, before.last_now_ms);
 
-        ledger.apply_batch(&[new_lease, lease("shard", "b", 6, 145)], 110, 50).unwrap();
+        ledger
+            .apply_batch(&[new_lease, lease("shard", "b", 6, 145)], 110, 50)
+            .unwrap();
         assert_eq!(ledger.active("shard", 111).unwrap().holder, "b");
         assert!(ledger.active("other", 111).is_some());
     }
@@ -147,9 +173,15 @@ mod lease_batch_tests {
     #[test]
     fn repeated_resource_is_not_a_valid_batch() {
         let mut ledger = TimedLeaseLedger::new();
-        assert!(ledger.apply_batch(&[
-            lease("shard", "a", 1, 20), lease("shard", "b", 2, 20),
-        ], 10, 20).is_err());
+        assert!(
+            ledger
+                .apply_batch(
+                    &[lease("shard", "a", 1, 20), lease("shard", "b", 2, 20),],
+                    10,
+                    20
+                )
+                .is_err()
+        );
         assert!(ledger.entries.is_empty());
     }
 }

@@ -100,9 +100,13 @@ pub fn coalesce_indexed_chunks(
         previous_end = end;
         previous_index = Some(chunk.index);
         if let Some(last) = runs.last_mut() {
-            let next_index = last.first_index.checked_add(last.chunk_count)
+            let next_index = last
+                .first_index
+                .checked_add(last.chunk_count)
                 .ok_or("transfer run index overflow")?;
-            let run_end = last.offset.checked_add(last.length)
+            let run_end = last
+                .offset
+                .checked_add(last.length)
                 .ok_or("transfer run byte range overflow")?;
             if chunk.index == next_index
                 && item.offset == run_end
@@ -205,8 +209,20 @@ mod coalesced_chunk_runs_tests {
     #[test]
     fn canonical_coalescing_rejects_forged_resume_ranges() {
         let sparse = [
-            IndexedChunk { index: 0, chunk: Chunk { offset: 0, length: 7 } },
-            IndexedChunk { index: 2, chunk: Chunk { offset: 14, length: 6 } },
+            IndexedChunk {
+                index: 0,
+                chunk: Chunk {
+                    offset: 0,
+                    length: 7,
+                },
+            },
+            IndexedChunk {
+                index: 2,
+                chunk: Chunk {
+                    offset: 14,
+                    length: 6,
+                },
+            },
         ];
         let runs = coalesce_canonical_indexed_chunks(&sparse, 20, 7, 4, 20).unwrap();
         assert_eq!(runs.len(), 2);
@@ -224,7 +240,11 @@ mod coalesced_chunk_runs_tests {
         assert!(coalesce_canonical_indexed_chunks(&forged, 20, 7, 4, 20).is_err());
         assert!(coalesce_canonical_indexed_chunks(&sparse, 20, 0, 4, 20).is_err());
         assert!(coalesce_canonical_indexed_chunks(&sparse, 20, 7, 2, 20).is_err());
-        assert!(coalesce_canonical_indexed_chunks(&[], 0, 7, 1, 20).unwrap().is_empty());
+        assert!(
+            coalesce_canonical_indexed_chunks(&[], 0, 7, 1, 20)
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -256,12 +276,18 @@ mod coalesced_chunk_runs_tests {
         for index in [65_536, usize::MAX] {
             let bad = IndexedChunk {
                 index,
-                chunk: Chunk { offset: 0, length: 1 },
+                chunk: Chunk {
+                    offset: 0,
+                    length: 1,
+                },
             };
             assert!(coalesce_indexed_chunks(&[bad], 10).is_err());
             let valid = IndexedChunk {
                 index: 65_535,
-                chunk: Chunk { offset: 0, length: 1 },
+                chunk: Chunk {
+                    offset: 0,
+                    length: 1,
+                },
             };
             assert!(coalesce_indexed_chunks(&[valid, bad], 10).is_err());
         }
@@ -269,10 +295,15 @@ mod coalesced_chunk_runs_tests {
             coalesce_indexed_chunks(
                 &[IndexedChunk {
                     index: 65_535,
-                    chunk: Chunk { offset: u64::MAX - 1, length: 1 },
+                    chunk: Chunk {
+                        offset: u64::MAX - 1,
+                        length: 1
+                    },
                 }],
                 u64::MAX,
-            ).unwrap()[0].first_index,
+            )
+            .unwrap()[0]
+                .first_index,
             65_535,
         );
     }
@@ -1742,9 +1773,21 @@ mod fair_transfer_tiny_budget_skip_tests {
         ];
         let selected = plan_fair_replica_transfers(&sources, 14, 16).unwrap();
         assert_eq!(selected.len(), 2);
-        assert_eq!((selected[0].source_index, selected[0].indexed.index), (0, 4096));
-        assert_eq!((selected[1].source_index, selected[1].indexed.index), (1, 4096));
-        assert_eq!(selected.iter().map(|item| item.indexed.chunk.length).sum::<u64>(), 14);
+        assert_eq!(
+            (selected[0].source_index, selected[0].indexed.index),
+            (0, 4096)
+        );
+        assert_eq!(
+            (selected[1].source_index, selected[1].indexed.index),
+            (1, 4096)
+        );
+        assert_eq!(
+            selected
+                .iter()
+                .map(|item| item.indexed.chunk.length)
+                .sum::<u64>(),
+            14
+        );
     }
 
     #[test]
@@ -1769,10 +1812,14 @@ mod fair_transfer_tiny_budget_skip_tests {
         ];
         let selected = plan_fair_replica_transfers(&sources, 14, 16).unwrap();
         assert_eq!(selected.len(), 1);
-        assert_eq!((selected[0].source_index, selected[0].indexed.index), (1, 4096));
         assert_eq!(
-            plan_fair_replica_transfers(&sources, 128, 1)
-                .unwrap()[0].indexed.index,
+            (selected[0].source_index, selected[0].indexed.index),
+            (1, 4096)
+        );
+        assert_eq!(
+            plan_fair_replica_transfers(&sources, 128, 1).unwrap()[0]
+                .indexed
+                .index,
             0,
             "a full-size budget must still consider the earliest missing chunk"
         );

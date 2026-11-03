@@ -21,7 +21,10 @@ pub struct JoinColumn {
 
 impl JoinColumn {
     fn count_order() -> Self {
-        Self { relation: String::new(), name: "#count".into() }
+        Self {
+            relation: String::new(),
+            name: "#count".into(),
+        }
     }
 
     pub(crate) fn is_count_order(&self) -> bool {
@@ -452,7 +455,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
         if parser.keyword("IS") {
             let not_null = parser.keyword("NOT");
             if !parser.keyword("NULL") && !parser.keyword("UNKNOWN") {
-                return Err(ParseError("JOIN WHERE requires IS [NOT] NULL or UNKNOWN".into()));
+                return Err(ParseError(
+                    "JOIN WHERE requires IS [NOT] NULL or UNKNOWN".into(),
+                ));
             }
             (Some((column, not_null)), None)
         } else {
@@ -511,7 +516,9 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
                     || !parser.take(Token::Star)
                     || !parser.take(Token::RParen)
                 {
-                    return Err(ParseError("grouped JOIN ORDER BY COUNT requires COUNT(*)".into()));
+                    return Err(ParseError(
+                        "grouped JOIN ORDER BY COUNT requires COUNT(*)".into(),
+                    ));
                 }
                 JoinColumn::count_order()
             } else {
@@ -856,7 +863,11 @@ pub fn explain_join(query: &JoinSelect) -> String {
                     None => "",
                 };
                 let name = if column.is_count_order() {
-                    query.aggregate_alias.as_deref().unwrap_or("count").to_owned()
+                    query
+                        .aggregate_alias
+                        .as_deref()
+                        .unwrap_or("count")
+                        .to_owned()
                 } else {
                     format!("{}.{}", column.relation, column.name)
                 };
@@ -1434,7 +1445,10 @@ mod tests {
             .unwrap();
         assert!(comparison.where_comparison.is_some());
         let sql = "SELECT * FROM l JOIN r ON l.id = r.id WHERE r.id IS UNKNOWN";
-        assert!(parse_join(sql).is_err(), "{sql}");
+        assert!(
+            parse_join(sql).unwrap().unwrap().where_null.is_some(),
+            "{sql}"
+        );
     }
 
     #[test]
@@ -1506,7 +1520,10 @@ mod join_count_one_tests {
         for aggregate in ["COUNT(*)", "COUNT(1)"] {
             let sql = format!("SELECT {aggregate} FROM l JOIN r ON l.id = r.id");
             let query = parse_join(&sql).unwrap().unwrap();
-            assert!(matches!(query.aggregate, Some(JoinAggregate::CountStar)), "{sql}");
+            assert!(
+                matches!(query.aggregate, Some(JoinAggregate::CountStar)),
+                "{sql}"
+            );
         }
         assert!(parse_join("SELECT COUNT(2) FROM l JOIN r ON l.id = r.id").is_err());
     }

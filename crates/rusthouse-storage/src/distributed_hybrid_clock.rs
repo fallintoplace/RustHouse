@@ -14,9 +14,14 @@ pub struct HybridClock {
 
 impl HybridClock {
     pub fn new(node: u16, now_ms: u64) -> Self {
-        Self { current: HybridTimestamp { physical_ms: now_ms, logical: 0, node } }
+        Self {
+            current: HybridTimestamp {
+                physical_ms: now_ms,
+                logical: 0,
+                node,
+            },
+        }
     }
-
 
     /// Resume from externally durable clock state after a restart.
     /// The caller must persist timestamps before publishing their effects.
@@ -35,16 +40,26 @@ impl HybridClock {
         Ok(Self { current: persisted })
     }
 
-    pub fn current(&self) -> HybridTimestamp { self.current }
+    pub fn current(&self) -> HybridTimestamp {
+        self.current
+    }
 
     /// Advance even when the local wall clock moves backwards.
     pub fn tick(&mut self, now_ms: u64) -> Result<HybridTimestamp, &'static str> {
         let next = if now_ms > self.current.physical_ms {
-            HybridTimestamp { physical_ms: now_ms, logical: 0, node: self.current.node }
+            HybridTimestamp {
+                physical_ms: now_ms,
+                logical: 0,
+                node: self.current.node,
+            }
         } else {
             HybridTimestamp {
                 physical_ms: self.current.physical_ms,
-                logical: self.current.logical.checked_add(1).ok_or("hybrid clock logical overflow")?,
+                logical: self
+                    .current
+                    .logical
+                    .checked_add(1)
+                    .ok_or("hybrid clock logical overflow")?,
                 node: self.current.node,
             }
         };
@@ -65,16 +80,29 @@ impl HybridClock {
         }
         let physical = self.current.physical_ms.max(remote.physical_ms).max(now_ms);
         let logical = if physical == self.current.physical_ms && physical == remote.physical_ms {
-            self.current.logical.max(remote.logical)
-                .checked_add(1).ok_or("hybrid clock logical overflow")?
+            self.current
+                .logical
+                .max(remote.logical)
+                .checked_add(1)
+                .ok_or("hybrid clock logical overflow")?
         } else if physical == self.current.physical_ms {
-            self.current.logical.checked_add(1).ok_or("hybrid clock logical overflow")?
+            self.current
+                .logical
+                .checked_add(1)
+                .ok_or("hybrid clock logical overflow")?
         } else if physical == remote.physical_ms {
-            remote.logical.checked_add(1).ok_or("hybrid clock logical overflow")?
+            remote
+                .logical
+                .checked_add(1)
+                .ok_or("hybrid clock logical overflow")?
         } else {
             0
         };
-        let next = HybridTimestamp { physical_ms: physical, logical, node: self.current.node };
+        let next = HybridTimestamp {
+            physical_ms: physical,
+            logical,
+            node: self.current.node,
+        };
         self.current = next;
         Ok(next)
     }
@@ -97,7 +125,11 @@ mod tests {
     fn observing_same_time_advances_past_both_logical_counters() {
         let mut clock = HybridClock::new(2, 100);
         clock.tick(100).unwrap();
-        let remote = HybridTimestamp { physical_ms: 100, logical: 9, node: 3 };
+        let remote = HybridTimestamp {
+            physical_ms: 100,
+            logical: 9,
+            node: 3,
+        };
         assert_eq!(clock.observe(remote, 99, 2).unwrap().logical, 10);
         assert_eq!(clock.observe(remote, 102, 2).unwrap().logical, 0);
     }
@@ -106,7 +138,11 @@ mod tests {
     fn skew_error_is_atomic() {
         let mut clock = HybridClock::new(1, 100);
         let before = clock.current();
-        let remote = HybridTimestamp { physical_ms: 1000, logical: 0, node: 2 };
+        let remote = HybridTimestamp {
+            physical_ms: 1000,
+            logical: 0,
+            node: 2,
+        };
         assert!(clock.observe(remote, 100, 20).is_err());
         assert_eq!(clock.current(), before);
     }
@@ -115,7 +151,11 @@ mod tests {
     fn remote_logical_overflow_does_not_advance_state() {
         let mut clock = HybridClock::new(1, 1);
         let before = clock.current();
-        let remote = HybridTimestamp { physical_ms: 2, logical: u32::MAX, node: 3 };
+        let remote = HybridTimestamp {
+            physical_ms: 2,
+            logical: u32::MAX,
+            node: 3,
+        };
         assert!(clock.observe(remote, 2, 0).is_err());
         assert_eq!(clock.current(), before);
     }
@@ -137,9 +177,16 @@ mod restart_clock_tests {
 
     #[test]
     fn wrong_node_and_excessive_clock_skew_fail_closed() {
-        let previous = HybridTimestamp { node: 7, physical_ms: 100, logical: 5 };
+        let previous = HybridTimestamp {
+            node: 7,
+            physical_ms: 100,
+            logical: 5,
+        };
         assert!(HybridClock::restore(8, previous, 100, 10).is_err());
         assert!(HybridClock::restore(7, previous, 70, 20).is_err());
-        assert_eq!(HybridClock::restore(7, previous, 70, 30).unwrap().current(), previous);
+        assert_eq!(
+            HybridClock::restore(7, previous, 70, 30).unwrap().current(),
+            previous
+        );
     }
 }

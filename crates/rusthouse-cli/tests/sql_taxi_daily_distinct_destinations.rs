@@ -29,7 +29,9 @@ fn taxi_distinct_destinations_by_day_having_ranks_non_null_values() {
         b"pickup_day\tdestinations\n4\t4\n2\t3\n1\t2\n"
     );
 
-    let empty = sql("SELECT pickup_day, COUNT(DISTINCT dropoff_zone) AS destinations FROM trips GROUP BY pickup_day HAVING COUNT(DISTINCT dropoff_zone) >= 5 ORDER BY count DESC LIMIT 3");
+    let empty = sql(
+        "SELECT pickup_day, COUNT(DISTINCT dropoff_zone) AS destinations FROM trips GROUP BY pickup_day HAVING COUNT(DISTINCT dropoff_zone) >= 5 ORDER BY count DESC LIMIT 3",
+    );
     assert!(empty.status.success(), "{empty:?}");
     assert_eq!(empty.stdout, b"pickup_day\tdestinations\n");
     fs::remove_dir_all(db).unwrap();

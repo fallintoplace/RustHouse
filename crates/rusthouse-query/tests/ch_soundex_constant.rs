@@ -11,10 +11,22 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn soundex_encodes_ascii_names() {
     for (query, expected) in [
-        ("SELECT soundex('aksel')", ConstantValue::Text("A240".into())),
-        ("SELECT soundex('Robert')", ConstantValue::Text("R163".into())),
-        ("SELECT soundex('Rupert')", ConstantValue::Text("R163".into())),
-        ("SELECT soundex('Ashcraft')", ConstantValue::Text("A226".into())),
+        (
+            "SELECT soundex('aksel')",
+            ConstantValue::Text("A240".into()),
+        ),
+        (
+            "SELECT soundex('Robert')",
+            ConstantValue::Text("R163".into()),
+        ),
+        (
+            "SELECT soundex('Rupert')",
+            ConstantValue::Text("R163".into()),
+        ),
+        (
+            "SELECT soundex('Ashcraft')",
+            ConstantValue::Text("A226".into()),
+        ),
         ("SELECT soundex('1234')", ConstantValue::Text("0000".into())),
         ("SELECT soundex('')", ConstantValue::Text("0000".into())),
         ("SELECT soundex(NULL)", ConstantValue::Null),

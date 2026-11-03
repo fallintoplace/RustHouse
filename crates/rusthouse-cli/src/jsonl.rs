@@ -52,7 +52,13 @@ impl<W: Write> JsonlWriter<W> {
         }
 
         let headers = self.headers.as_ref().unwrap();
-        let result = write_json_row_into(&mut self.output, headers, &self.line, &mut self.encoded, &mut self.decoded);
+        let result = write_json_row_into(
+            &mut self.output,
+            headers,
+            &self.line,
+            &mut self.encoded,
+            &mut self.decoded,
+        );
         self.line.clear();
         result
     }
@@ -254,7 +260,13 @@ impl<W: Write> Write for JsonlWriter<W> {
             if complete && self.line.is_empty() {
                 if let Some(headers) = self.headers.as_ref() {
                     // Complete data rows can be encoded straight from this write.
-                    write_json_row_into(&mut self.output, headers, fragment, &mut self.encoded, &mut self.decoded)?;
+                    write_json_row_into(
+                        &mut self.output,
+                        headers,
+                        fragment,
+                        &mut self.encoded,
+                        &mut self.decoded,
+                    )?;
                     continue;
                 }
             }
@@ -723,7 +735,10 @@ mod crlf_record_tests {
         writer.write_all(b"bo").unwrap();
         writer.write_all(b"b\r").unwrap();
         writer.write_all(b"\n").unwrap();
-        assert_eq!(writer.output, "{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n".as_bytes());
+        assert_eq!(
+            writer.output,
+            "{\"name\":\"alice\"}\n{\"name\":\"bob\"}\n".as_bytes()
+        );
     }
 }
 

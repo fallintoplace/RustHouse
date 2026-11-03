@@ -44,11 +44,13 @@ pub(super) fn merge_multi_key_product(
             }
             let normalized = fields[..columns.len()]
                 .iter()
-                .map(|field| normalized_group_key(field)
-                    .map_err(|_| MergeError::InvalidGroupedProduct))
+                .map(|field| {
+                    normalized_group_key(field).map_err(|_| MergeError::InvalidGroupedProduct)
+                })
                 .collect::<Result<Vec<_>, _>>()?;
             let raw = fields[columns.len()];
-            let key_len = row.len()
+            let key_len = row
+                .len()
                 .checked_sub(raw.len() + 1)
                 .ok_or(MergeError::InvalidGroupedProduct)?;
             let index = if let Some(&id) = lookup.get(&normalized) {
@@ -69,22 +71,25 @@ pub(super) fn merge_multi_key_product(
             if raw == b"NULL" {
                 continue;
             }
-            let text = std::str::from_utf8(raw)
-                .map_err(|_| MergeError::InvalidGroupedProduct)?;
+            let text = std::str::from_utf8(raw).map_err(|_| MergeError::InvalidGroupedProduct)?;
             if unsigned {
-                let value = text.parse::<u128>()
+                let value = text
+                    .parse::<u128>()
                     .map_err(|_| MergeError::InvalidGroupedProduct)?;
                 groups[index].2 = Some(match groups[index].2 {
                     None => value,
-                    Some(previous) => previous.checked_mul(value)
+                    Some(previous) => previous
+                        .checked_mul(value)
                         .ok_or(MergeError::ProductOverflow)?,
                 });
             } else {
-                let value = text.parse::<i128>()
+                let value = text
+                    .parse::<i128>()
                     .map_err(|_| MergeError::InvalidGroupedProduct)?;
                 groups[index].1 = Some(match groups[index].1 {
                     None => value,
-                    Some(previous) => previous.checked_mul(value)
+                    Some(previous) => previous
+                        .checked_mul(value)
                         .ok_or(MergeError::ProductOverflow)?,
                 });
             }
@@ -127,8 +132,14 @@ mod tests {
     #[test]
     fn multiplies_shared_signed_groups_and_preserves_null_groups() {
         let shards = [
-            (10, b"region\tcategory\tproduct(amount)\nwest\ta\t-3\neast\tb\tNULL\n".to_vec()),
-            (10, b"region\tcategory\tproduct(amount)\nwest\ta\t4\neast\tb\t5\n".to_vec()),
+            (
+                10,
+                b"region\tcategory\tproduct(amount)\nwest\ta\t-3\neast\tb\tNULL\n".to_vec(),
+            ),
+            (
+                10,
+                b"region\tcategory\tproduct(amount)\nwest\ta\t4\neast\tb\t5\n".to_vec(),
+            ),
         ];
         assert_eq!(
             merge_multi_key_product(&shards, &dimensions(), "amount", "Int64", 10).unwrap(),
@@ -163,14 +174,20 @@ mod tests {
         assert_eq!(
             merge_multi_key_product(
                 &[(10, format!("{prefix}west\ta\tbad\n").into_bytes())],
-                &dimensions(), "amount", "Int64", 10
+                &dimensions(),
+                "amount",
+                "Int64",
+                10
             ),
             Err(MergeError::InvalidGroupedProduct)
         );
         assert_eq!(
             merge_multi_key_product(
                 &[(1, format!("{prefix}west\ta\t4\n").into_bytes())],
-                &dimensions(), "amount", "Int64", 10
+                &dimensions(),
+                "amount",
+                "Int64",
+                10
             ),
             Err(MergeError::ShardRowLimit)
         );

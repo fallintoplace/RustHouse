@@ -39,20 +39,23 @@ pub(super) fn merge_multi_key_countif(
             }
             let value = std::str::from_utf8(fields[columns.len()])
                 .map_err(|_| MergeError::InvalidGroupedSum)?;
-            let partial = value.parse::<u128>().map_err(|_| MergeError::InvalidGroupedSum)?;
+            let partial = value
+                .parse::<u128>()
+                .map_err(|_| MergeError::InvalidGroupedSum)?;
             if partial.to_string() != value {
                 return Err(MergeError::InvalidGroupedSum);
             }
             let normalized = fields[..columns.len()]
                 .iter()
-                .map(|field| normalized_group_key(field)
-                    .map_err(|_| MergeError::InvalidGroupedSum))
+                .map(|field| normalized_group_key(field).map_err(|_| MergeError::InvalidGroupedSum))
                 .collect::<Result<Vec<_>, _>>()?;
-            let tuple_len = row.len()
+            let tuple_len = row
+                .len()
                 .checked_sub(value.len() + 1)
                 .ok_or(MergeError::InvalidGroupedSum)?;
             if let Some(&id) = positions.get(&normalized) {
-                groups[id].1 = groups[id].1
+                groups[id].1 = groups[id]
+                    .1
                     .checked_add(partial)
                     .ok_or(MergeError::CountOverflow)?;
             } else {
@@ -101,8 +104,14 @@ mod tests {
     #[test]
     fn combines_signed_numeric_predicate_counts_on_shared_tuples() {
         let shards = [
-            (10, b"region\tcategory\tcountIf(amount)\nwest\ta\t2\nwest\tb\t0\n".to_vec()),
-            (10, b"region\tcategory\tcountIf(amount)\nwest\ta\t3\neast\tb\t1\n".to_vec()),
+            (
+                10,
+                b"region\tcategory\tcountIf(amount)\nwest\ta\t2\nwest\tb\t0\n".to_vec(),
+            ),
+            (
+                10,
+                b"region\tcategory\tcountIf(amount)\nwest\ta\t3\neast\tb\t1\n".to_vec(),
+            ),
         ];
         assert_eq!(
             merge_multi_key_countif(&shards, &dimensions(), "amount", 10).unwrap(),
@@ -114,7 +123,10 @@ mod tests {
     fn uses_exact_integer_counts_without_losing_large_partials() {
         let prefix = "region\tcategory\tcountIf(amount)\n";
         let shards = [
-            (10, format!("{prefix}west\ta\t{}\n", u128::MAX - 1).into_bytes()),
+            (
+                10,
+                format!("{prefix}west\ta\t{}\n", u128::MAX - 1).into_bytes(),
+            ),
             (10, format!("{prefix}west\ta\t1\n").into_bytes()),
         ];
         assert_eq!(
@@ -138,7 +150,9 @@ mod tests {
             assert_eq!(
                 merge_multi_key_countif(
                     &[(10, format!("{prefix}west\ta\t{number}\n").into_bytes())],
-                    &dimensions(), "amount", 10
+                    &dimensions(),
+                    "amount",
+                    10
                 ),
                 Err(MergeError::InvalidGroupedSum),
             );
@@ -146,7 +160,9 @@ mod tests {
         assert_eq!(
             merge_multi_key_countif(
                 &[(1, format!("{prefix}west\ta\t1\n").into_bytes())],
-                &dimensions(), "amount", 10
+                &dimensions(),
+                "amount",
+                10
             ),
             Err(MergeError::ShardRowLimit)
         );

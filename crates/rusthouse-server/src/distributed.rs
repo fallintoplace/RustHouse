@@ -1,22 +1,22 @@
 //! Experimental read-only scatter/gather SELECT against distinct local shards.
 //! Unordered row projections and global pagination preserve configured peer order.
 
-mod dispatch;
-mod query_policy;
-mod sorted_merge;
-mod rms_merge;
 mod avg_merge;
-mod range_merge;
-mod multi_count_column;
+mod dispatch;
+mod distinct_merge;
 mod multi_bitwise;
-mod multi_product;
-mod multi_sumsquares;
+mod multi_count_column;
 mod multi_countif;
 mod multi_extrema;
+mod multi_product;
 mod multi_sum;
+mod multi_sumsquares;
+mod query_policy;
+mod range_merge;
+mod rms_merge;
+mod sorted_merge;
 mod text_merge;
 mod uuid_extrema;
-mod distinct_merge;
 use self::distinct_merge::*;
 
 use self::query_policy::*;
@@ -55,7 +55,6 @@ enum MergeError {
     SumOverflow,
     ProductOverflow,
 }
-
 
 /// Parse only the canonical RustHouse peer capability document, never
 /// trust matching substrings embedded in arbitrary JSON string values.
@@ -386,6 +385,10 @@ fn reserve_shard_bytes(used: &AtomicUsize, amount: usize) -> Result<(), String> 
     }
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Each input is part of the shard request or its shared limits."
+)]
 fn read_shard(
     peer: Peer,
     sql: &str,
@@ -883,10 +886,10 @@ fn extrema_fits_declared_type(kind: &str, raw: &str) -> bool {
     };
     if unsigned {
         raw.parse::<u128>()
-            .is_ok_and(|value| bits == 128 || value <= (1u128 << bits) - 1)
+            .is_ok_and(|value| bits == 128 || value < (1u128 << bits))
     } else {
         raw.parse::<i128>().is_ok_and(|value| {
-            bits == 128 || (value >= -(1i128 << (bits - 1)) && value <= (1i128 << (bits - 1)) - 1)
+            bits == 128 || (value >= -(1i128 << (bits - 1)) && value < (1i128 << (bits - 1)))
         })
     }
 }
@@ -975,10 +978,7 @@ fn merge_integer_bitwise(
 
 /// PRODUCT is decomposable over disjoint shard partials. Empty shards do not
 /// contribute an identity, and overflow must fail rather than wrap.
-fn merge_integer_products(
-    shards: &[(usize, Vec<u8>)],
-    kind: &str,
-) -> Result<Vec<u8>, MergeError> {
+fn merge_integer_products(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>, MergeError> {
     let unsigned = kind
         .strip_prefix("Nullable(")
         .unwrap_or(kind)
@@ -1197,9 +1197,7 @@ fn merge_grouped_distinct_pairs(
         }
         let mut count = 0usize;
         for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
-            count = count
-                .checked_add(1)
-                .ok_or(MergeError::CoordinatorLimit)?;
+            count = count.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
             if count >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
@@ -1300,9 +1298,7 @@ fn merge_multi_grouped_distinct_pairs(
         }
         let mut count = 0usize;
         for row in rows[..rows.len() - 1].split(|&byte| byte == b'\n') {
-            count = count
-                .checked_add(1)
-                .ok_or(MergeError::CoordinatorLimit)?;
+            count = count.checked_add(1).ok_or(MergeError::CoordinatorLimit)?;
             if count >= *cap {
                 return Err(MergeError::ShardRowLimit);
             }
@@ -1706,9 +1702,9 @@ fn merge_grouped_integer_aggregate_query(
                         Some(prior) => match function {
                             AggregateFunction::Min => prior.min(number),
                             AggregateFunction::Max => prior.max(number),
-                            AggregateFunction::Product => {
-                                prior.checked_mul(number).ok_or(MergeError::ProductOverflow)?
-                            }
+                            AggregateFunction::Product => prior
+                                .checked_mul(number)
+                                .ok_or(MergeError::ProductOverflow)?,
                             AggregateFunction::GroupBitAnd => prior & number,
                             AggregateFunction::GroupBitOr => prior | number,
                             AggregateFunction::GroupBitXor => prior ^ number,
@@ -1724,9 +1720,9 @@ fn merge_grouped_integer_aggregate_query(
                         Some(prior) => match function {
                             AggregateFunction::Min => prior.min(number),
                             AggregateFunction::Max => prior.max(number),
-                            AggregateFunction::Product => {
-                                prior.checked_mul(number).ok_or(MergeError::ProductOverflow)?
-                            }
+                            AggregateFunction::Product => prior
+                                .checked_mul(number)
+                                .ok_or(MergeError::ProductOverflow)?,
                             AggregateFunction::GroupBitAnd => prior & number,
                             AggregateFunction::GroupBitOr => prior | number,
                             AggregateFunction::GroupBitXor => prior ^ number,
@@ -1840,7 +1836,6 @@ fn merge_grouped_integer_aggregate_query(
     Ok(output)
 }
 
-
 fn merge_grouped_integer_products_query(
     shards: &[(usize, Vec<u8>)],
     max_rows: usize,
@@ -1850,7 +1845,13 @@ fn merge_grouped_integer_products_query(
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
     merge_grouped_integer_aggregate_query(
-        shards, max_rows, kind, key_column, value_column, AggregateFunction::Product, global,
+        shards,
+        max_rows,
+        kind,
+        key_column,
+        value_column,
+        AggregateFunction::Product,
+        global,
     )
     .map_err(|error| match error {
         MergeError::InvalidGroupedSum => MergeError::InvalidGroupedProduct,
@@ -1868,7 +1869,13 @@ fn merge_grouped_integer_bitwise_query(
     global: Option<&Select>,
 ) -> Result<Vec<u8>, MergeError> {
     merge_grouped_integer_aggregate_query(
-        shards, max_rows, kind, key_column, value_column, function, global,
+        shards,
+        max_rows,
+        kind,
+        key_column,
+        value_column,
+        function,
+        global,
     )
     .map_err(|error| match error {
         MergeError::InvalidGroupedSum => MergeError::InvalidGroupedBitwise,
@@ -2314,10 +2321,16 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 return Response::text("400 Bad Request", "unsupported distributed pagination\n");
             }
         }
-    } else if grouped_sum_query || grouped_extremum_query || grouped_product_query || grouped_bitwise_query {
+    } else if grouped_sum_query
+        || grouped_extremum_query
+        || grouped_product_query
+        || grouped_bitwise_query
+    {
         match grouped_count_shard_sql(sql, &select) {
             Some(query) => query,
-            None => return Response::text("400 Bad Request", "unsupported global grouped aggregate\n"),
+            None => {
+                return Response::text("400 Bad Request", "unsupported global grouped aggregate\n");
+            }
         }
     } else if grouped_count_query {
         match grouped_count_shard_sql(sql, &select) {
@@ -2382,7 +2395,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::Aggregate {
-                function: AggregateFunction::Sum
+                function:
+                    AggregateFunction::Sum
                     | AggregateFunction::SumSquares
                     | AggregateFunction::Rms
                     | AggregateFunction::Avg
@@ -2399,7 +2413,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum
+                function:
+                    AggregateFunction::Sum
                     | AggregateFunction::SumSquares
                     | AggregateFunction::Count
                     | AggregateFunction::CountIf
@@ -2414,19 +2429,40 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             },
         ) => Some((table.as_str(), value_column.as_str())),
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
-            if grouped_multi_count_column_query => Some((table.as_str(), items[0].1.as_str())),
+            if grouped_multi_count_column_query =>
+        {
+            Some((table.as_str(), items[0].1.as_str()))
+        }
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
-            if grouped_multi_bitwise_query => Some((table.as_str(), items[0].1.as_str())),
+            if grouped_multi_bitwise_query =>
+        {
+            Some((table.as_str(), items[0].1.as_str()))
+        }
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
-            if grouped_multi_product_query => Some((table.as_str(), items[0].1.as_str())),
+            if grouped_multi_product_query =>
+        {
+            Some((table.as_str(), items[0].1.as_str()))
+        }
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
-            if grouped_multi_sumsquares_query => Some((table.as_str(), items[0].1.as_str())),
+            if grouped_multi_sumsquares_query =>
+        {
+            Some((table.as_str(), items[0].1.as_str()))
+        }
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
-            if grouped_multi_countif_query => Some((table.as_str(), items[0].1.as_str())),
+            if grouped_multi_countif_query =>
+        {
+            Some((table.as_str(), items[0].1.as_str()))
+        }
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
-            if grouped_multi_extremum_query => Some((table.as_str(), items[0].1.as_str())),
+            if grouped_multi_extremum_query =>
+        {
+            Some((table.as_str(), items[0].1.as_str()))
+        }
         (Some(Source::Table(table)), Projection::GroupedMultiAggregates { items, .. })
-            if grouped_multi_sum_query => Some((table.as_str(), items[0].1.as_str())),
+            if grouped_multi_sum_query =>
+        {
+            Some((table.as_str(), items[0].1.as_str()))
+        }
         (Some(Source::Table(table)), Projection::Columns(columns)) if sorted_query => columns
             .first()
             .map(|column| (table.as_str(), column.as_str())),
@@ -2436,7 +2472,8 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         (
             Some(Source::Table(table)),
             Projection::GroupedAggregate {
-                function: AggregateFunction::Sum
+                function:
+                    AggregateFunction::Sum
                     | AggregateFunction::SumSquares
                     | AggregateFunction::Count
                     | AggregateFunction::CountIf
@@ -2542,37 +2579,38 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
             .and_then(|schema| validated_schema_kind(schema, column));
         match kind {
             Some(
-                kind @ ("Int8" | "UInt8" | "Int16" | "UInt16"
-                | "Nullable(Int8)" | "Nullable(UInt8)"
-                | "Nullable(Int16)" | "Nullable(UInt16)"),
+                kind @ ("Int8" | "UInt8" | "Int16" | "UInt16" | "Nullable(Int8)"
+                | "Nullable(UInt8)" | "Nullable(Int16)" | "Nullable(UInt16)"),
             ) => merge_distinct_bitmap16(&shards, column, kind),
             Some("Int32" | "Nullable(Int32)") => merge_distinct_bitmap32(&shards, column, true),
             Some("UInt32" | "Nullable(UInt32)") => merge_distinct_bitmap32(&shards, column, false),
             Some("UUID") => merge_distinct_uuid(&shards, column, false),
             Some("Nullable(UUID)") => merge_distinct_uuid(&shards, column, true),
-            Some(kind @ ("Int64" | "UInt64" | "Int128" | "UInt128"
-                | "Nullable(Int64)" | "Nullable(UInt64)"
-                | "Nullable(Int128)" | "Nullable(UInt128)")) => {
-                merge_distinct_wide_integers(&shards, column, kind)
-            }
+            Some(
+                kind @ ("Int64" | "UInt64" | "Int128" | "UInt128" | "Nullable(Int64)"
+                | "Nullable(UInt64)" | "Nullable(Int128)" | "Nullable(UInt128)"),
+            ) => merge_distinct_wide_integers(&shards, column, kind),
             _ => merge_distinct_counts(&shards, column),
         }
     } else if multi_grouped_distinct_query {
         match &select.projection {
-            Projection::GroupedMultiDistinctCount { columns, value_column } => {
-                merge_multi_grouped_distinct_pairs(
-                    &shards, columns, value_column, max_rows.min(250_000),
-                )
-            }
+            Projection::GroupedMultiDistinctCount {
+                columns,
+                value_column,
+            } => merge_multi_grouped_distinct_pairs(
+                &shards,
+                columns,
+                value_column,
+                max_rows.min(250_000),
+            ),
             _ => Err(MergeError::InvalidGroupedCount),
         }
     } else if grouped_distinct_query {
         match &select.projection {
-            Projection::GroupedDistinctCount { column, value_column } => {
-                merge_grouped_distinct_pairs(
-                    &shards, column, value_column, max_rows.min(250_000),
-                )
-            }
+            Projection::GroupedDistinctCount {
+                column,
+                value_column,
+            } => merge_grouped_distinct_pairs(&shards, column, value_column, max_rows.min(250_000)),
             _ => Err(MergeError::InvalidGroupedCount),
         }
     } else if uniq_query {
@@ -2632,7 +2670,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 }
             })
     } else if grouped_extremum_query || grouped_product_query || grouped_bitwise_query {
-        match (sum_type.as_deref(), group_schema, sum_schema, &select.projection) {
+        match (
+            sum_type.as_deref(),
+            group_schema,
+            sum_schema,
+            &select.projection,
+        ) {
             (
                 Some(kind),
                 Some((_, key)),
@@ -2643,21 +2686,34 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
                 match function {
                     AggregateFunction::Min | AggregateFunction::Max => {
                         merge_grouped_integer_aggregate_query(
-                            &shards, limit, kind, key, value, *function, Some(&select),
+                            &shards,
+                            limit,
+                            kind,
+                            key,
+                            value,
+                            *function,
+                            Some(&select),
                         )
                     }
-                    AggregateFunction::Product => {
-                        merge_grouped_integer_products_query(
-                            &shards, limit, kind, key, value, Some(&select),
-                        )
-                    }
+                    AggregateFunction::Product => merge_grouped_integer_products_query(
+                        &shards,
+                        limit,
+                        kind,
+                        key,
+                        value,
+                        Some(&select),
+                    ),
                     AggregateFunction::GroupBitAnd
                     | AggregateFunction::GroupBitOr
-                    | AggregateFunction::GroupBitXor => {
-                        merge_grouped_integer_bitwise_query(
-                            &shards, limit, kind, key, value, *function, Some(&select),
-                        )
-                    }
+                    | AggregateFunction::GroupBitXor => merge_grouped_integer_bitwise_query(
+                        &shards,
+                        limit,
+                        kind,
+                        key,
+                        value,
+                        *function,
+                        Some(&select),
+                    ),
                     _ => Err(MergeError::InvalidGroupedSum),
                 }
             }
@@ -2695,7 +2751,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match (&select.projection, sum_type.as_deref()) {
             (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
                 multi_sum::merge_multi_key_sums(
-                    &shards, columns, &items[0].1, kind, max_rows.min(250_000),
+                    &shards,
+                    columns,
+                    &items[0].1,
+                    kind,
+                    max_rows.min(250_000),
                 )
             }
             _ => Err(MergeError::InvalidGroupedSum),
@@ -2704,7 +2764,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match (&select.projection, sum_type.as_deref()) {
             (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
                 multi_extrema::merge_multi_key_extrema(
-                    &shards, columns, &items[0].1, kind, items[0].0, max_rows.min(250_000),
+                    &shards,
+                    columns,
+                    &items[0].1,
+                    kind,
+                    items[0].0,
+                    max_rows.min(250_000),
                 )
             }
             _ => Err(MergeError::InvalidGroupedSum),
@@ -2713,7 +2778,10 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match &select.projection {
             Projection::GroupedMultiAggregates { columns, items, .. } => {
                 multi_countif::merge_multi_key_countif(
-                    &shards, columns, &items[0].1, max_rows.min(250_000),
+                    &shards,
+                    columns,
+                    &items[0].1,
+                    max_rows.min(250_000),
                 )
             }
             _ => Err(MergeError::InvalidGroupedSum),
@@ -2722,7 +2790,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match (&select.projection, sum_type.as_deref()) {
             (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
                 multi_sumsquares::merge_multi_key_sumsquares(
-                    &shards, columns, &items[0].1, kind, max_rows.min(250_000),
+                    &shards,
+                    columns,
+                    &items[0].1,
+                    kind,
+                    max_rows.min(250_000),
                 )
             }
             _ => Err(MergeError::InvalidGroupedSum),
@@ -2731,7 +2803,10 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match &select.projection {
             Projection::GroupedMultiAggregates { columns, items, .. } => {
                 multi_count_column::merge_multi_key_count_column(
-                    &shards, columns, &items[0].1, max_rows.min(250_000),
+                    &shards,
+                    columns,
+                    &items[0].1,
+                    max_rows.min(250_000),
                 )
             }
             _ => Err(MergeError::InvalidGroupedSum),
@@ -2747,7 +2822,12 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match (&select.projection, sum_type.as_deref()) {
             (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
                 multi_bitwise::merge_multi_key_bitwise(
-                    &shards, columns, &items[0].1, kind, items[0].0, max_rows.min(250_000),
+                    &shards,
+                    columns,
+                    &items[0].1,
+                    kind,
+                    items[0].0,
+                    max_rows.min(250_000),
                 )
             }
             _ => Err(MergeError::InvalidGroupedBitwise),
@@ -2756,7 +2836,11 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         match (&select.projection, sum_type.as_deref()) {
             (Projection::GroupedMultiAggregates { columns, items, .. }, Some(kind)) => {
                 multi_product::merge_multi_key_product(
-                    &shards, columns, &items[0].1, kind, max_rows.min(250_000),
+                    &shards,
+                    columns,
+                    &items[0].1,
+                    kind,
+                    max_rows.min(250_000),
                 )
             }
             _ => Err(MergeError::InvalidGroupedProduct),
@@ -2914,7 +2998,7 @@ mod tests {
             b"count(DISTINCT id)\n2\n"
         );
         assert_eq!(
-            validated_schema_kind(br#"[{\"name\":\"id\",\"type\":\"UInt32\"}]"#, "id"),
+            validated_schema_kind(br#"[{"name":"id","type":"UInt32"}]"#, "id"),
             Some("UInt32")
         );
     }
@@ -3266,9 +3350,11 @@ mod tests {
 
     #[test]
     fn rejects_unsafe_grouped_count_and_incomplete_shard_output() {
+        assert!(is_safe_grouped_count(
+            &parse_select("SELECT kind, count(*) FROM events GROUP BY kind LIMIT 1").unwrap()
+        ));
         for sql in [
             "SELECT kind, count(*) FROM events GROUP BY kind ORDER BY kind",
-            "SELECT kind, count(*) FROM events GROUP BY kind LIMIT 1",
             "SELECT kind, count(*) FROM events GROUP BY kind HAVING count > 1",
             "SELECT id, sum(value) FROM events GROUP BY id",
             "SELECT kind, count(*) FROM numbers(10) GROUP BY kind",
@@ -3408,11 +3494,14 @@ mod tests {
             &parse_select("SELECT region, sum(amount) FROM events WHERE id > 0 GROUP BY region")
                 .unwrap()
         ));
+        assert!(is_safe_grouped_sum(
+            &parse_select("SELECT region, sum(amount) FROM events GROUP BY region LIMIT 1")
+                .unwrap()
+        ));
         for sql in [
-            "SELECT region, sum(amount) FROM events GROUP BY region LIMIT 1",
+            "SELECT region, sum(amount) FROM events GROUP BY region ORDER BY region",
             "SELECT region, avg(amount) FROM events GROUP BY region",
             "SELECT region, sum(amount) FROM numbers(10) GROUP BY region",
-            "SELECT region, sum(amount) FROM events GROUP BY region ORDER BY region",
         ] {
             assert!(
                 parse_select(sql).map_or(true, |query| !is_safe_grouped_sum(&query)),
@@ -3743,9 +3832,11 @@ mod concurrent_preflight_tests {
                 let size = stream.read(&mut incoming).unwrap();
                 let path = std::str::from_utf8(&incoming[..size]).unwrap();
                 let payload = if path.starts_with("GET /capabilities ") {
-                    r#"{"name":"RustHouse","source":"database","read_only":true,"max_rows":10000}"#
+                    format!(
+                        "{{\"name\":\"RustHouse\",\"version\":\"0.1.0\",\"source\":\"database\",\"read_only\":true,\"max_query_bytes\":{MAX_QUERY_BYTES},\"max_response_bytes\":{MAX_RESPONSE_BYTES},\"max_rows\":10000}}"
+                    )
                 } else if path.starts_with("GET /schema?table=facts ") {
-                    r#"{"rows":3,"columns":[{"name":"id","type":"UInt64"}]}"#
+                    r#"{"rows":3,"columns":[{"name":"id","type":"UInt64"}]}"#.to_string()
                 } else {
                     panic!("unexpected metadata request {path}");
                 };
@@ -3868,8 +3959,7 @@ mod distributed_uniq_state_tests {
             uniq_state_shard_sql(sql, &select).as_deref(),
             Some("SELECT uniqState(uid) FROM events WHERE region = 'FROM east'")
         );
-        let unsafe_query = parse_select("SELECT uniq(uid) FROM events ORDER BY uid").unwrap();
-        assert!(!is_safe_uniq(&unsafe_query));
+        assert!(parse_select("SELECT uniq(uid) FROM events ORDER BY uid").is_err());
     }
 }
 
@@ -4602,7 +4692,11 @@ mod distributed_integer_product_tests {
             merge_integer_products(&values, "UInt128"),
             Err(MergeError::ProductOverflow),
         );
-        for invalid in ["product(amount)\n-1\n", "product(amount)\n1\n2\n", "product(amount)\n"] {
+        for invalid in [
+            "product(amount)\n-1\n",
+            "product(amount)\n1\n2\n",
+            "product(amount)\n",
+        ] {
             assert_eq!(
                 merge_integer_products(&[shard(invalid)], "UInt64"),
                 Err(MergeError::InvalidProduct),
@@ -4638,12 +4732,20 @@ mod distributed_grouped_sum_squares_tests {
         let select = parse_select(sql).unwrap();
         assert!(is_safe_grouped_sum(&select));
         let shards = [
-            (10, b"category\tsumSquares(amount)\na\t9\nb\tNULL\n".to_vec()),
+            (
+                10,
+                b"category\tsumSquares(amount)\na\t9\nb\tNULL\n".to_vec(),
+            ),
             (10, b"category\tsumSquares(amount)\na\t16\nb\t4\n".to_vec()),
         ];
         assert_eq!(
             merge_grouped_integer_sums_query(
-                &shards, 10, "Int64", "category", "amount", Some(&select)
+                &shards,
+                10,
+                "Int64",
+                "category",
+                "amount",
+                Some(&select)
             )
             .unwrap(),
             b"category\tsumSquares(amount)\na\t25\nb\t4\n"
@@ -4661,7 +4763,12 @@ mod distributed_grouped_sum_squares_tests {
         ];
         assert_eq!(
             merge_grouped_integer_sums_query(
-                &shards, 10, "UInt64", "category", "amount", Some(&select)
+                &shards,
+                10,
+                "UInt64",
+                "category",
+                "amount",
+                Some(&select)
             )
             .unwrap(),
             b"category\tsumSquares(amount)\na\t25\n"
@@ -4886,11 +4993,8 @@ mod narrow_global_distinct_bitmap_tests {
             body.extend_from_slice(format!("{value}\n").as_bytes());
         }
         assert_eq!(
-            merge_distinct_bitmap16(
-                &[(70_000, body.clone()), (70_000, body)],
-                "value",
-                "UInt16",
-            ).unwrap(),
+            merge_distinct_bitmap16(&[(70_000, body.clone()), (70_000, body)], "value", "UInt16",)
+                .unwrap(),
             b"count(DISTINCT value)\n65536\n"
         );
     }
@@ -4924,7 +5028,6 @@ mod narrow_global_distinct_bitmap_tests {
         );
     }
 }
-
 
 #[cfg(test)]
 mod global_wide_distinct_tests {
@@ -4971,7 +5074,9 @@ mod global_wide_distinct_tests {
         ] {
             assert_eq!(
                 merge_distinct_wide_integers(
-                    &[(20, format!("id\n{value}\n").into_bytes())], "id", kind,
+                    &[(20, format!("id\n{value}\n").into_bytes())],
+                    "id",
+                    kind,
                 ),
                 Err(MergeError::InvalidDistinctCount),
                 "{kind} {value}"
@@ -4987,15 +5092,21 @@ mod global_wide_distinct_tests {
         let wire = format!("id\n{values}").into_bytes();
         assert_eq!(
             merge_distinct_wide_integers(
-                &[(100_002, wire.clone()), (100_002, wire.clone())], "id", "UInt64",
-            ).unwrap(),
+                &[(100_002, wire.clone()), (100_002, wire.clone())],
+                "id",
+                "UInt64",
+            )
+            .unwrap(),
             b"count(DISTINCT id)\n100000\n"
         );
         assert_eq!(
             merge_distinct_wide_integers(&[(100_000, wire)], "id", "UInt64"),
             Err(MergeError::ShardRowLimit)
         );
-        let additional = vec![(100_002, format!("id\n{values}").into_bytes()), (3, b"id\n100000\n".to_vec())];
+        let additional = vec![
+            (100_002, format!("id\n{values}").into_bytes()),
+            (3, b"id\n100000\n".to_vec()),
+        ];
         assert_eq!(
             merge_distinct_wide_integers(&additional, "id", "UInt64"),
             Err(MergeError::CoordinatorLimit)
@@ -5009,8 +5120,12 @@ mod distributed_uuid_distinct_tests {
 
     #[test]
     fn uppercase_and_lowercase_wire_hex_are_the_same_uuid() {
-        let one = b"id\n550e8400-e29b-41d4-a716-446655440000\n00000000-0000-0000-0000-000000000000\n".to_vec();
-        let two = b"id\n550E8400-E29B-41D4-A716-446655440000\n00000000-0000-0000-0000-000000000000\n".to_vec();
+        let one =
+            b"id\n550e8400-e29b-41d4-a716-446655440000\n00000000-0000-0000-0000-000000000000\n"
+                .to_vec();
+        let two =
+            b"id\n550E8400-E29B-41D4-A716-446655440000\n00000000-0000-0000-0000-000000000000\n"
+                .to_vec();
         assert_eq!(
             merge_distinct_uuid(&[(10, one), (10, two)], "id", false).unwrap(),
             b"count(DISTINCT id)\n2\n"
@@ -5019,7 +5134,10 @@ mod distributed_uuid_distinct_tests {
 
     #[test]
     fn supports_nullable_uuid_and_rejects_null_in_required_columns() {
-        let shard = [(10, b"id\n\\N\n550e8400-e29b-41d4-a716-446655440000\n".to_vec())];
+        let shard = [(
+            10,
+            b"id\n\\N\n550e8400-e29b-41d4-a716-446655440000\n".to_vec(),
+        )];
         assert_eq!(
             merge_distinct_uuid(&shard, "id", true).unwrap(),
             b"count(DISTINCT id)\n1\n"
@@ -5076,8 +5194,14 @@ mod distributed_multi_key_grouped_count_tests {
             panic!("expected grouped multi-count")
         };
         let shards = [
-            (10, b"region\tcategory\tcount\nwest\ta\t2\neast\tb\t1\n".to_vec()),
-            (10, b"region\tcategory\tcount\nwest\ta\t3\nwest\tb\t4\n".to_vec()),
+            (
+                10,
+                b"region\tcategory\tcount\nwest\ta\t2\neast\tb\t1\n".to_vec(),
+            ),
+            (
+                10,
+                b"region\tcategory\tcount\nwest\ta\t3\nwest\tb\t4\n".to_vec(),
+            ),
         ];
         assert_eq!(
             merge_grouped_multi_counts(&shards, &columns, 10).unwrap(),
@@ -5089,7 +5213,10 @@ mod distributed_multi_key_grouped_count_tests {
     fn distinguishes_null_from_literal_backslash_n_and_decodes_escapes() {
         let keys = vec!["a".to_owned(), "b".to_owned()];
         let shards = [
-            (10, b"a\tb\tcount\n\\N\tx\t2\n\\\\N\tx\t1\na\t\\x41\t3\n".to_vec()),
+            (
+                10,
+                b"a\tb\tcount\n\\N\tx\t2\n\\\\N\tx\t1\na\t\\x41\t3\n".to_vec(),
+            ),
             (10, b"a\tb\tcount\n\\N\tx\t1\na\tA\t4\n".to_vec()),
         ];
         assert_eq!(
@@ -5115,12 +5242,16 @@ mod distributed_multi_key_grouped_count_tests {
         assert_eq!(
             merge_grouped_multi_counts(
                 &[(1, b"region\tcategory\tcount\nwest\ta\t1\n".to_vec())],
-                &keys, 10
+                &keys,
+                10
             ),
             Err(MergeError::ShardRowLimit)
         );
         let overflow = [
-            (10, b"region\tcategory\tcount\nwest\ta\t18446744073709551615\n".to_vec()),
+            (
+                10,
+                b"region\tcategory\tcount\nwest\ta\t18446744073709551615\n".to_vec(),
+            ),
             (10, b"region\tcategory\tcount\nwest\ta\t1\n".to_vec()),
         ];
         assert_eq!(
@@ -5136,15 +5267,19 @@ mod distributed_grouped_distinct_count_tests {
 
     #[test]
     fn rewrites_grouped_distinct_without_dropping_where_conditions() {
-        let sql = "SELECT category, count(DISTINCT label) FROM events WHERE id >= 10 GROUP BY category";
+        let sql =
+            "SELECT category, count(DISTINCT label) FROM events WHERE id >= 10 GROUP BY category";
         let parsed = parse_select(sql).unwrap();
         assert!(is_safe_grouped_distinct(&parsed));
         assert_eq!(
             grouped_distinct_shard_sql(sql, &parsed).as_deref(),
             Some("SELECT DISTINCT category, label FROM events WHERE id >= 10"),
         );
-        let unsafe_sql = "SELECT category, count(DISTINCT label) FROM events GROUP BY category LIMIT 2";
-        assert!(!is_safe_grouped_distinct(&parse_select(unsafe_sql).unwrap()));
+        let unsafe_sql =
+            "SELECT category, count(DISTINCT label) FROM events GROUP BY category LIMIT 2";
+        assert!(!is_safe_grouped_distinct(
+            &parse_select(unsafe_sql).unwrap()
+        ));
     }
 
     #[test]
@@ -5162,7 +5297,10 @@ mod distributed_grouped_distinct_count_tests {
     #[test]
     fn escaped_values_use_logical_equality_and_null_groups_are_distinct() {
         let shards = [
-            (10, b"category\tlabel\n\\N\tx\n\\\\N\tx\na\t\\x41\n".to_vec()),
+            (
+                10,
+                b"category\tlabel\n\\N\tx\n\\\\N\tx\na\t\\x41\n".to_vec(),
+            ),
             (10, b"category\tlabel\n\\N\tx\na\tA\n".to_vec()),
         ];
         assert_eq!(
@@ -5185,7 +5323,10 @@ mod distributed_grouped_distinct_count_tests {
         }
         assert_eq!(
             merge_grouped_distinct_pairs(
-                &[(1, b"category\tlabel\na\tx\n".to_vec())], "category", "label", 10
+                &[(1, b"category\tlabel\na\tx\n".to_vec())],
+                "category",
+                "label",
+                10
             ),
             Err(MergeError::ShardRowLimit)
         );
@@ -5211,8 +5352,14 @@ mod distributed_multi_key_distinct_tests {
     fn merges_duplicate_pairs_but_retains_null_only_groups() {
         let columns = vec!["region".into(), "category".into()];
         let shards = [
-            (10, b"region\tcategory\tlabel\nwest\ta\tx\nwest\ta\ty\neast\tb\t\\N\n".to_vec()),
-            (10, b"region\tcategory\tlabel\nwest\ta\ty\nwest\ta\tz\neast\tb\t\\N\n".to_vec()),
+            (
+                10,
+                b"region\tcategory\tlabel\nwest\ta\tx\nwest\ta\ty\neast\tb\t\\N\n".to_vec(),
+            ),
+            (
+                10,
+                b"region\tcategory\tlabel\nwest\ta\ty\nwest\ta\tz\neast\tb\t\\N\n".to_vec(),
+            ),
         ];
         assert_eq!(
             merge_multi_grouped_distinct_pairs(&shards, &columns, "label", 10).unwrap(),
@@ -5224,7 +5371,10 @@ mod distributed_multi_key_distinct_tests {
     fn encoded_string_keys_and_nulls_do_not_alias() {
         let columns = vec!["a".into(), "b".into()];
         let shards = [
-            (10, b"a\tb\tv\n\\N\tx\t1\n\\\\N\tx\t1\na\t\\x41\t2\n".to_vec()),
+            (
+                10,
+                b"a\tb\tv\n\\N\tx\t1\n\\\\N\tx\t1\na\t\\x41\t2\n".to_vec(),
+            ),
             (10, b"a\tb\tv\n\\N\tx\t1\na\tA\t2\n".to_vec()),
         ];
         assert_eq!(
@@ -5242,16 +5392,16 @@ mod distributed_multi_key_distinct_tests {
             b"a\tb\tv\nA\tB\tbad\\q\n",
         ] {
             assert_eq!(
-                merge_multi_grouped_distinct_pairs(
-                    &[(10, body.to_vec())], &columns, "v", 10
-                ),
+                merge_multi_grouped_distinct_pairs(&[(10, body.to_vec())], &columns, "v", 10),
                 Err(MergeError::InvalidGroupedCount)
             );
         }
         assert_eq!(
             merge_multi_grouped_distinct_pairs(
                 &[(1, b"a\tb\tv\nA\tB\t1\n".to_vec())],
-                &columns, "v", 10,
+                &columns,
+                "v",
+                10,
             ),
             Err(MergeError::ShardRowLimit),
         );
@@ -5273,8 +5423,14 @@ mod distributed_grouped_countif_tests {
         ];
         assert_eq!(
             merge_grouped_integer_sums_query(
-                &shards, 10, "Int64", "category", "amount", Some(&parsed)
-            ).unwrap(),
+                &shards,
+                10,
+                "Int64",
+                "category",
+                "amount",
+                Some(&parsed)
+            )
+            .unwrap(),
             b"category\tcountIf(amount)\na\t5\nb\t0\nc\t1\n"
         );
     }
@@ -5294,31 +5450,48 @@ mod distributed_grouped_countif_tests {
         ];
         assert_eq!(
             merge_grouped_integer_sums_query(
-                &shards, 10, "UInt8", "category", "amount", Some(&parsed)
-            ).unwrap(),
+                &shards,
+                10,
+                "UInt8",
+                "category",
+                "amount",
+                Some(&parsed)
+            )
+            .unwrap(),
             b"category\tcountIf(amount)\na\t5\n"
         );
     }
 
     #[test]
     fn rejects_malformed_partial_counts_and_total_overflow() {
-        let parsed = parse_select(
-            "SELECT category, countIf(amount) FROM events GROUP BY category"
-        ).unwrap();
+        let parsed =
+            parse_select("SELECT category, countIf(amount) FROM events GROUP BY category").unwrap();
         assert_eq!(
             merge_grouped_integer_sums_query(
                 &[(10, b"category\tcountIf(amount)\na\t-1\n".to_vec())],
-                10, "Int64", "category", "amount", Some(&parsed)
+                10,
+                "Int64",
+                "category",
+                "amount",
+                Some(&parsed)
             ),
             Err(MergeError::InvalidGroupedSum),
         );
         let overflow = [
-            (10, format!("category\tcountIf(amount)\na\t{}\n", u128::MAX).into_bytes()),
+            (
+                10,
+                format!("category\tcountIf(amount)\na\t{}\n", u128::MAX).into_bytes(),
+            ),
             (10, b"category\tcountIf(amount)\na\t1\n".to_vec()),
         ];
         assert_eq!(
             merge_grouped_integer_sums_query(
-                &overflow, 10, "UInt64", "category", "amount", Some(&parsed)
+                &overflow,
+                10,
+                "UInt64",
+                "category",
+                "amount",
+                Some(&parsed)
             ),
             Err(MergeError::SumOverflow),
         );
@@ -5340,15 +5513,22 @@ mod distributed_grouped_count_column_tests {
         ];
         assert_eq!(
             merge_grouped_integer_sums_query(
-                &shards, 10, "Nullable(String)", "category", "label", Some(&parsed)
-            ).unwrap(),
+                &shards,
+                10,
+                "Nullable(String)",
+                "category",
+                "label",
+                Some(&parsed)
+            )
+            .unwrap(),
             b"category\tcount(label)\na\t5\nb\t0\nc\t1\n"
         );
     }
 
     #[test]
     fn global_having_applies_after_combining_nullable_column_counts() {
-        let sql = "SELECT category, count(label) FROM events GROUP BY category HAVING count(label) > 3";
+        let sql =
+            "SELECT category, count(label) FROM events GROUP BY category HAVING count(label) > 3";
         let parsed = parse_select(sql).unwrap();
         assert!(is_safe_grouped_sum(&parsed));
         assert_eq!(
@@ -5361,8 +5541,14 @@ mod distributed_grouped_count_column_tests {
         ];
         assert_eq!(
             merge_grouped_integer_sums_query(
-                &shards, 10, "String", "category", "label", Some(&parsed)
-            ).unwrap(),
+                &shards,
+                10,
+                "String",
+                "category",
+                "label",
+                Some(&parsed)
+            )
+            .unwrap(),
             b"category\tcount(label)\na\t5\n"
         );
     }
@@ -5374,14 +5560,22 @@ mod distributed_grouped_count_column_tests {
         assert_eq!(
             merge_grouped_integer_sums_query(
                 &[(10, b"category\tcount(label)\na\t-1\n".to_vec())],
-                10, "String", "category", "label", Some(&parsed)
+                10,
+                "String",
+                "category",
+                "label",
+                Some(&parsed)
             ),
             Err(MergeError::InvalidGroupedSum),
         );
         assert_eq!(
             merge_grouped_integer_sums_query(
                 &[(1, b"category\tcount(label)\na\t2\n".to_vec())],
-                10, "String", "category", "label", Some(&parsed)
+                10,
+                "String",
+                "category",
+                "label",
+                Some(&parsed)
             ),
             Err(MergeError::ShardRowLimit),
         );

@@ -18,11 +18,22 @@ pub struct RepairSelection {
 }
 
 #[derive(Clone, Copy)]
-struct Choice { mask: u64, bytes: u64, priority: u64 }
+struct Choice {
+    mask: u64,
+    bytes: u64,
+    priority: u64,
+}
 
 fn better(a: Choice, b: Choice) -> bool {
-    (a.priority, std::cmp::Reverse(a.bytes), std::cmp::Reverse(a.mask))
-        > (b.priority, std::cmp::Reverse(b.bytes), std::cmp::Reverse(b.mask))
+    (
+        a.priority,
+        std::cmp::Reverse(a.bytes),
+        std::cmp::Reverse(a.mask),
+    ) > (
+        b.priority,
+        std::cmp::Reverse(b.bytes),
+        std::cmp::Reverse(b.mask),
+    )
 }
 
 fn choices(items: &[RepairCandidate], budget: u64) -> Vec<Choice> {
@@ -47,7 +58,11 @@ fn choices(items: &[RepairCandidate], budget: u64) -> Vec<Choice> {
             }
         }
         if bytes <= u128::from(budget) {
-            out.push(Choice { mask: mask as u64, bytes: bytes as u64, priority });
+            out.push(Choice {
+                mask: mask as u64,
+                bytes: bytes as u64,
+                priority,
+            });
         }
         previous = mask;
     }
@@ -63,9 +78,14 @@ pub fn select_repair_batch(
     }
     let mut seen = HashSet::new();
     for candidate in candidates {
-        if candidate.id.is_empty() || candidate.id.len() > 64
-            || !candidate.id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
-            || candidate.bytes == 0 || !seen.insert(candidate.id.as_str())
+        if candidate.id.is_empty()
+            || candidate.id.len() > 64
+            || !candidate
+                .id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            || candidate.bytes == 0
+            || !seen.insert(candidate.id.as_str())
         {
             return Err("invalid repair knapsack candidate");
         }
@@ -74,39 +94,68 @@ pub fn select_repair_batch(
     let mut left = choices(&candidates[..mid], budget);
     left.sort_unstable_by_key(|c| (c.bytes, std::cmp::Reverse(c.priority), c.mask));
     let mut prefix = Vec::with_capacity(left.len());
-    let mut best_left = Choice { mask: 0, bytes: 0, priority: 0 };
+    let mut best_left = Choice {
+        mask: 0,
+        bytes: 0,
+        priority: 0,
+    };
     for choice in &left {
-        if better(*choice, best_left) { best_left = *choice; }
+        if better(*choice, best_left) {
+            best_left = *choice;
+        }
         prefix.push(best_left);
     }
-    let mut best = Choice { mask: 0, bytes: 0, priority: 0 };
+    let mut best = Choice {
+        mask: 0,
+        bytes: 0,
+        priority: 0,
+    };
     for right in choices(&candidates[mid..], budget) {
         let remaining = budget - right.bytes;
         let count = left.partition_point(|candidate| candidate.bytes <= remaining);
-        if count == 0 { continue; }
+        if count == 0 {
+            continue;
+        }
         let paired = prefix[count - 1];
         let combined = Choice {
             mask: paired.mask | (right.mask << mid),
             bytes: paired.bytes + right.bytes,
             priority: paired.priority + right.priority,
         };
-        if better(combined, best) { best = combined; }
+        if better(combined, best) {
+            best = combined;
+        }
     }
-    let ids = candidates.iter().enumerate().filter_map(|(i, c)| {
-        (best.mask & (1u64 << i) != 0).then(|| c.id.clone())
-    }).collect();
-    Ok(RepairSelection { ids, bytes: best.bytes, priority: best.priority })
+    let ids = candidates
+        .iter()
+        .enumerate()
+        .filter(|&(i, _c)| best.mask & (1u64 << i) != 0)
+        .map(|(_i, c)| c.id.clone())
+        .collect();
+    Ok(RepairSelection {
+        ids,
+        bytes: best.bytes,
+        priority: best.priority,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     fn item(id: &str, bytes: u64, priority: u32) -> RepairCandidate {
-        RepairCandidate { id: id.into(), bytes, priority }
+        RepairCandidate {
+            id: id.into(),
+            bytes,
+            priority,
+        }
     }
     #[test]
     fn exact_solution_beats_greedy() {
-        let items = [item("large", 6, 10), item("small1", 5, 9), item("small2", 5, 9)];
+        let items = [
+            item("large", 6, 10),
+            item("small1", 5, 9),
+            item("small2", 5, 9),
+        ];
         let plan = select_repair_batch(&items, 10).unwrap();
         assert_eq!(plan.ids, ["small1", "small2"]);
         assert_eq!((plan.bytes, plan.priority), (10, 18));
@@ -133,12 +182,20 @@ mod gray_code_enumeration_tests {
         let jobs = (0..12)
             .map(|index| RepairCandidate {
                 id: format!("shard_{index}"),
-                bytes: if index == 0 { u64::MAX - 2 } else { (index * 7 % 19 + 1) as u64 },
+                bytes: if index == 0 {
+                    u64::MAX - 2
+                } else {
+                    (index * 7 % 19 + 1) as u64
+                },
                 priority: (index * 13 % 11 + 1) as u32,
             })
             .collect::<Vec<_>>();
         for budget in [0, 1, 20, 50, 100, u64::MAX] {
-            let mut expected = Choice { mask: 0, bytes: 0, priority: 0 };
+            let mut expected = Choice {
+                mask: 0,
+                bytes: 0,
+                priority: 0,
+            };
             for mask in 0..(1usize << jobs.len()) {
                 let mut bytes = 0u128;
                 let mut priority = 0u64;
@@ -149,20 +206,28 @@ mod gray_code_enumeration_tests {
                     }
                 }
                 if bytes <= u128::from(budget) {
-                    let candidate = Choice { mask: mask as u64, bytes: bytes as u64, priority };
+                    let candidate = Choice {
+                        mask: mask as u64,
+                        bytes: bytes as u64,
+                        priority,
+                    };
                     if better(candidate, expected) {
                         expected = candidate;
                     }
                 }
             }
-            let expected_ids = jobs.iter().enumerate()
-                .filter_map(|(index, job)| {
-                    (expected.mask & (1 << index) != 0).then(|| job.id.clone())
-                })
+            let expected_ids = jobs
+                .iter()
+                .enumerate()
+                .filter(|&(index, _)| expected.mask & (1 << index) != 0)
+                .map(|(_, job)| job.id.clone())
                 .collect::<Vec<_>>();
             let selected = select_repair_batch(&jobs, budget).unwrap();
             assert_eq!(selected.ids, expected_ids, "budget={budget}");
-            assert_eq!((selected.bytes, selected.priority), (expected.bytes, expected.priority));
+            assert_eq!(
+                (selected.bytes, selected.priority),
+                (expected.bytes, expected.priority)
+            );
         }
     }
 }

@@ -1166,12 +1166,18 @@ mod metadata_worker_spawn_error_tests {
         let part = root.join("all_1_1_0");
         write_wide_part(
             &part,
-            &[Column { name: "id".into(), data_type: "UInt8".into() }],
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt8".into(),
+            }],
             &[],
-        ).unwrap();
+        )
+        .unwrap();
         let paths = vec![part; 128];
         let result = inspect_parts_metadata_with_worker_failure(&root, &paths, 2, Some(1));
-        assert!(matches!(result, Err(PartError::InvalidScan(message)) if message.contains("cannot start snapshot metadata worker")));
+        assert!(
+            matches!(result, Err(PartError::InvalidScan(message)) if message.contains("cannot start snapshot metadata worker"))
+        );
         fs::remove_dir_all(root).unwrap();
     }
 }

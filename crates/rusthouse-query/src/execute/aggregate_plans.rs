@@ -3,7 +3,6 @@ use super::*;
 mod dense_grouped;
 use self::dense_grouped::*;
 
-
 /// Retry rare high-cardinality unordered GROUP BY scans using an exact
 /// external key sorter. Small groups keep the in-memory hash fast path.
 /// The retry rescans an immutable snapshot rather than attempting to recover
@@ -1116,9 +1115,9 @@ fn parallel_exact_narrow_distinct(
                 std::thread::Builder::new()
                     .spawn_scoped(scope, move || -> Result<Vec<u64>, ExecutionError> {
                         let mut bits = vec![0u64; domain / 64];
-                        while let Some(path) = parts.get(
-                            cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
-                        ) {
+                        while let Some(path) =
+                            parts.get(cursor.fetch_add(1, std::sync::atomic::Ordering::Relaxed))
+                        {
                             let mut reader =
                                 rusthouse_storage::NumericPartReader::open(path, scan_columns)?;
                             while let Some(batch) = reader.next_batch()? {

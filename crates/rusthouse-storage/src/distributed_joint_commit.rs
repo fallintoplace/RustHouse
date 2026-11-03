@@ -35,7 +35,8 @@ pub fn observe_joint_commit(
     validate_membership(new_members)?;
     WeightedQuorumPolicy::new(old_members, old_policy.reads, old_policy.writes)?;
     WeightedQuorumPolicy::new(new_members, new_policy.reads, new_policy.writes)?;
-    if proposed.epoch == 0 || proposed.generation == 0
+    if proposed.epoch == 0
+        || proposed.generation == 0
         || acknowledgements.len() > old_members.len() + new_members.len()
     {
         return Err("invalid proposed snapshot or joint ACK count");
@@ -55,13 +56,20 @@ pub fn observe_joint_commit(
         if old.is_none() && new.is_none() {
             return Err("joint ACK from unrecognized replica");
         }
-        if let Some(member) = old { old_weight += u64::from(member.weight); }
-        if let Some(member) = new { new_weight += u64::from(member.weight); }
+        if let Some(member) = old {
+            old_weight += u64::from(member.weight);
+        }
+        if let Some(member) = new {
+            new_weight += u64::from(member.weight);
+        }
     }
     let old_quorum = old_weight >= old_policy.writes;
     let new_quorum = new_weight >= new_policy.writes;
     Ok(JointCommitObservation {
-        old_weight, new_weight, old_quorum, new_quorum,
+        old_weight,
+        new_weight,
+        old_quorum,
+        new_quorum,
         can_commit: old_quorum && new_quorum,
     })
 }
@@ -70,12 +78,21 @@ pub fn observe_joint_commit(
 mod tests {
     use super::*;
     fn members(nodes: &[(&str, u16)]) -> Vec<Member> {
-        nodes.iter().map(|&(node, weight)| Member {
-            node: node.into(), zone: "z".into(), weight
-        }).collect()
+        nodes
+            .iter()
+            .map(|&(node, weight)| Member {
+                node: node.into(),
+                zone: "z".into(),
+                weight,
+            })
+            .collect()
     }
     fn version(hash: u128) -> SnapshotVersion {
-        SnapshotVersion { epoch: 1, generation: 7, fingerprint: hash }
+        SnapshotVersion {
+            epoch: 1,
+            generation: 7,
+            fingerprint: hash,
+        }
     }
 
     #[test]
@@ -83,14 +100,31 @@ mod tests {
         let old = members(&[("a", 1), ("b", 1), ("c", 1)]);
         let new = members(&[("b", 1), ("c", 1), ("d", 1)]);
         let policy = WeightedQuorumPolicy::new(&old, 2, 2).unwrap();
-        let ack = |node| SnapshotAck { node, snapshot: version(99) };
-        let partial = observe_joint_commit(&old, policy, &new, policy,
-            version(99), &[ack("a"), ack("b")]).unwrap();
+        let ack = |node| SnapshotAck {
+            node,
+            snapshot: version(99),
+        };
+        let partial = observe_joint_commit(
+            &old,
+            policy,
+            &new,
+            policy,
+            version(99),
+            &[ack("a"), ack("b")],
+        )
+        .unwrap();
         assert!(partial.old_quorum);
         assert!(!partial.new_quorum);
         assert!(!partial.can_commit);
-        let complete = observe_joint_commit(&old, policy, &new, policy,
-            version(99), &[ack("b"), ack("c")]).unwrap();
+        let complete = observe_joint_commit(
+            &old,
+            policy,
+            &new,
+            policy,
+            version(99),
+            &[ack("b"), ack("c")],
+        )
+        .unwrap();
         assert!(complete.can_commit);
         assert_eq!((complete.old_weight, complete.new_weight), (2, 2));
     }
@@ -99,10 +133,39 @@ mod tests {
     fn wrong_fingerprint_or_duplicate_ack_is_rejected() {
         let old = members(&[("a", 2), ("b", 1)]);
         let policy = WeightedQuorumPolicy::new(&old, 2, 2).unwrap();
-        assert!(observe_joint_commit(&old, policy, &old, policy, version(5),
-            &[SnapshotAck { node: "a", snapshot: version(6) }]).is_err());
-        assert!(observe_joint_commit(&old, policy, &old, policy, version(5),
-            &[SnapshotAck { node: "a", snapshot: version(5) },
-              SnapshotAck { node: "a", snapshot: version(5) }]).is_err());
+        assert!(
+            observe_joint_commit(
+                &old,
+                policy,
+                &old,
+                policy,
+                version(5),
+                &[SnapshotAck {
+                    node: "a",
+                    snapshot: version(6)
+                }]
+            )
+            .is_err()
+        );
+        assert!(
+            observe_joint_commit(
+                &old,
+                policy,
+                &old,
+                policy,
+                version(5),
+                &[
+                    SnapshotAck {
+                        node: "a",
+                        snapshot: version(5)
+                    },
+                    SnapshotAck {
+                        node: "a",
+                        snapshot: version(5)
+                    }
+                ]
+            )
+            .is_err()
+        );
     }
 }

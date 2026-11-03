@@ -11,11 +11,17 @@ fn limit_all_means_unbounded_with_optional_offset() {
     let whole = parse_select("SELECT number FROM numbers(4) LIMIT ALL").unwrap();
     assert_eq!(whole.limit, None);
     assert_eq!(whole.offset, None);
-    assert_eq!(run("SELECT number FROM numbers(4) LIMIT ALL"), "number\n0\n1\n2\n3\n");
+    assert_eq!(
+        run("SELECT number FROM numbers(4) LIMIT ALL"),
+        "number\n0\n1\n2\n3\n"
+    );
     let page = parse_select("SELECT number FROM numbers(4) LIMIT ALL OFFSET 2").unwrap();
     assert_eq!(page.limit, None);
     assert_eq!(page.offset, Some(2));
-    assert_eq!(run("SELECT number FROM numbers(4) LIMIT ALL OFFSET 2"), "number\n2\n3\n");
+    assert_eq!(
+        run("SELECT number FROM numbers(4) LIMIT ALL OFFSET 2"),
+        "number\n2\n3\n"
+    );
 }
 
 #[test]

@@ -3,10 +3,17 @@ use rusthouse_storage::{Column, write_wide_part};
 
 #[test]
 fn grouped_case_then_one_else_zero_counts_matching_rows() {
-    let path = std::env::temp_dir().join(format!("rusthouse-tpch-case-count-{}", std::process::id()));
+    let path =
+        std::env::temp_dir().join(format!("rusthouse-tpch-case-count-{}", std::process::id()));
     let columns = [
-        Column { name: "region".into(), data_type: "String".into() },
-        Column { name: "priority".into(), data_type: "String".into() },
+        Column {
+            name: "region".into(),
+            data_type: "String".into(),
+        },
+        Column {
+            name: "priority".into(),
+            data_type: "String".into(),
+        },
     ];
     let records = [
         vec![Some("east".into()), Some("urgent".into())],
@@ -17,7 +24,10 @@ fn grouped_case_then_one_else_zero_counts_matching_rows() {
     let query = parse_select("SELECT region, sum(CASE WHEN priority = 'urgent' THEN 1 ELSE 0 END) AS high_count FROM part GROUP BY region ORDER BY region").unwrap();
     let mut output = Vec::new();
     execute(&query, Some(&path), &mut output).unwrap();
-    assert_eq!(String::from_utf8(output).unwrap(), "region\thigh_count\neast\t1\nwest\t0\n");
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "region\thigh_count\neast\t1\nwest\t0\n"
+    );
     std::fs::remove_dir_all(path).unwrap();
 }
 

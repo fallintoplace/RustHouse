@@ -528,6 +528,9 @@ mod crlf_vertical_record_tests {
         writer.write_all(b"value\r\nx\\ry\r\n").unwrap();
         writer.write_all(b"last\r").unwrap();
         writer.write_all(b"\n").unwrap();
-        assert_eq!(writer.output, b"Row 1:\n  value: x\\x0Dy\n\nRow 2:\n  value: last\n\n");
+        assert_eq!(
+            writer.output,
+            b"Row 1:\n  value: x\\x0Dy\n\nRow 2:\n  value: last\n\n"
+        );
     }
 }

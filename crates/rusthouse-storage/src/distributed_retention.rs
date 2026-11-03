@@ -32,7 +32,8 @@ mod age_retention_sorted_lookup_tests {
                     &[16_384],
                     now,
                     minimum_age,
-                ).unwrap();
+                )
+                .unwrap();
                 assert_eq!(selected, expected, "age={minimum_age}");
             }
         }
@@ -40,12 +41,13 @@ mod age_retention_sorted_lookup_tests {
 
     #[test]
     fn duplicate_timestamps_and_future_generations_still_fail() {
-        assert!(retention_candidates_with_min_age(
-            &[(2, 20), (1, 10), (1, 10)], 2, 1, &[], &[2], 20, 0
-        ).is_err());
-        assert!(retention_candidates_with_min_age(
-            &[(1, 10), (2, 21)], 2, 1, &[], &[2], 20, 0
-        ).is_err());
+        assert!(
+            retention_candidates_with_min_age(&[(2, 20), (1, 10), (1, 10)], 2, 1, &[], &[2], 20, 0)
+                .is_err()
+        );
+        assert!(
+            retention_candidates_with_min_age(&[(1, 10), (2, 21)], 2, 1, &[], &[2], 20, 0).is_err()
+        );
     }
 }
 
@@ -742,10 +744,16 @@ pub fn retention_candidates_with_replica_floors_and_budget(
     if sorted_pins {
         let mut known_cursor = 0usize;
         for &id in pinned {
-            while ordered.get(known_cursor).is_some_and(|&(known, _)| known < id) {
+            while ordered
+                .get(known_cursor)
+                .is_some_and(|&(known, _)| known < id)
+            {
                 known_cursor += 1;
             }
-            if ordered.get(known_cursor).is_none_or(|&(known, _)| known != id) {
+            if ordered
+                .get(known_cursor)
+                .is_none_or(|&(known, _)| known != id)
+            {
                 return Err("duplicate or unknown pinned generation");
             }
         }
@@ -1294,11 +1302,23 @@ mod linear_sorted_pin_retention_tests {
         for floor in [1u64, 7_777, 16_385] {
             for budget in [0u64, 6_000, u64::MAX] {
                 let a = retention_candidates_with_replica_floors_and_budget(
-                    &entries, 16_384, 128, &ordered_pins, &[16_385, floor], budget,
-                ).unwrap();
+                    &entries,
+                    16_384,
+                    128,
+                    &ordered_pins,
+                    &[16_385, floor],
+                    budget,
+                )
+                .unwrap();
                 let b = retention_candidates_with_replica_floors_and_budget(
-                    &entries, 16_384, 128, &reversed_pins, &[floor, 16_385], budget,
-                ).unwrap();
+                    &entries,
+                    16_384,
+                    128,
+                    &reversed_pins,
+                    &[floor, 16_385],
+                    budget,
+                )
+                .unwrap();
                 assert_eq!(a, b, "floor={floor}, budget={budget}");
                 assert!(a.0.iter().all(|&generation| {
                     generation < floor
@@ -1306,7 +1326,10 @@ mod linear_sorted_pin_retention_tests {
                         && !ordered_pins.contains(&generation)
                 }));
                 assert!(a.1 <= budget);
-                let actual_bytes = a.0.iter().map(|&id| entries[(id - 1) as usize].1).sum::<u64>();
+                let actual_bytes =
+                    a.0.iter()
+                        .map(|&id| entries[(id - 1) as usize].1)
+                        .sum::<u64>();
                 assert_eq!(a.1, actual_bytes);
             }
         }
@@ -1315,15 +1338,30 @@ mod linear_sorted_pin_retention_tests {
     #[test]
     fn sorted_pin_validation_fails_closed_when_budget_is_zero() {
         let entries = (1..=128u64).map(|id| (id, 1)).collect::<Vec<_>>();
-        assert!(retention_candidates_with_replica_floors_and_budget(
-            &entries, 128, 1, &[1, 3, 5, 999, 1000], &[50], 0
-        ).is_err());
-        assert!(retention_candidates_with_replica_floors_and_budget(
-            &entries, 128, 1, &[1, 3, 5, 5, 7], &[50], 0
-        ).is_err());
+        assert!(
+            retention_candidates_with_replica_floors_and_budget(
+                &entries,
+                128,
+                1,
+                &[1, 3, 5, 999, 1000],
+                &[50],
+                0
+            )
+            .is_err()
+        );
+        assert!(
+            retention_candidates_with_replica_floors_and_budget(
+                &entries,
+                128,
+                1,
+                &[1, 3, 5, 5, 7],
+                &[50],
+                0
+            )
+            .is_err()
+        );
     }
 }
-
 
 /// Generation and its optional direct predecessor in a complete offline history.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1351,7 +1389,9 @@ pub fn retention_candidates_with_ancestry(
     for (index, entry) in ordered.iter().enumerate() {
         if entry.generation == 0
             || (index > 0 && ordered[index - 1].generation == entry.generation)
-            || entry.parent.is_some_and(|parent| parent == 0 || parent >= entry.generation)
+            || entry
+                .parent
+                .is_some_and(|parent| parent == 0 || parent >= entry.generation)
         {
             return Err("invalid or duplicate snapshot ancestry");
         }
@@ -1388,10 +1428,7 @@ pub fn retention_candidates_with_ancestry(
                 break;
             }
             retained[index] = true;
-            current = ordered[index]
-                .parent
-                .map(index_of)
-                .transpose()?;
+            current = ordered[index].parent.map(index_of).transpose()?;
         }
     }
     Ok(ordered
@@ -1408,12 +1445,30 @@ mod ancestry_retention_tests {
     #[test]
     fn never_selects_ancestors_of_the_active_or_pinned_generations() {
         let history = [
-            GenerationParent { generation: 6, parent: Some(4) },
-            GenerationParent { generation: 1, parent: None },
-            GenerationParent { generation: 4, parent: Some(2) },
-            GenerationParent { generation: 5, parent: Some(3) },
-            GenerationParent { generation: 3, parent: Some(1) },
-            GenerationParent { generation: 2, parent: Some(1) },
+            GenerationParent {
+                generation: 6,
+                parent: Some(4),
+            },
+            GenerationParent {
+                generation: 1,
+                parent: None,
+            },
+            GenerationParent {
+                generation: 4,
+                parent: Some(2),
+            },
+            GenerationParent {
+                generation: 5,
+                parent: Some(3),
+            },
+            GenerationParent {
+                generation: 3,
+                parent: Some(1),
+            },
+            GenerationParent {
+                generation: 2,
+                parent: Some(1),
+            },
         ];
         assert_eq!(
             retention_candidates_with_ancestry(&history, 6, &[5], 0).unwrap(),
@@ -1432,8 +1487,14 @@ mod ancestry_retention_tests {
     #[test]
     fn rejects_incomplete_histories_even_when_a_bad_edge_is_not_retained() {
         let valid = [
-            GenerationParent { generation: 1, parent: None },
-            GenerationParent { generation: 2, parent: Some(1) },
+            GenerationParent {
+                generation: 1,
+                parent: None,
+            },
+            GenerationParent {
+                generation: 2,
+                parent: Some(1),
+            },
         ];
         assert!(retention_candidates_with_ancestry(&valid, 3, &[], 1).is_err());
         assert!(retention_candidates_with_ancestry(&valid, 2, &[3], 1).is_err());
@@ -1481,9 +1542,8 @@ mod ancestry_retention_tests {
                     .filter(|generation| !retained.contains(generation))
                     .collect::<Vec<_>>();
                 assert_eq!(
-                    retention_candidates_with_ancestry(
-                        &history, active, &pinned, keep_newest
-                    ).unwrap(),
+                    retention_candidates_with_ancestry(&history, active, &pinned, keep_newest)
+                        .unwrap(),
                     expected
                 );
             }

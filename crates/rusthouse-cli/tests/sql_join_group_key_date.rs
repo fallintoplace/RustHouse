@@ -17,7 +17,8 @@ fn sql(query: &str, path: &Path) -> Output {
 fn grouped_join_renders_date_group_keys_as_dates() {
     let db = std::env::temp_dir().join(format!(
         "rusthouse-grouped-join-date-{}-{}",
-        std::process::id(), NEXT.fetch_add(1, Ordering::Relaxed)
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     fs::create_dir_all(&db).unwrap();
     for statement in [
@@ -34,6 +35,9 @@ fn grouped_join_renders_date_group_keys_as_dates() {
         &db,
     );
     assert!(result.status.success(), "{result:?}");
-    assert_eq!(result.stdout, b"e.day\tcount\n2024-01-01\t1\n2024-01-03\t2\n");
+    assert_eq!(
+        result.stdout,
+        b"e.day\tcount\n2024-01-01\t1\n2024-01-03\t2\n"
+    );
     fs::remove_dir_all(db).unwrap();
 }

@@ -6,7 +6,10 @@ fn staged_insert_crash_keeps_previous_rows_and_allows_new_writes() {
     use std::process::Command;
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    let unique = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+    let unique = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
     let database = std::env::temp_dir().join(format!(
         "rusthouse-insert-crash-{}-{unique}",
         std::process::id()

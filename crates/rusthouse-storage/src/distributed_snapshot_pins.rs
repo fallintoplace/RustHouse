@@ -22,22 +22,28 @@ pub struct ReaderPinLedger {
 }
 
 fn valid_reader(reader: &str) -> bool {
-    !reader.is_empty() && reader.len() <= 64
-        && reader.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
+    !reader.is_empty()
+        && reader.len() <= 64
+        && reader
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 
 impl ReaderPinLedger {
-    pub fn new() -> Self { Self::default() }
+    pub fn new() -> Self {
+        Self::default()
+    }
 
     /// A caller must pin before using a snapshot. An identical token can
     /// renew only the same reader's snapshot and never shorten its expiry.
-    pub fn pin(&mut self, pin: ReaderPin, now_ms: u64, ttl_limit: u64)
-        -> Result<(), &'static str>
-    {
+    pub fn pin(&mut self, pin: ReaderPin, now_ms: u64, ttl_limit: u64) -> Result<(), &'static str> {
         if !valid_reader(&pin.reader)
-            || pin.snapshot.epoch == 0 || pin.snapshot.generation == 0
-            || pin.token.epoch == 0 || pin.token.sequence == 0
-            || now_ms < self.last_clock_ms || ttl_limit == 0
+            || pin.snapshot.epoch == 0
+            || pin.snapshot.generation == 0
+            || pin.token.epoch == 0
+            || pin.token.sequence == 0
+            || now_ms < self.last_clock_ms
+            || ttl_limit == 0
             || pin.expires_at_ms <= now_ms
             || pin.expires_at_ms > now_ms.saturating_add(ttl_limit)
         {
@@ -46,7 +52,9 @@ impl ReaderPinLedger {
         if let Some(&previous) = self.highest.get(&pin.reader) {
             if pin.token < previous
                 || (pin.token == previous
-                    && self.active.get(&pin.reader)
+                    && self
+                        .active
+                        .get(&pin.reader)
                         .is_none_or(|active| active.expires_at_ms <= now_ms))
             {
                 return Err("stale reader fencing token");
@@ -70,7 +78,6 @@ impl ReaderPinLedger {
         self.active.insert(pin.reader.clone(), pin);
         Ok(())
     }
-
 
     /// Apply a set of reader pins atomically to this local ledger.
     /// External fencing authority and durable persistence remain required.
@@ -98,7 +105,9 @@ impl ReaderPinLedger {
     /// Preserve high-water fencing history after lease expiry. Calling code
     /// must not use absence of a pin to infer remote readers have exited.
     pub fn expire(&mut self, now_ms: u64) -> Result<usize, &'static str> {
-        if now_ms < self.last_clock_ms { return Err("reader pin clock moved backwards"); }
+        if now_ms < self.last_clock_ms {
+            return Err("reader pin clock moved backwards");
+        }
         self.last_clock_ms = now_ms;
         let before = self.active.len();
         self.active.retain(|_, pin| pin.expires_at_ms > now_ms);
@@ -106,9 +115,12 @@ impl ReaderPinLedger {
     }
 
     pub fn pinned_versions(&self, now_ms: u64) -> Vec<SnapshotVersion> {
-        let mut versions = self.active.values()
+        let mut versions = self
+            .active
+            .values()
             .filter(|pin| pin.expires_at_ms > now_ms)
-            .map(|pin| pin.snapshot).collect::<Vec<_>>();
+            .map(|pin| pin.snapshot)
+            .collect::<Vec<_>>();
         versions.sort_unstable_by_key(|v| (v.epoch, v.generation, v.fingerprint));
         versions.dedup();
         versions
@@ -121,8 +133,15 @@ mod tests {
     fn pin(reader: &str, token: u64, generation: u64, expiry: u64) -> ReaderPin {
         ReaderPin {
             reader: reader.into(),
-            snapshot: SnapshotVersion { epoch: 1, generation, fingerprint: generation as u128 },
-            token: FenceToken { epoch: 1, sequence: token },
+            snapshot: SnapshotVersion {
+                epoch: 1,
+                generation,
+                fingerprint: generation as u128,
+            },
+            token: FenceToken {
+                epoch: 1,
+                sequence: token,
+            },
             expires_at_ms: expiry,
         }
     }
@@ -170,7 +189,10 @@ mod expired_pin_token_tests {
                 generation,
                 fingerprint: u128::from(generation),
             },
-            token: FenceToken { epoch: 1, sequence: token },
+            token: FenceToken {
+                epoch: 1,
+                sequence: token,
+            },
             expires_at_ms: expiry,
         };
         ledger.pin(make_pin(8, 2, 200), 100, 100).unwrap();
@@ -191,8 +213,15 @@ mod pin_batch_tests {
     fn make_pin(reader: &str, token: u64, generation: u64, expiry: u64) -> ReaderPin {
         ReaderPin {
             reader: reader.into(),
-            snapshot: SnapshotVersion { epoch: 1, generation, fingerprint: generation as u128 },
-            token: FenceToken { epoch: 1, sequence: token },
+            snapshot: SnapshotVersion {
+                epoch: 1,
+                generation,
+                fingerprint: generation as u128,
+            },
+            token: FenceToken {
+                epoch: 1,
+                sequence: token,
+            },
             expires_at_ms: expiry,
         }
     }
@@ -204,12 +233,18 @@ mod pin_batch_tests {
         let before = ledger.clone();
         let new_pin = make_pin("second", 1, 2, 125);
         let conflicting = make_pin("first", 1, 2, 140);
-        assert!(ledger.pin_batch(&[new_pin.clone(), conflicting], 110, 50).is_err());
+        assert!(
+            ledger
+                .pin_batch(&[new_pin.clone(), conflicting], 110, 50)
+                .is_err()
+        );
         assert_eq!(ledger.active, before.active);
         assert_eq!(ledger.highest, before.highest);
         assert_eq!(ledger.last_clock_ms, before.last_clock_ms);
 
-        ledger.pin_batch(&[new_pin, make_pin("first", 2, 2, 145)], 110, 50).unwrap();
+        ledger
+            .pin_batch(&[new_pin, make_pin("first", 2, 2, 145)], 110, 50)
+            .unwrap();
         assert_eq!(ledger.active.len(), 2);
         assert_eq!(ledger.pinned_versions(111).len(), 1);
     }
@@ -217,10 +252,15 @@ mod pin_batch_tests {
     #[test]
     fn duplicate_reader_in_batch_is_rejected() {
         let mut ledger = ReaderPinLedger::new();
-        assert!(ledger.pin_batch(&[
-            make_pin("reader", 1, 1, 20),
-            make_pin("reader", 2, 2, 30),
-        ], 10, 30).is_err());
+        assert!(
+            ledger
+                .pin_batch(
+                    &[make_pin("reader", 1, 1, 20), make_pin("reader", 2, 2, 30),],
+                    10,
+                    30
+                )
+                .is_err()
+        );
         assert!(ledger.active.is_empty());
     }
 }

@@ -607,7 +607,8 @@ mod strict_preflight_tests {
             let mut output = Vec::new();
             assert_eq!(
                 write_pretty_json_row_prefixed(&mut output, b"record:", bad)
-                    .unwrap_err().kind(),
+                    .unwrap_err()
+                    .kind(),
                 io::ErrorKind::InvalidData
             );
             assert!(output.is_empty(), "{bad:?}");
@@ -617,12 +618,8 @@ mod strict_preflight_tests {
     #[test]
     fn valid_surrogate_pair_is_prettified_after_validation() {
         let mut output = Vec::new();
-        write_pretty_json_row_prefixed(
-            &mut output,
-            b"record:",
-            br#"{"emoji":"\uD83D\uDE03"}"#,
-        )
-        .unwrap();
+        write_pretty_json_row_prefixed(&mut output, b"record:", br#"{"emoji":"\uD83D\uDE03"}"#)
+            .unwrap();
         assert!(output.starts_with(b"record:{"));
         assert!(output.windows(12).any(|span| span == br#"\uD83D\uDE03"#));
     }

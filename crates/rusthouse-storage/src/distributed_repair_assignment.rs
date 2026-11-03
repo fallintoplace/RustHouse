@@ -16,10 +16,15 @@ pub fn minimum_cost_assignment(
     costs: &[Vec<Option<u64>>],
 ) -> Result<RepairAssignment, &'static str> {
     if costs.is_empty() {
-        return Ok(RepairAssignment { workers: Vec::new(), total_cost: 0 });
+        return Ok(RepairAssignment {
+            workers: Vec::new(),
+            total_cost: 0,
+        });
     }
     let workers = costs[0].len();
-    if workers == 0 || workers > MAX_WORKERS || costs.len() > workers
+    if workers == 0
+        || workers > MAX_WORKERS
+        || costs.len() > workers
         || costs.iter().any(|row| row.len() != workers)
     {
         return Err("invalid repair assignment matrix");
@@ -30,12 +35,22 @@ pub fn minimum_cost_assignment(
     best[0] = Some(0);
     for mask in 0..states {
         let task = mask.count_ones() as usize;
-        if task >= costs.len() { continue; }
-        let Some(current) = best[mask] else { continue; };
-        for worker in 0..workers {
-            if mask & (1 << worker) != 0 { continue; }
-            let Some(cost) = costs[task][worker] else { continue; };
-            let Some(next_cost) = current.checked_add(cost) else { continue; };
+        if task >= costs.len() {
+            continue;
+        }
+        let Some(current) = best[mask] else {
+            continue;
+        };
+        for (worker, cost) in costs[task].iter().enumerate() {
+            if mask & (1 << worker) != 0 {
+                continue;
+            }
+            let Some(cost) = *cost else {
+                continue;
+            };
+            let Some(next_cost) = current.checked_add(cost) else {
+                continue;
+            };
             let next = mask | (1 << worker);
             if best[next].is_none_or(|existing| next_cost < existing) {
                 best[next] = Some(next_cost);
@@ -55,7 +70,10 @@ pub fn minimum_cost_assignment(
         mask = previous;
     }
     chosen.reverse();
-    Ok(RepairAssignment { workers: chosen, total_cost: cost })
+    Ok(RepairAssignment {
+        workers: chosen,
+        total_cost: cost,
+    })
 }
 
 #[cfg(test)]
@@ -72,10 +90,7 @@ mod tests {
 
     #[test]
     fn respects_forbidden_edges_and_unassigned_workers() {
-        let costs = vec![
-            vec![None, Some(9), Some(1)],
-            vec![Some(2), None, None],
-        ];
+        let costs = vec![vec![None, Some(9), Some(1)], vec![Some(2), None, None]];
         let result = minimum_cost_assignment(&costs).unwrap();
         assert_eq!(result.workers, [2, 0]);
         assert_eq!(result.total_cost, 3);

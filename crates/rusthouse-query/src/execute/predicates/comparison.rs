@@ -8,7 +8,7 @@ pub(super) fn compile_predicate_test(
     Ok(match predicate {
         Predicate::ColumnComparison { .. } => {
             return Err(ExecutionError::Invalid(
-                "column-to-column filters require typed SQL execution".into()
+                "column-to-column filters require typed SQL execution".into(),
             ));
         }
         Predicate::Comparison {
@@ -136,7 +136,9 @@ mod adaptive_predicate_projection_tests {
     #[test]
     fn wide_predicate_set_uses_first_existing_projection_index() {
         let mut columns = vec!["existing".into(), "duplicate".into(), "existing".into()];
-        let names = (0..48).map(|index| format!("col{index}")).collect::<Vec<_>>();
+        let names = (0..48)
+            .map(|index| format!("col{index}"))
+            .collect::<Vec<_>>();
         let mut predicates = nullable_tests(&["existing", "duplicate"]);
         for name in &names {
             predicates.push(Predicate::IsNull {
@@ -168,7 +170,13 @@ mod adaptive_predicate_projection_tests {
             panic!("no conversion is needed")
         })
         .unwrap();
-        assert_eq!(compiled.iter().map(|predicate| predicate.index).collect::<Vec<_>>(), vec![0, 1, 0, 2]);
+        assert_eq!(
+            compiled
+                .iter()
+                .map(|predicate| predicate.index)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 0, 2]
+        );
         assert_eq!(columns, ["a", "b", "c"]);
     }
 }

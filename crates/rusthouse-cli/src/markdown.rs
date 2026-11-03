@@ -271,7 +271,7 @@ mod tests {
         writer.write_all(b"<tag>\t&value\r\n").unwrap();
         assert_eq!(
             writer.output,
-            b"| &lt;tag&gt; | &amp;value&#13; |\n| --- | --- |\n"
+            b"| &lt;tag&gt; | &amp;value |\n| --- | --- |\n"
         );
     }
 
@@ -472,6 +472,9 @@ mod crlf_record_tests {
         writer.write_all(b"bo").unwrap();
         writer.write_all(b"b\r").unwrap();
         writer.write_all(b"\n").unwrap();
-        assert_eq!(writer.output, "| name |\n| --- |\n| alice |\n| bob |\n".as_bytes());
+        assert_eq!(
+            writer.output,
+            "| name |\n| --- |\n| alice |\n| bob |\n".as_bytes()
+        );
     }
 }

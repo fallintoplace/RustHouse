@@ -310,12 +310,8 @@ mod cached_disjunct_mark_keys_tests {
         )
         .unwrap();
         assert_eq!(called.get(), 8192);
-        let reference = candidate_mark_ranges(
-            8192,
-            |mark| Some(mark as u64),
-            &intervals[..31],
-        )
-        .unwrap();
+        let reference =
+            candidate_mark_ranges(8192, |mark| Some(mark as u64), &intervals[..31]).unwrap();
         assert_eq!(
             result[..31],
             reference[..31],
@@ -326,30 +322,47 @@ mod cached_disjunct_mark_keys_tests {
     #[test]
     fn invalid_or_missing_keys_cannot_be_pruned_after_caching() {
         let intervals = vec![(Bound::Included(4u64), Bound::Included(7u64)); 32];
-        assert!(candidate_mark_ranges(128, |mark| {
-            (mark != 74).then_some(mark as u64)
-        }, &intervals).is_none());
-        assert!(candidate_mark_ranges(128, |mark| {
-            Some(if mark == 74 { 0u64 } else { mark as u64 })
-        }, &intervals).is_none());
+        assert!(
+            candidate_mark_ranges(
+                128,
+                |mark| { (mark != 74).then_some(mark as u64) },
+                &intervals
+            )
+            .is_none()
+        );
+        assert!(
+            candidate_mark_ranges(
+                128,
+                |mark| { Some(if mark == 74 { 0u64 } else { mark as u64 }) },
+                &intervals
+            )
+            .is_none()
+        );
     }
 
     #[test]
     fn cached_and_uncached_interval_plans_match_for_duplicates_and_reversed_order() {
-        let intervals = (0..128u64).map(|i| {
-            let start = (i * 117) % 1024;
-            (Bound::Included(start), Bound::Excluded(start + i % 17 + 1))
-        }).collect::<Vec<_>>();
-        let result = candidate_mark_ranges(1024, |mark| Some((mark / 2) as u64), &intervals).unwrap();
+        let intervals = (0..128u64)
+            .map(|i| {
+                let start = (i * 117) % 1024;
+                (Bound::Included(start), Bound::Excluded(start + i % 17 + 1))
+            })
+            .collect::<Vec<_>>();
+        let result =
+            candidate_mark_ranges(1024, |mark| Some((mark / 2) as u64), &intervals).unwrap();
         let mut oracle = vec![false; 1024];
         for &(lower, upper) in &intervals {
-            for mark in candidate_mark_range(1024, |mark| Some((mark / 2) as u64), lower, upper).unwrap() {
+            for mark in
+                candidate_mark_range(1024, |mark| Some((mark / 2) as u64), lower, upper).unwrap()
+            {
                 oracle[mark] = true;
             }
         }
         let mut selected = vec![false; 1024];
         for range in result {
-            for mark in range { selected[mark] = true; }
+            for mark in range {
+                selected[mark] = true;
+            }
         }
         assert_eq!(selected, oracle);
     }

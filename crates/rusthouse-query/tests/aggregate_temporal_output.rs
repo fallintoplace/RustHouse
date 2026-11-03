@@ -13,9 +13,18 @@ fn clickbench_date_extrema_render_calendar_values() {
         NEXT.fetch_add(1, Ordering::Relaxed)
     ));
     let columns = [
-        Column { name: "VisitDate".into(), data_type: "Date".into() },
-        Column { name: "HistoricalDate".into(), data_type: "Date32".into() },
-        Column { name: "VisitTime".into(), data_type: "DateTime".into() },
+        Column {
+            name: "VisitDate".into(),
+            data_type: "Date".into(),
+        },
+        Column {
+            name: "HistoricalDate".into(),
+            data_type: "Date32".into(),
+        },
+        Column {
+            name: "VisitTime".into(),
+            data_type: "DateTime".into(),
+        },
     ];
     let rows = [
         vec![
@@ -32,7 +41,8 @@ fn clickbench_date_extrema_render_calendar_values() {
     write_wide_part(&path, &columns, &rows).unwrap();
 
     let mut output = Vec::new();
-    let sql = "SELECT min(VisitDate), max(VisitDate), min(HistoricalDate), max(VisitTime) FROM part";
+    let sql =
+        "SELECT min(VisitDate), max(VisitDate), min(HistoricalDate), max(VisitTime) FROM part";
     execute(&parse_select(sql).unwrap(), Some(&path), &mut output).unwrap();
     assert_eq!(
         String::from_utf8(output).unwrap().lines().last(),
@@ -42,9 +52,14 @@ fn clickbench_date_extrema_render_calendar_values() {
     let mut output = Vec::new();
     execute(
         &parse_select("SELECT min(HistoricalDate) FROM part").unwrap(),
-        Some(&path), &mut output
-    ).unwrap();
-    assert_eq!(String::from_utf8(output).unwrap().lines().last(), Some("1959-01-03"));
+        Some(&path),
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(output).unwrap().lines().last(),
+        Some("1959-01-03")
+    );
     fs::remove_dir_all(path).unwrap();
 }
 

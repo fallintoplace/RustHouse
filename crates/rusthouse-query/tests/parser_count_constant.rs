@@ -1,4 +1,4 @@
-use rusthouse_query::{execute, parse_select, Projection};
+use rusthouse_query::{Projection, execute, parse_select};
 
 fn run(sql: &str) -> String {
     let mut output = Vec::new();
@@ -10,7 +10,10 @@ fn run(sql: &str) -> String {
 fn count_of_numeric_constants_counts_all_rows() {
     for value in ["1", "0", "42"] {
         let sql = format!("SELECT COUNT({value}) FROM numbers(5)");
-        assert!(matches!(parse_select(&sql).unwrap().projection, Projection::Count));
+        assert!(matches!(
+            parse_select(&sql).unwrap().projection,
+            Projection::Count
+        ));
         assert_eq!(run(&sql), run("SELECT COUNT(*) FROM numbers(5)"), "{sql}");
     }
 }

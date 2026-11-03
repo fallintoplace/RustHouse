@@ -16,7 +16,6 @@ impl ObjectMetadata {
     }
 }
 
-
 fn index(objects: &[ObjectMetadata]) -> Result<HashMap<&str, &ObjectMetadata>, &'static str> {
     if objects.len() > 65_536 {
         return Err("replica inventory too large");
@@ -212,16 +211,22 @@ mod bidirectional_replica_reconciliation_tests {
     use super::*;
 
     fn object(key: &str, bytes: u64) -> ObjectMetadata {
-        ObjectMetadata { key: key.into(), bytes, crc32c: bytes as u32 ^ 0x1234_5678 }
+        ObjectMetadata {
+            key: key.into(),
+            bytes,
+            crc32c: bytes as u32 ^ 0x1234_5678,
+        }
     }
 
     #[test]
     fn both_directions_match_independent_copy_plans() {
         for length in [0usize, 1, 8, 9, 257, 1025] {
-            let source = (0..length).filter(|i| i % 3 != 0)
+            let source = (0..length)
+                .filter(|i| i % 3 != 0)
                 .map(|i| object(&format!("src/{i:05}"), i as u64))
                 .collect::<Vec<_>>();
-            let destination = (0..length).filter(|i| i % 4 != 0)
+            let destination = (0..length)
+                .filter(|i| i % 4 != 0)
                 .map(|i| object(&format!("src/{i:05}"), i as u64))
                 .collect::<Vec<_>>();
             let expected_copies = plan_replica_copies(&source, &destination).unwrap();
@@ -230,8 +235,12 @@ mod bidirectional_replica_reconciliation_tests {
                 for reverse_destination in [false, true] {
                     let mut a = source.clone();
                     let mut b = destination.clone();
-                    if reverse_source { a.reverse(); }
-                    if reverse_destination { b.reverse(); }
+                    if reverse_source {
+                        a.reverse();
+                    }
+                    if reverse_destination {
+                        b.reverse();
+                    }
                     let delta = reconcile_replica_inventories(&a, &b).unwrap();
                     assert_eq!(delta.copies, expected_copies);
                     assert_eq!(delta.destination_only, expected_orphans);
@@ -244,7 +253,7 @@ mod bidirectional_replica_reconciliation_tests {
     fn conflicts_unsafe_keys_and_duplicates_reject_entire_result() {
         let valid = object("part/data.bin", 10);
         let different = object("part/data.bin", 11);
-        assert!(reconcile_replica_inventories(&[valid.clone()], &[different]).is_err());
+        assert!(reconcile_replica_inventories(std::slice::from_ref(&valid), &[different]).is_err());
         assert!(reconcile_replica_inventories(&[valid.clone(), valid], &[]).is_err());
         assert!(reconcile_replica_inventories(&[], &[object("../outside", 1)]).is_err());
         assert!(reconcile_replica_inventories(&[], &[object("part/CON.txt", 1)]).is_err());
@@ -1883,7 +1892,10 @@ mod portable_case_collision_tests {
         assert!(ReplicaCopyPlanner::new(&left, &right).is_err());
         assert!(compare_replica_inventories(&left, &right).is_err());
 
-        let two = [object("region/shard/g1/part/FOO.bin"), object("region/shard/g1/part/foo.bin")];
+        let two = [
+            object("region/shard/g1/part/FOO.bin"),
+            object("region/shard/g1/part/foo.bin"),
+        ];
         assert!(plan_replica_copies(&two, &[]).is_err());
         assert!(ReplicaCopyPlanner::new(&two, &[]).is_err());
     }
@@ -1909,6 +1921,9 @@ mod portable_case_collision_tests {
         let same = [object("Prod/Shard/g1/Part/Data.BIN")];
         assert!(plan_replica_copies(&same, &same).unwrap().is_empty());
         assert!(ReplicaCopyPlanner::new(&same, &same).unwrap().is_empty());
-        assert_eq!(compare_replica_inventories(&same, &same).unwrap(), ReplicaInventoryDifference::default());
+        assert_eq!(
+            compare_replica_inventories(&same, &same).unwrap(),
+            ReplicaInventoryDifference::default()
+        );
     }
 }

@@ -8,14 +8,23 @@ fn bitwise_aggregate_names_match_existing_functions() {
         ("BIT_XOR", "groupBitXor"),
     ] {
         for (before, after) in [
-            (format!("SELECT {name}(number) FROM numbers(4)"),
-             format!("SELECT {original}(number) FROM numbers(4)")),
-            (format!("SELECT number, {name}(number) FROM numbers(4) GROUP BY number"),
-             format!("SELECT number, {original}(number) FROM numbers(4) GROUP BY number")),
-            (format!("SELECT {name}(number), COUNT(*) FROM numbers(4)"),
-             format!("SELECT {original}(number), COUNT(*) FROM numbers(4)")),
+            (
+                format!("SELECT {name}(number) FROM numbers(4)"),
+                format!("SELECT {original}(number) FROM numbers(4)"),
+            ),
+            (
+                format!("SELECT number, {name}(number) FROM numbers(4) GROUP BY number"),
+                format!("SELECT number, {original}(number) FROM numbers(4) GROUP BY number"),
+            ),
+            (
+                format!("SELECT {name}(number), COUNT(*) FROM numbers(4)"),
+                format!("SELECT {original}(number), COUNT(*) FROM numbers(4)"),
+            ),
         ] {
-            assert_eq!(parse_select(&before).unwrap(), parse_select(&after).unwrap());
+            assert_eq!(
+                parse_select(&before).unwrap(),
+                parse_select(&after).unwrap()
+            );
         }
     }
 }

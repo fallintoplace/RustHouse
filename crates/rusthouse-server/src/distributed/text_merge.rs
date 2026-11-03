@@ -26,11 +26,7 @@ fn text_key_cmp(
         (None, Some(_), Some(false)) | (Some(_), None, Some(true)) => Ordering::Greater,
         _ => {
             let cmp = left.cmp(right);
-            if descending {
-                cmp.reverse()
-            } else {
-                cmp
-            }
+            if descending { cmp.reverse() } else { cmp }
         }
     }
 }
@@ -52,12 +48,14 @@ impl PartialOrd for TextHead {
 
 /// Decode one TSV row without allocating projected non-key fields.
 /// This parser is used both for full validation and to advance a heap head.
+type TextRow = Option<(usize, Option<Vec<u8>>)>;
+
 fn next_text_row(
     body: &[u8],
     start: usize,
     columns: usize,
     nullable: bool,
-) -> Result<Option<(usize, Option<Vec<u8>>)>, MergeError> {
+) -> Result<TextRow, MergeError> {
     if start == body.len() {
         return Ok(None);
     }
@@ -79,10 +77,7 @@ fn next_text_row(
         None
     } else {
         rusthouse_format::validate_tsv_field(first).map_err(|_| MergeError::InvalidSortedScan)?;
-        Some(
-            rusthouse_format::decode_tsv_field(first)
-                .map_err(|_| MergeError::InvalidSortedScan)?,
-        )
+        Some(rusthouse_format::decode_tsv_field(first).map_err(|_| MergeError::InvalidSortedScan)?)
     };
     let mut count = 1usize;
     for field in fields {
@@ -115,6 +110,10 @@ pub(super) fn merge_sorted_text_rows_page(
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "The merge inputs mirror the validated sort plan."
+)]
 pub(super) fn merge_sorted_text_rows_page_with_nulls(
     shards: &[(usize, Vec<u8>)],
     columns: &[&str],
@@ -149,9 +148,10 @@ pub(super) fn merge_sorted_text_rows_page_with_nulls(
         let mut previous: Option<Option<Vec<u8>>> = None;
         let mut row_count = 0usize;
         while let Some((end, key)) = next_text_row(body, position, columns.len(), nullable)? {
-            if previous.as_ref().is_some_and(|prior| {
-                text_key_cmp(prior, &key, descending, nulls_first).is_gt()
-            }) {
+            if previous
+                .as_ref()
+                .is_some_and(|prior| text_key_cmp(prior, &key, descending, nulls_first).is_gt())
+            {
                 return Err(MergeError::InvalidSortedScan);
             }
             row_count = row_count
@@ -204,12 +204,9 @@ pub(super) fn merge_sorted_text_rows_page_with_nulls(
         if returned >= limit {
             break;
         }
-        if let Some((end, key)) = next_text_row(
-            &shards[head.shard].1,
-            head.end,
-            columns.len(),
-            nullable,
-        )? {
+        if let Some((end, key)) =
+            next_text_row(&shards[head.shard].1, head.end, columns.len(), nullable)?
+        {
             heap.push(TextHead {
                 key,
                 shard: head.shard,
@@ -269,12 +266,12 @@ mod tests {
     fn validates_trailing_rows_outside_the_requested_page() {
         let bad = [(10, b"name\nb\nc\na\n".to_vec())];
         assert_eq!(
-            merge_sorted_text_rows_page(&bad, &["name"], false, 0, 1, 1),
+            merge_sorted_text_rows_page(&bad, &["name"], false, 1, 2, 2),
             Err(MergeError::InvalidSortedScan),
         );
         let bad_field = [(10, b"name\tid\na\t1\nb\n".to_vec())];
         assert_eq!(
-            merge_sorted_text_rows_page(&bad_field, &["name", "id"], false, 0, 1, 1),
+            merge_sorted_text_rows_page(&bad_field, &["name", "id"], false, 1, 2, 2),
             Err(MergeError::InvalidSortedScan),
         );
     }
@@ -287,7 +284,7 @@ mod tests {
                 for index in 0..1000 {
                     body.push_str(&format!("{index:04}-{shard}\tvalue\n"));
                 }
-                (2000, body.into_bytes())
+                (5000, body.into_bytes())
             })
             .collect::<Vec<_>>();
         let page =
@@ -311,7 +308,14 @@ mod nullable_text_topk_tests {
         ];
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
-                &ascending, &["name", "id"], "Nullable(String)", false, None, 0, 4, 4,
+                &ascending,
+                &["name", "id"],
+                "Nullable(String)",
+                false,
+                None,
+                0,
+                4,
+                4,
             )
             .unwrap(),
             b"name\tid\n\\N\t1\n\\N\t3\na\t4\nb\t2\n"
@@ -323,7 +327,14 @@ mod nullable_text_topk_tests {
         // A malformed field is rejected even when a short page could be returned.
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
-                &descending, &["name"], "Nullable(String)", true, None, 0, 1, 1,
+                &descending,
+                &["name"],
+                "Nullable(String)",
+                true,
+                None,
+                0,
+                1,
+                1,
             ),
             Err(MergeError::InvalidSortedScan)
         );
@@ -333,7 +344,14 @@ mod nullable_text_topk_tests {
         ];
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
-                &valid_descending, &["name"], "Nullable(String)", true, None, 0, 4, 4,
+                &valid_descending,
+                &["name"],
+                "Nullable(String)",
+                true,
+                None,
+                0,
+                4,
+                4,
             )
             .unwrap(),
             b"name\nz\ny\n\\N\n\\N\n"
@@ -348,7 +366,14 @@ mod nullable_text_topk_tests {
         ];
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
-                &shards, &["name", "idx"], "Nullable(String)", false, Some(false), 1, 3, 3,
+                &shards,
+                &["name", "idx"],
+                "Nullable(String)",
+                false,
+                Some(false),
+                1,
+                3,
+                3,
             )
             .unwrap(),
             b"name\tidx\nb\t3\n\\N\t2\n\\N\t4\n"
@@ -356,7 +381,14 @@ mod nullable_text_topk_tests {
         let bad = [(10, b"name\n\\N\na\n".to_vec())];
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
-                &bad, &["name"], "Nullable(String)", false, Some(false), 0, 1, 1,
+                &bad,
+                &["name"],
+                "Nullable(String)",
+                false,
+                Some(false),
+                0,
+                1,
+                1,
             ),
             Err(MergeError::InvalidSortedScan)
         );
@@ -366,7 +398,14 @@ mod nullable_text_topk_tests {
         ];
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
-                &first, &["name"], "Nullable(String)", true, Some(true), 0, 4, 4,
+                &first,
+                &["name"],
+                "Nullable(String)",
+                true,
+                Some(true),
+                0,
+                4,
+                4,
             )
             .unwrap(),
             b"name\n\\N\n\\N\nz\ny\n"
@@ -378,14 +417,28 @@ mod nullable_text_topk_tests {
         let shards = [(10, b"name\n\\N\n\\\\N\n".to_vec())];
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
-                &shards, &["name"], "Nullable(String)", false, None, 0, 2, 2,
+                &shards,
+                &["name"],
+                "Nullable(String)",
+                false,
+                None,
+                0,
+                2,
+                2,
             )
             .unwrap(),
             b"name\n\\N\n\\\\N\n"
         );
         assert_eq!(
             merge_sorted_text_rows_page_with_nulls(
-                &shards, &["name"], "String", false, None, 0, 2, 2,
+                &shards,
+                &["name"],
+                "String",
+                false,
+                None,
+                0,
+                2,
+                2,
             ),
             Err(MergeError::InvalidSortedScan)
         );

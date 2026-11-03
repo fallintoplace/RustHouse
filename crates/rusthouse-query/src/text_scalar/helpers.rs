@@ -21,10 +21,7 @@ pub(super) fn decode_percent_encoded(input: &str, form: bool) -> Result<String, 
         // Copy ordinary spans together rather than branching and pushing
         // once per byte in long URL components.
         let start = index;
-        while index < source.len()
-            && source[index] != b'%'
-            && (!form || source[index] != b'+')
-        {
+        while index < source.len() && source[index] != b'%' && (!form || source[index] != b'+') {
             index += 1;
         }
         decoded.extend_from_slice(&source[start..index]);
@@ -48,7 +45,10 @@ pub(super) fn decode_percent_encoded(input: &str, form: bool) -> Result<String, 
 }
 
 // Format a bounded subset of ClickHouse's Python-style constant placeholders.
-pub(super) fn format_constant_template(pattern: &str, args: &[String]) -> Result<String, ParseError> {
+pub(super) fn format_constant_template(
+    pattern: &str,
+    args: &[String],
+) -> Result<String, ParseError> {
     let bytes = pattern.as_bytes();
     let mut result = String::new();
     let mut index = 0;
@@ -76,11 +76,15 @@ pub(super) fn format_constant_template(pattern: &str, args: &[String]) -> Result
                 index += 1;
             }
             if bytes.get(index) != Some(&b'}') {
-                return Err(ParseError("FORMAT requires numeric or empty placeholders".into()));
+                return Err(ParseError(
+                    "FORMAT requires numeric or empty placeholders".into(),
+                ));
             }
             let explicit = index != start;
             if explicit_mode.is_some_and(|previous| previous != explicit) {
-                return Err(ParseError("FORMAT cannot mix numbered and automatic fields".into()));
+                return Err(ParseError(
+                    "FORMAT cannot mix numbered and automatic fields".into(),
+                ));
             }
             explicit_mode = Some(explicit);
             let argument = if explicit {
@@ -92,9 +96,11 @@ pub(super) fn format_constant_template(pattern: &str, args: &[String]) -> Result
                 next_implicit += 1;
                 current
             };
-            result.push_str(args.get(argument).ok_or_else(|| {
-                ParseError("FORMAT placeholder exceeds argument count".into())
-            })?);
+            result.push_str(
+                args.get(argument).ok_or_else(|| {
+                    ParseError("FORMAT placeholder exceeds argument count".into())
+                })?,
+            );
             index += 1;
         } else {
             return Err(ParseError("FORMAT has an unmatched closing brace".into()));
@@ -202,9 +208,13 @@ pub(super) fn crc32_ieee(input: &[u8]) -> u32 {
 
 // Convert a bounded, unambiguous JSONPath subset to the existing dotted
 // object/array lookup used by the strict JSON parser.
-pub(super) fn simple_json_path(path: &str) -> Result<Vec<crate::json::JsonPathSegment<'_>>, ParseError> {
+pub(super) fn simple_json_path(
+    path: &str,
+) -> Result<Vec<crate::json::JsonPathSegment<'_>>, ParseError> {
     if path.len() > 256 || !path.starts_with('$') {
-        return Err(ParseError("JSON_EXISTS requires a bounded root JSONPath".into()));
+        return Err(ParseError(
+            "JSON_EXISTS requires a bounded root JSONPath".into(),
+        ));
     }
     let bytes = path.as_bytes();
     let mut cursor = 1;
@@ -238,9 +248,7 @@ pub(super) fn simple_json_path(path: &str) -> Result<Vec<crate::json::JsonPathSe
                         }
                         cursor += 1;
                     }
-                    if bytes.get(cursor) != Some(&b'\'')
-                        || bytes.get(cursor + 1) != Some(&b']')
-                    {
+                    if bytes.get(cursor) != Some(&b'\'') || bytes.get(cursor + 1) != Some(&b']') {
                         return Err(ParseError("unterminated JSON_EXISTS quoted key".into()));
                     }
                     components.push(crate::json::JsonPathSegment::Key(&path[start..cursor]));
@@ -508,7 +516,6 @@ pub(super) fn soundex_ascii(input: &str) -> String {
     code
 }
 
-
 pub(super) fn regexp_quote_meta(input: &str) -> Result<String, ParseError> {
     let mut output = String::with_capacity(input.len());
     for character in input.chars() {
@@ -517,8 +524,20 @@ pub(super) fn regexp_quote_meta(input: &str) -> Result<String, ParseError> {
         } else {
             if matches!(
                 character,
-                '\\' | '|' | '(' | ')' | '^' | '$' | '.' | '[' | ']' | '?' | '*' | '+'
-                    | '{' | ':' | '-'
+                '\\' | '|'
+                    | '('
+                    | ')'
+                    | '^'
+                    | '$'
+                    | '.'
+                    | '['
+                    | ']'
+                    | '?'
+                    | '*'
+                    | '+'
+                    | '{'
+                    | ':'
+                    | '-'
             ) {
                 output.push('\\');
             }
@@ -531,12 +550,13 @@ pub(super) fn regexp_quote_meta(input: &str) -> Result<String, ParseError> {
     Ok(output)
 }
 
-
 pub(super) fn base58_encode(input: &str) -> Result<String, ParseError> {
     const ALPHABET: &[u8; 58] = b"123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
     // Base conversion is quadratic. Keep constant evaluation CPU-bounded.
     if input.len() > 4096 {
-        return Err(ParseError("base58Encode constant exceeds 4096 bytes".into()));
+        return Err(ParseError(
+            "base58Encode constant exceeds 4096 bytes".into(),
+        ));
     }
     let mut digits = Vec::<u8>::new();
     for &byte in input.as_bytes() {
@@ -552,7 +572,8 @@ pub(super) fn base58_encode(input: &str) -> Result<String, ParseError> {
         }
     }
     let zeros = input.bytes().take_while(|&byte| byte == 0).count();
-    let length = zeros.checked_add(digits.len())
+    let length = zeros
+        .checked_add(digits.len())
         .ok_or_else(|| ParseError("base58Encode output is too large".into()))?;
     if length > MAX_TEXT_BYTES {
         return Err(ParseError("base58Encode output is too large".into()));
@@ -564,7 +585,6 @@ pub(super) fn base58_encode(input: &str) -> Result<String, ParseError> {
     }
     Ok(encoded)
 }
-
 
 // Decode each Base58 symbol with one indexed lookup, not a 58-byte search.
 const BASE58_DIGITS: [u8; 256] = {
@@ -580,7 +600,9 @@ const BASE58_DIGITS: [u8; 256] = {
 
 pub(super) fn base58_decode(input: &str) -> Result<String, ParseError> {
     if input.len() > 4096 {
-        return Err(ParseError("base58Decode constant exceeds 4096 bytes".into()));
+        return Err(ParseError(
+            "base58Decode constant exceeds 4096 bytes".into(),
+        ));
     }
     let mut decoded = Vec::<u8>::new();
     for symbol in input.bytes() {
@@ -600,7 +622,8 @@ pub(super) fn base58_decode(input: &str) -> Result<String, ParseError> {
         }
     }
     let zeros = input.bytes().take_while(|&byte| byte == b'1').count();
-    let length = zeros.checked_add(decoded.len())
+    let length = zeros
+        .checked_add(decoded.len())
         .ok_or_else(|| ParseError("base58Decode output is too large".into()))?;
     if length > MAX_TEXT_BYTES {
         return Err(ParseError("base58Decode output is too large".into()));
@@ -674,7 +697,7 @@ pub(super) fn unhex_text(input: &str) -> Result<String, ParseError> {
         }
     }
     let mut pairs = input.as_bytes().chunks_exact(2);
-    let mut bytes = Vec::with_capacity((input.len() + 1) / 2);
+    let mut bytes = Vec::with_capacity(input.len().div_ceil(2));
     for pair in pairs.by_ref() {
         bytes.push((digit(pair[0])? << 4) | digit(pair[1])?);
     }
@@ -682,8 +705,7 @@ pub(super) fn unhex_text(input: &str) -> Result<String, ParseError> {
         // ClickHouse takes a lone trailing digit as the low nibble of a byte.
         bytes.push(digit(last)?);
     }
-    String::from_utf8(bytes)
-        .map_err(|_| ParseError("unhex constant is not valid UTF-8".into()))
+    String::from_utf8(bytes).map_err(|_| ParseError("unhex constant is not valid UTF-8".into()))
 }
 
 #[cfg(test)]
@@ -692,12 +714,22 @@ mod mac_pair_decode_fast_path_tests {
 
     #[test]
     fn parses_all_six_hex_pairs_and_rejects_malformed_addresses() {
-        assert_eq!(parse_mac_address("00:01:0a:0B:ff:FE"), Some(0x0001_0a0b_fffe));
-        assert_eq!(parse_mac_address("ff:ff:ff:ff:ff:ff"), Some(0xffff_ffff_ffff));
+        assert_eq!(
+            parse_mac_address("00:01:0a:0B:ff:FE"),
+            Some(0x0001_0a0b_fffe)
+        );
+        assert_eq!(
+            parse_mac_address("ff:ff:ff:ff:ff:ff"),
+            Some(0xffff_ffff_ffff)
+        );
         for invalid in [
-            "", "00:00:00:00:00", "00:00:00:00:00:00:00",
-            "00-00-00-00-00-00", "0:00:00:00:00:00",
-            "00:00:00:00:00:gg", "é0:00:00:00:00:00",
+            "",
+            "00:00:00:00:00",
+            "00:00:00:00:00:00:00",
+            "00-00-00-00-00-00",
+            "0:00:00:00:00:00",
+            "00:00:00:00:00:gg",
+            "é0:00:00:00:00:00",
         ] {
             assert_eq!(parse_mac_address(invalid), None, "{invalid}");
         }
@@ -711,9 +743,12 @@ mod significant_host_case_fast_path_tests {
     #[test]
     fn uppercase_common_suffixes_use_the_same_domain_labels() {
         for host in [
-            "a.Example.co.uk", "a.Example.CO.uk",
-            "a.Example.com.au", "a.Example.COM.au",
-            "a.Example.NET.au", "a.Example.ORG.au"
+            "a.Example.co.uk",
+            "a.Example.CO.uk",
+            "a.Example.com.au",
+            "a.Example.COM.au",
+            "a.Example.NET.au",
+            "a.Example.ORG.au",
         ] {
             let (_, label, suffix) = significant_hostname_parts(host).unwrap();
             assert_eq!(label, "Example");
@@ -735,9 +770,18 @@ mod percent_decoding_spans_tests {
         let plain = format!("{}%20{}%C3%A9", "abc".repeat(100), "xyz".repeat(100));
         let expected = format!("{} {}é", "abc".repeat(100), "xyz".repeat(100));
         assert_eq!(decode_percent_encoded(&plain, false).unwrap(), expected);
-        assert_eq!(decode_percent_encoded("hello+world%2Bok", true).unwrap(), "hello world+ok");
-        assert_eq!(decode_percent_encoded("hello+world%2Bok", false).unwrap(), "hello+world+ok");
-        assert_eq!(decode_percent_encoded("%00", false).unwrap().as_bytes(), &[0]);
+        assert_eq!(
+            decode_percent_encoded("hello+world%2Bok", true).unwrap(),
+            "hello world+ok"
+        );
+        assert_eq!(
+            decode_percent_encoded("hello+world%2Bok", false).unwrap(),
+            "hello+world+ok"
+        );
+        assert_eq!(
+            decode_percent_encoded("%00", false).unwrap().as_bytes(),
+            &[0]
+        );
         for invalid in ["%", "%A", "%GG", "%FF", "%é"] {
             assert!(decode_percent_encoded(invalid, false).is_err(), "{invalid}");
         }

@@ -1,9 +1,14 @@
-use rusthouse_query::{parse_select, Predicate};
+use rusthouse_query::{Predicate, parse_select};
 
 #[test]
 fn parses_canonical_tpch_q19_filter_without_exceeding_boolean_budget() {
     let sql = include_str!("../../../bench/tpch/queries/q19.sql");
-    let predicates = sql.split_once("WHERE").unwrap().1.trim().trim_end_matches(';');
+    let predicates = sql
+        .split_once("WHERE")
+        .unwrap()
+        .1
+        .trim()
+        .trim_end_matches(';');
     let query = format!("SELECT count(*) FROM fused WHERE {predicates}");
     let select = parse_select(&query).unwrap();
     assert_eq!(select.or_predicates.len(), 2);

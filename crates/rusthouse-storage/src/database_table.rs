@@ -59,15 +59,19 @@ pub fn ensure_database_format_version(database: &Path) -> Result<(), String> {
     }
     let mut file = open_catalog_schema(&marker)
         .map_err(|error| format!("cannot open database format version: {error}"))?;
-    let opened = file.metadata()
+    let opened = file
+        .metadata()
         .map_err(|error| format!("cannot read database format metadata: {error}"))?;
     if !same_schema_state(&before, &opened) {
         return Err("database format marker changed before read".into());
     }
     let mut bytes = Vec::new();
-    (&mut file).take(65).read_to_end(&mut bytes)
+    (&mut file)
+        .take(65)
+        .read_to_end(&mut bytes)
         .map_err(|error| format!("cannot read database format version: {error}"))?;
-    let finished = file.metadata()
+    let finished = file
+        .metadata()
         .map_err(|error| format!("cannot verify database format metadata: {error}"))?;
     let current = fs::symlink_metadata(&marker)
         .map_err(|error| format!("cannot verify database format marker: {error}"))?;

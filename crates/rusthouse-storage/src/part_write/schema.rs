@@ -1,5 +1,3 @@
-use super::*;
-
 pub(super) fn base_type(kind: &str) -> (&str, bool) {
     if let Some(base) = kind
         .strip_prefix("Nullable(")
