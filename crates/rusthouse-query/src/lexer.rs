@@ -532,6 +532,43 @@ mod line_comment_scanning_tests {
 }
 
 #[cfg(test)]
+mod unary_plus_number_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_signed_positive_literals_without_changing_binary_addition() {
+        assert_eq!(
+            tokenize("SELECT +12, +.5, +1e2").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("+12".into()),
+                Token::Comma,
+                Token::Number("+.5".into()),
+                Token::Comma,
+                Token::Number("+1e2".into()),
+            ]
+        );
+        assert_eq!(
+            tokenize("1+2 (3)+4 WHERE n >= +5").unwrap(),
+            vec![
+                Token::Number("1".into()),
+                Token::Plus,
+                Token::Number("2".into()),
+                Token::LParen,
+                Token::Number("3".into()),
+                Token::RParen,
+                Token::Plus,
+                Token::Number("4".into()),
+                Token::Word("WHERE".into()),
+                Token::Word("n".into()),
+                Token::Operator(Operator::Ge),
+                Token::Number("+5".into()),
+            ]
+        );
+    }
+}
+
+#[cfg(test)]
 mod nested_block_comment_tests {
     use super::*;
 
@@ -607,39 +644,3 @@ mod radix_literal_tests {
     }
 }
 
-#[cfg(test)]
-mod unary_plus_number_tests {
-    use super::*;
-
-    #[test]
-    fn accepts_signed_positive_literals_without_changing_binary_addition() {
-        assert_eq!(
-            tokenize("SELECT +12, +.5, +1e2").unwrap(),
-            vec![
-                Token::Word("SELECT".into()),
-                Token::Number("+12".into()),
-                Token::Comma,
-                Token::Number("+.5".into()),
-                Token::Comma,
-                Token::Number("+1e2".into()),
-            ]
-        );
-        assert_eq!(
-            tokenize("1+2 (3)+4 WHERE n >= +5").unwrap(),
-            vec![
-                Token::Number("1".into()),
-                Token::Plus,
-                Token::Number("2".into()),
-                Token::LParen,
-                Token::Number("3".into()),
-                Token::RParen,
-                Token::Plus,
-                Token::Number("4".into()),
-                Token::Word("WHERE".into()),
-                Token::Word("n".into()),
-                Token::Operator(Operator::Ge),
-                Token::Number("+5".into()),
-            ]
-        );
-    }
-}
