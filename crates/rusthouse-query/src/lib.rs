@@ -899,6 +899,12 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         if !parser.take(Token::LParen) {
             return Err(ParseError("expected COUNT() or COUNT(*)".into()));
         }
+        if !matches!(
+            parser.tokens.get(parser.index),
+            Some(Token::Word(word)) if word.eq_ignore_ascii_case("DISTINCT")
+        ) {
+            parser.keyword("ALL");
+        }
         if parser.keyword("DISTINCT") {
             let column = parser.word()?;
             if !parser.take(Token::RParen) {
