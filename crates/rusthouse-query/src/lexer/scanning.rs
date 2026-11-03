@@ -118,6 +118,12 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             return Err(ParseError("unterminated string literal".into()));
         };
         cursor += distance;
+        if bytes[cursor] == b'\\' && bytes.get(cursor + 1) == Some(&b'N') {
+            value.push_str(&sql[start..cursor]);
+            cursor += 2;
+            start = cursor;
+            continue;
+        }
         let escaped = match (bytes[cursor], bytes.get(cursor + 1)) {
             (b'\\', Some(b'\'' | b'\\')) => Some(bytes[cursor + 1]),
             (b'\\', Some(b'n')) => Some(b'\n'),
@@ -485,5 +491,24 @@ mod doubled_equals_tests {
             "SELECT number FROM numbers(4) WHERE number === 2"
         )
         .is_err());
+    }
+}
+
+#[cfg(test)]
+mod reserved_string_escape_tests {
+    use super::*;
+
+    #[test]
+    fn consumes_reserved_capital_n_escape_without_emitting_text() {
+        let mut index = 0;
+        assert_eq!(
+            scan_string(r"'a\Nb\N'", &mut index).unwrap(),
+            Token::String("ab".into()),
+        );
+        assert_eq!(index, r"'a\Nb\N'".len());
+        assert_eq!(
+            scan_string(r"'a\nb'", &mut 0).unwrap(),
+            Token::String("a\nb".into()),
+        );
     }
 }
