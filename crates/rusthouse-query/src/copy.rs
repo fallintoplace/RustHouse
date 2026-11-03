@@ -39,6 +39,9 @@ fn parse_copy_column_list(parser: &mut Parser) -> Result<Option<Vec<String>>, Pa
         if !parser.take(Token::Comma) {
             break;
         }
+        if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+            break;
+        }
     }
     if !parser.take(Token::RParen) {
         return Err(ParseError("expected ')' after COPY columns".into()));
@@ -237,5 +240,23 @@ mod tests {
             parse_copy_from("COPY events FROM 'x.csv' WITH (FORMAT CSV, HEADER, FORMAT TSV)")
                 .is_err()
         );
+    }
+}
+
+#[cfg(test)]
+mod copy_trailing_comma_tests {
+    use super::*;
+
+    #[test]
+    fn trailing_column_comma_does_not_create_an_extra_column() {
+        let query = parse_copy_from("COPY events (id, name,) FROM 'rows.csv'")
+            .unwrap().unwrap();
+        assert_eq!(query.columns, Some(vec!["id".into(), "name".into()]));
+        for sql in [
+            "COPY events (,) FROM 'rows.csv'",
+            "COPY events (id,,) FROM 'rows.csv'",
+        ] {
+            assert!(parse_copy_from(sql).is_err(), "{sql}");
+        }
     }
 }
