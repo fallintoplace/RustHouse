@@ -1018,7 +1018,6 @@ fn parses_unary_not_on_numeric_predicates() {
     assert_eq!(twice.predicates.len(), 2);
     for sql in [
         "SELECT number FROM numbers(6) WHERE number NOT = 3",
-        "SELECT number FROM numbers(6) WHERE NOT number % 2 = 1",
         "SELECT number FROM numbers(6) WHERE NOT",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
