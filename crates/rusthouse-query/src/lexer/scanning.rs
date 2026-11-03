@@ -436,6 +436,34 @@ mod plain_string_literal_fast_path_tests {
 }
 
 #[cfg(test)]
+mod hexadecimal_string_escape_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_hex_escape_bytes_and_utf8_sequences() {
+        for (sql, expected) in [
+            (r"'\x41\x42'", "AB"),
+            (r"'pre\x2dpost'", "pre-post"),
+            (r"'caf\xC3\xA9'", "café"),
+            (r"'\x00'", "\0"),
+            (r"'\x4G'", r"\x4G"),
+            (r"'C:\\x41'", r"C:\x41"),
+        ] {
+            let mut cursor = 0;
+            assert_eq!(scan_string(sql, &mut cursor).unwrap(), Token::String(expected.into()));
+            assert_eq!(cursor, sql.len());
+        }
+    }
+
+    #[test]
+    fn invalid_non_utf8_hex_bytes_are_rejected() {
+        for sql in [r"'\xFF'", r"'\xC3'", r"'\xC3\x41'"] {
+            assert!(scan_string(sql, &mut 0).is_err(), "{sql}");
+        }
+    }
+}
+
+#[cfg(test)]
 mod escaped_string_bulk_span_tests {
     use super::*;
 
@@ -505,30 +533,3 @@ mod doubled_equals_tests {
     }
 }
 
-#[cfg(test)]
-mod hexadecimal_string_escape_tests {
-    use super::*;
-
-    #[test]
-    fn decodes_hex_escape_bytes_and_utf8_sequences() {
-        for (sql, expected) in [
-            (r"'\x41\x42'", "AB"),
-            (r"'pre\x2dpost'", "pre-post"),
-            (r"'caf\xC3\xA9'", "café"),
-            (r"'\x00'", "\0"),
-            (r"'\x4G'", r"\x4G"),
-            (r"'C:\\x41'", r"C:\x41"),
-        ] {
-            let mut cursor = 0;
-            assert_eq!(scan_string(sql, &mut cursor).unwrap(), Token::String(expected.into()));
-            assert_eq!(cursor, sql.len());
-        }
-    }
-
-    #[test]
-    fn invalid_non_utf8_hex_bytes_are_rejected() {
-        for sql in [r"'\xFF'", r"'\xC3'", r"'\xC3\x41'"] {
-            assert!(scan_string(sql, &mut 0).is_err(), "{sql}");
-        }
-    }
-}
