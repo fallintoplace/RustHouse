@@ -914,6 +914,11 @@ fn grouped_metric_column(
     function: AggregateFunction,
 ) -> Result<String, ParseError> {
     if function == AggregateFunction::Count {
+        if parser.keyword("DISTINCT") {
+            return Err(ParseError(
+                "mixed grouped COUNT(DISTINCT) is not yet supported".into(),
+            ));
+        }
         if parser.take(Token::Star) || parser.tokens.get(parser.index) == Some(&Token::RParen) {
             return Ok("*".into());
         }
@@ -2508,6 +2513,17 @@ mod parenthesized_predicate_literal_tests {
         }
         let nested = format!("{}1{}", "(".repeat(17), ")".repeat(17));
         assert!(parse_select(&format!("SELECT count(*) FROM t WHERE number = {nested}")).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpch_parser_first_stop_3 {
+    use super::parse_select;
+
+    #[test]
+    fn unsupported_construct_has_specific_error() {
+        let error = parse_select("SELECT RegionID, SUM(AdvEngineID), COUNT(*) AS c, AVG(ResolutionWidth), COUNT(DISTINCT UserID) FROM hits GROUP BY RegionID ORDER BY c DESC LIMIT 10").unwrap_err();
+        assert!(error.0.contains("mixed grouped COUNT(DISTINCT)"), "{error}");
     }
 }
 
