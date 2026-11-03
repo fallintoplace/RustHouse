@@ -440,6 +440,12 @@ fn output_columns(
                         .filter(|(index, _)| *index == position)
                     {
                         alias.clone()
+                    } else if let Some((_, alias)) = query
+                        .grouped_key_aliases
+                        .iter()
+                        .find(|(index, _)| *index == position)
+                    {
+                        alias.clone()
                     } else if column.relation.is_empty() {
                         column.name.clone()
                     } else {
@@ -980,6 +986,30 @@ fn execute_multi_join_inner<W: Write>(
     } else {
         None
     };
+
+    if !query.grouped_key_aliases.is_empty() {
+        if query.grouped_count.is_none()
+            || query.kind != JoinType::Inner
+            || query.steps.iter().any(|step| step.kind != JoinType::Inner)
+        {
+            return Err(invalid("JOIN key aliases require a grouped INNER join"));
+        }
+        for (position, alias) in &query.grouped_key_aliases {
+            if query
+                .columns
+                .as_ref()
+                .is_none_or(|columns| *position >= columns.len())
+                || relations.iter().any(|relation| {
+                    relation
+                        .names
+                        .iter()
+                        .any(|name| name.eq_ignore_ascii_case(alias))
+                })
+            {
+                return Err(invalid("JOIN key alias conflicts with a source column"));
+            }
+        }
+    }
 
     if let Some((position, alias)) = &query.grouped_year {
         if relations.iter().any(|relation| {

@@ -139,6 +139,8 @@ pub struct JoinSelect {
     pub grouped_min: Option<JoinColumn>,
     /// Position and alias of an EXTRACT(YEAR FROM date) grouping key.
     pub grouped_year: Option<(usize, String)>,
+    /// Output aliases for grouped source columns.
+    pub grouped_key_aliases: Vec<(usize, String)>,
     /// Position of the grouped aggregate in the SELECT list.
     pub grouped_sum_position: Option<usize>,
     pub grouped_sum_having: Option<GroupedSumHaving>,
@@ -814,6 +816,7 @@ fn parse_join_tokens(
     let mut grouped_sum = None;
     let mut grouped_min = None;
     let mut grouped_year: Option<(usize, String)> = None;
+    let mut grouped_key_aliases: Vec<(usize, String)> = Vec::new();
     let mut grouped_sum_position = None;
     let columns = if aggregate.is_some()
         || scalar_sum.is_some()
@@ -852,7 +855,14 @@ fn parse_join_tokens(
                 grouped_year = Some((columns.len(), alias));
                 columns.push(column);
             } else {
-                columns.push(projected(&mut parser)?);
+                let column = projected(&mut parser)?;
+                if parser.keyword("AS") {
+                    if column.name == "*" {
+                        return Err(ParseError("JOIN group alias requires a column".into()));
+                    }
+                    grouped_key_aliases.push((columns.len(), parser.bounded_word()?));
+                }
+                columns.push(column);
             }
             if !parser.take(Token::Comma) {
                 break;
@@ -1464,6 +1474,16 @@ fn parse_join_tokens(
             }
             keys.push(projected(&mut parser)?);
         }
+        for key in &mut keys {
+            if key.relation.is_empty() {
+                if let Some((position, _)) = grouped_key_aliases
+                    .iter()
+                    .find(|(_, alias)| key.name.eq_ignore_ascii_case(alias))
+                {
+                    *key = columns.as_ref().expect("alias projection")[*position].clone();
+                }
+            }
+        }
         if let Some((position, alias)) = &grouped_year {
             let source = &columns.as_ref().expect("year projection")[*position];
             for key in &mut keys {
@@ -1583,6 +1603,14 @@ fn parse_join_tokens(
                 let mut key = projected(&mut parser)?;
                 if key.name == "*" {
                     return Err(ParseError("JOIN ORDER BY requires a column".into()));
+                }
+                if key.relation.is_empty() {
+                    if let Some((position, _)) = grouped_key_aliases
+                        .iter()
+                        .find(|(_, alias)| key.name.eq_ignore_ascii_case(alias))
+                    {
+                        key = columns.as_ref().expect("alias projection")[*position].clone();
+                    }
                 }
                 if let Some((position, alias)) = &grouped_year {
                     let source = &columns.as_ref().expect("year projection")[*position];
@@ -1880,6 +1908,33 @@ fn parse_join_tokens(
     {
         return Err(ParseError("grouped SUM or MIN requires INNER joins".into()));
     }
+    if !grouped_key_aliases.is_empty() {
+        if !grouped_count_projection
+            || kind != JoinType::Inner
+            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || grouped_count_column.is_some()
+            || !grouped_case_counts.is_empty()
+        {
+            return Err(ParseError(
+                "JOIN key aliases require a grouped INNER join".into(),
+            ));
+        }
+        for (index, (_, alias)) in grouped_key_aliases.iter().enumerate() {
+            if grouped_key_aliases[..index]
+                .iter()
+                .any(|(_, other)| other.eq_ignore_ascii_case(alias))
+                || grouped_year
+                    .as_ref()
+                    .is_some_and(|(_, other)| other.eq_ignore_ascii_case(alias))
+                || aggregate_alias
+                    .as_deref()
+                    .unwrap_or("count")
+                    .eq_ignore_ascii_case(alias)
+            {
+                return Err(ParseError("ambiguous grouped JOIN output alias".into()));
+            }
+        }
+    }
     if let Some((position, alias)) = &grouped_year {
         let keys = columns.as_ref().expect("year projection");
         if !grouped_count_projection
@@ -2024,6 +2079,7 @@ fn parse_join_tokens(
         grouped_sum,
         grouped_min,
         grouped_year,
+        grouped_key_aliases,
         grouped_sum_position,
         grouped_sum_having,
         scalar_sum,
