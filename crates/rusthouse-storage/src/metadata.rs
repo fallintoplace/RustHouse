@@ -50,6 +50,27 @@ pub fn read_part_row_count(path: impl AsRef<Path>) -> Result<u64, PartError> {
     parse_count(&read_metadata(&path.join("count.txt"), MAX_COUNT_BYTES)?)
 }
 
+/// Recognize the shared data stream used by compact MergeTree parts.
+/// This is detection only; the wide-part readers must reject this layout.
+pub fn is_compact_part(path: &Path) -> Result<bool, PartError> {
+    validate_part_directory(path)?;
+    let file_is_regular = |name: &str| -> Result<bool, PartError> {
+        let file = path.join(name);
+        match fs::symlink_metadata(&file) {
+            Ok(meta) if meta.file_type().is_file() => Ok(true),
+            Ok(_) => Err(invalid_metadata(&file, "part stream must be a regular file")),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(io_error(&file, error)),
+        }
+    };
+    let data = file_is_regular("data.bin")?;
+    let marks = file_is_regular("data.mrk3")?;
+    if marks && !data {
+        return Err(invalid_metadata(path, "compact part marks have no data stream"));
+    }
+    Ok(data && marks)
+}
+
 pub fn inspect_part(path: impl AsRef<Path>) -> Result<PartMetadata, PartError> {
     let path = path.as_ref();
     // A part's row count and schema form one immutable generation. Each

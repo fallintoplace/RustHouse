@@ -642,6 +642,11 @@ fn decode_typed_columns(
 impl TypedPartReader {
     pub fn open(part: impl AsRef<Path>, names: &[String]) -> Result<Self, PartError> {
         let part = part.as_ref();
+        if crate::is_compact_part(part)? {
+            return Err(PartError::InvalidScan(
+                "compact MergeTree part requires a compact-part reader".into(),
+            ));
+        }
         let metadata = inspect_part(part)?;
         if names.is_empty() {
             return Err(PartError::InvalidScan(
