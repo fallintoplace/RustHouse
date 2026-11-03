@@ -491,6 +491,14 @@ pub fn parse_join(sql: &str) -> Result<Option<JoinSelect>, ParseError> {
             if !parser.take(Token::Comma) {
                 break;
             }
+            let trailing = parser.tokens.get(parser.index).is_none_or(|token| {
+                matches!(token, Token::Semicolon)
+                    || matches!(token, Token::Word(word)
+                        if ["LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))
+            });
+            if trailing {
+                break;
+            }
         }
         terms
     } else {
@@ -1438,5 +1446,33 @@ mod join_count_one_tests {
             assert!(matches!(query.aggregate, Some(JoinAggregate::CountStar)), "{sql}");
         }
         assert!(parse_join("SELECT COUNT(2) FROM l JOIN r ON l.id = r.id").is_err());
+    }
+}
+
+#[cfg(test)]
+mod join_order_by_trailing_comma_tests {
+    use super::*;
+
+    #[test]
+    fn trailing_order_comma_preserves_join_plan() {
+        for (with_comma, plain) in [
+            (
+                "SELECT a.id FROM a JOIN b ON a.id = b.id ORDER BY a.id,",
+                "SELECT a.id FROM a JOIN b ON a.id = b.id ORDER BY a.id",
+            ),
+            (
+                "SELECT a.id FROM a JOIN b ON a.id = b.id ORDER BY a.id DESC, LIMIT 2",
+                "SELECT a.id FROM a JOIN b ON a.id = b.id ORDER BY a.id DESC LIMIT 2",
+            ),
+        ] {
+            assert_eq!(
+                parse_join(with_comma).unwrap(),
+                parse_join(plain).unwrap(),
+                "{with_comma}"
+            );
+        }
+        assert!(
+            parse_join("SELECT a.id FROM a JOIN b ON a.id = b.id ORDER BY a.id,,").is_err()
+        );
     }
 }
