@@ -74,6 +74,11 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
             }
             b'`' | b'"' => scan_quoted_identifier(sql, &mut index)?,
             b'.' if is_ascii_digit_at(bytes, index + 1) => scan_number(sql, &mut index)?,
+            b'/' if bytes.get(index + 1) == Some(&b'/') => {
+                index += 2;
+                skip_line_comment(bytes, &mut index);
+                continue;
+            }
             b'/' if bytes.get(index + 1) == Some(&b'*') => {
                 // Track nested block comments without recursively parsing
                 // user-supplied SQL or stopping at an inner close marker.
