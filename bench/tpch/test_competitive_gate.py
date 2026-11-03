@@ -90,6 +90,19 @@ class CompetitiveGateTests(unittest.TestCase):
             with self.subTest(message=message), self.assertRaisesRegex(ValueError, message):
                 summarize(report)
 
+    def test_rejects_ratio_overflow_and_underflow(self):
+        for rusthouse, clickhouse in ((1e-300, 1e300), (1e300, 1e-300)):
+            report = verified_report()
+            row = report["results"][0]
+            row["rusthouse_samples_seconds"] = [rusthouse, rusthouse]
+            row["clickhouse_samples_seconds"] = [clickhouse, clickhouse]
+            row["rusthouse_median_seconds"] = rusthouse
+            row["rusthouse_p90_seconds"] = rusthouse
+            row["clickhouse_median_seconds"] = clickhouse
+            row["clickhouse_p90_seconds"] = clickhouse
+            with self.subTest(rusthouse=rusthouse), self.assertRaisesRegex(ValueError, "timing ratio"):
+                summarize(report)
+
     def test_rejects_disguised_official_benchmarks_and_invalid_targets(self):
         report = verified_report()
         report["official_tpch_score"] = True
