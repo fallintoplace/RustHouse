@@ -55,7 +55,57 @@ fn parse_max_connections(value: &str) -> io::Result<usize> {
 
 fn usage() -> &'static str {
     "Usage: rusthouse-server [--port <1-65535>] [--part <frozen-part-or-snapshot> | --database <directory>] [--max-rows <n>] [--max-connections <1-64>] [--peer IPv4:<port>]... [--bind <IPv4-or-IPv6-loopback>] [--allow-private-network]\n\
-     Listens on 127.0.0.1 by default. Private networking requires opt-in. No TLS or authentication.\n"
+     Listens on 127.0.0.1 by default. Private networking requires opt-in. No TLS; set RUSTHOUSE_HTTP_TOKEN for optional bearer authentication.\n"
+}
+
+/// Opt-in shared-secret authentication for trusted local deployments.
+/// The token must travel only over loopback or an encrypted overlay.
+fn valid_configured_token(value: &str) -> bool {
+    (16..=128).contains(&value.len())
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b'~' | b'+' | b'/' | b'=')
+        })
+}
+
+fn bearer_token_matches(expected: &str, authorization: Option<&str>) -> bool {
+    let Some(provided) = authorization.and_then(|value| value.strip_prefix("Bearer ")) else {
+        return false;
+    };
+    let expected = expected.as_bytes();
+    let provided = provided.as_bytes();
+    if expected.len() != provided.len() {
+        return false;
+    }
+    let mut mismatch = 0u8;
+    for (&left, &right) in expected.iter().zip(provided) {
+        mismatch |= left ^ right;
+    }
+    mismatch == 0
+}
+
+#[cfg(test)]
+mod http_auth_tests {
+    use super::*;
+
+    #[test]
+    fn checks_exact_bearer_token_without_prefix_acceptance() {
+        let secret = "0123456789abcdef";
+        assert!(valid_configured_token(secret));
+        assert!(bearer_token_matches(secret, Some("Bearer 0123456789abcdef")));
+        for supplied in [
+            None,
+            Some(""),
+            Some("Basic 0123456789abcdef"),
+            Some("Bearer 0123456789abcde"),
+            Some("Bearer 0123456789abcdefextra"),
+            Some("bearer 0123456789abcdef"),
+            Some("Bearer 0123456789abcdeg"),
+        ] {
+            assert!(!bearer_token_matches(secret, supplied));
+        }
+        assert!(!valid_configured_token("short"));
+        assert!(!valid_configured_token("has spaces invalid"));
+    }
 }
 
 fn parse_header(line: &str) -> Result<(&str, &str), Response> {
@@ -299,6 +349,7 @@ fn read_request_with_deadline(
     let mut accept_lz4 = false;
     let mut seen_accept = false;
     let mut host = None;
+    let mut authorization = None;
     for line in lines {
         if line.is_empty() {
             break;
@@ -306,6 +357,14 @@ fn read_request_with_deadline(
         let (key, value) = parse_header(line)?;
         if key.eq_ignore_ascii_case("host") && host.replace(http_ows(value)).is_some() {
             return Err(Response::text("400 Bad Request", "duplicate Host header\n"));
+        }
+        if key.eq_ignore_ascii_case("authorization")
+            && authorization.replace(http_ows(value)).is_some()
+        {
+            return Err(Response::text(
+                "400 Bad Request",
+                "duplicate Authorization header\n",
+            ));
         }
         if key.eq_ignore_ascii_case("expect") {
             return Err(Response::text(
@@ -356,6 +415,14 @@ fn read_request_with_deadline(
             "400 Bad Request",
             "Host does not match listening address\n",
         ));
+    }
+    if let Some(token) = std::env::var_os("RUSTHOUSE_HTTP_TOKEN") {
+        let expected = token.to_str().filter(|value| valid_configured_token(value)).ok_or_else(|| {
+            Response::text("503 Service Unavailable", "invalid server auth configuration\n")
+        })?;
+        if !bearer_token_matches(expected, authorization) {
+            return Err(Response::text("401 Unauthorized", "authentication required\n"));
+        }
     }
     if transfer_encoding {
         return Err(Response::text(

@@ -44,8 +44,13 @@ and uses the existing 16 MiB response bound plus a per-row bound.
 Inputs are limited to 65536-byte statements and 8192-byte HTTP headers.
 Responses are capped at 16 MiB, concurrent requests at 16, and result rows
 at 10000 by default (up to 250000 with --max-rows).
-Loopback is the default. Explicit private IPv4 access is opt-in. There is no TLS or authentication,
-or full wire-protocol compatibility.
+Loopback is the default. Explicit private IPv4 access is opt-in. There is no built-in TLS.
+To require a shared bearer token on every HTTP endpoint, set `RUSTHOUSE_HTTP_TOKEN`
+to a 16-128 character ASCII token before starting the server and send the
+`Authorization: Bearer <token>` header. Do not send the token over plaintext
+network links. Distributed peer clients do not yet forward authorization headers.
+Without this setting the server remains unauthenticated. The server does not
+provide full ClickHouse wire-protocol compatibility.
 
 For non-generated SQL, use an immutable wide MergeTree part or snapshot. To query
 persistent tables created by `rusthouse sql ... --database ./mydb`, start the

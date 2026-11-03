@@ -11,7 +11,7 @@ the current security boundaries. RustHouse is not designed for hostile users.
   untrusted service that inserts user input directly into SQL.
 - The HTTP server can read SQL data and expose table and schema names.
   Read-only access is **not** the same as authorization or safe multi-tenancy.
-- Coordinator and peer traffic uses plaintext HTTP without authentication.
+- Coordinator and peer traffic uses plaintext HTTP by default. Opt-in HTTP bearer authentication is available, but peer clients do not yet forward credentials.
   A private RFC1918 or Tailscale address does not provide authentication.
 
 ## Threats ranked by deployment impact
