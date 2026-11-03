@@ -11,7 +11,7 @@ from pathlib import Path
 
 RULES = (
     # These are first-stop parser diagnostics, not proof of root cause.
-    ("grouped_aggregate_expression", re.compile(r"expected ['\"]?\\)['\"]? after grouped aggregate", re.I)),
+    ("grouped_aggregate_expression", re.compile(r"expected .* after grouped aggregate", re.I)),
     ("statement_suffix", re.compile(r"unexpected tokens after SELECT statement", re.I)),
     ("identifier_or_expression", re.compile(r"expected an identifier", re.I)),
     ("grouped_aggregate_shape", re.compile(r"grouped aggregates require GROUP BY", re.I)),
