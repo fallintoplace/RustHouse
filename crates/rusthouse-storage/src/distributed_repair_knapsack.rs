@@ -69,6 +69,22 @@ fn choices(items: &[RepairCandidate], budget: u64) -> Vec<Choice> {
     out
 }
 
+fn best_prefix_choices(ordered: &[Choice]) -> Vec<Choice> {
+    let mut prefix = Vec::with_capacity(ordered.len());
+    let mut best = Choice {
+        mask: 0,
+        bytes: 0,
+        priority: 0,
+    };
+    for choice in ordered {
+        if better(*choice, best) {
+            best = *choice;
+        }
+        prefix.push(best);
+    }
+    prefix
+}
+
 pub fn select_repair_batch(
     candidates: &[RepairCandidate],
     budget: u64,
@@ -93,18 +109,7 @@ pub fn select_repair_batch(
     let mid = candidates.len() / 2;
     let mut left = choices(&candidates[..mid], budget);
     left.sort_unstable_by_key(|c| (c.bytes, std::cmp::Reverse(c.priority), c.mask));
-    let mut prefix = Vec::with_capacity(left.len());
-    let mut best_left = Choice {
-        mask: 0,
-        bytes: 0,
-        priority: 0,
-    };
-    for choice in &left {
-        if better(*choice, best_left) {
-            best_left = *choice;
-        }
-        prefix.push(best_left);
-    }
+    let prefix = best_prefix_choices(&left);
     let mut best = Choice {
         mask: 0,
         bytes: 0,
