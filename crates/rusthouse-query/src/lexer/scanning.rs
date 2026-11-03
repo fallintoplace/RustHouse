@@ -107,7 +107,7 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
     }
     // Escapes and doubled quotes still use the original validated decoder,
     // starting at the first special byte without rescanning the plain prefix.
-    let mut value = Vec::new();
+    let mut value = String::new();
     loop {
         // After an escape, skip ordinary bytes as one span instead of
         // branching on every byte of long string literals.
@@ -119,14 +119,22 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
         };
         cursor += distance;
         if bytes[cursor] == b'\\' && bytes.get(cursor + 1) == Some(&b'x') {
-            let high = bytes.get(cursor + 2).and_then(|byte| (*byte as char).to_digit(16));
-            let low = bytes.get(cursor + 3).and_then(|byte| (*byte as char).to_digit(16));
-            let (Some(high), Some(low)) = (high, low) else {
-                return Err(ParseError("hex string escape requires two hex digits".into()));
-            };
-            value.extend_from_slice(&bytes[start..cursor]);
-            value.push(((high << 4) | low) as u8);
-            cursor += 4;
+            let mut end = cursor;
+            let mut bytes_from_hex = Vec::new();
+            while bytes.get(end) == Some(&b'\\') && bytes.get(end + 1) == Some(&b'x') {
+                let high = bytes.get(end + 2).and_then(|byte| (*byte as char).to_digit(16));
+                let low = bytes.get(end + 3).and_then(|byte| (*byte as char).to_digit(16));
+                let (Some(high), Some(low)) = (high, low) else {
+                    return Err(ParseError("hex string escape requires two hex digits".into()));
+                };
+                bytes_from_hex.push(((high << 4) | low) as u8);
+                end += 4;
+            }
+            let decoded = String::from_utf8(bytes_from_hex)
+                .map_err(|_| ParseError("hex string escape is not valid UTF-8".into()))?;
+            value.push_str(&sql[start..cursor]);
+            value.push_str(&decoded);
+            cursor = end;
             start = cursor;
             continue;
         }
@@ -144,16 +152,14 @@ pub(super) fn scan_string(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             _ => None,
         };
         if let Some(escaped) = escaped {
-            value.extend_from_slice(&bytes[start..cursor]);
-            value.push(escaped);
+            value.push_str(&sql[start..cursor]);
+            value.push(escaped as char);
             cursor += 2;
             start = cursor;
         } else if bytes[cursor] == b'\'' {
-            value.extend_from_slice(&bytes[start..cursor]);
+            value.push_str(&sql[start..cursor]);
             *index = cursor + 1;
-            let decoded = String::from_utf8(value)
-                .map_err(|_| ParseError("hex string escape is not valid UTF-8".into()))?;
-            return Ok(Token::String(decoded));
+            return Ok(Token::String(value));
         } else {
             cursor += 1;
         }
