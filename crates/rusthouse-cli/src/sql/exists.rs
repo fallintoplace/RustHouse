@@ -23,6 +23,7 @@ pub(super) fn bind(database: &Path, query: CorrelatedExists) -> Result<Select, S
     let CorrelatedExists {
         mut outer,
         mut inner,
+        negated,
     } = query;
     let (Some(Source::Table(outer_table)), Some(Source::Table(inner_table))) =
         (&outer.source, &inner.source)
@@ -117,9 +118,23 @@ pub(super) fn bind(database: &Path, query: CorrelatedExists) -> Result<Select, S
         }
         values.push(value.to_owned());
     }
-    outer.predicates.push(Predicate::In {
-        column: outer_key,
-        values,
-    });
+    if negated {
+        // NULL never equals an inner key, so it always satisfies NOT EXISTS.
+        let mut null_branch = outer.predicates.clone();
+        null_branch.push(Predicate::IsNull {
+            column: outer_key.clone(),
+            negated: false,
+        });
+        outer.or_predicates.push(null_branch);
+        outer.predicates.push(Predicate::NotIn {
+            column: outer_key,
+            values,
+        });
+    } else {
+        outer.predicates.push(Predicate::In {
+            column: outer_key,
+            values,
+        });
+    }
     Ok(outer)
 }

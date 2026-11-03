@@ -5,6 +5,7 @@ use crate::{ParseError, Projection, Select, Source, Token, parse_select_tokens, 
 pub struct CorrelatedExists {
     pub outer: Select,
     pub inner: Select,
+    pub negated: bool,
 }
 
 /// Recognize a conjunctive EXISTS in a WHERE clause.
@@ -38,8 +39,13 @@ pub fn parse_correlated_exists(sql: &str) -> Result<Option<CorrelatedExists>, Pa
     }
     let Some(start) = found else { return Ok(None) };
     let where_start = where_start.expect("EXISTS follows WHERE");
-    let first = start == where_start + 1;
-    if !first && !matches!(&tokens[start - 1], Token::Word(w) if w.eq_ignore_ascii_case("AND")) {
+    let negated =
+        start > 0 && matches!(&tokens[start - 1], Token::Word(w) if w.eq_ignore_ascii_case("NOT"));
+    let operator_start = start - usize::from(negated);
+    let first = operator_start == where_start + 1;
+    if !first
+        && !matches!(&tokens[operator_start - 1], Token::Word(w) if w.eq_ignore_ascii_case("AND"))
+    {
         return Err(ParseError(
             "correlated EXISTS requires a conjunctive WHERE".into(),
         ));
@@ -61,7 +67,11 @@ pub fn parse_correlated_exists(sql: &str) -> Result<Option<CorrelatedExists>, Pa
         return Err(ParseError("EXISTS requires a closing ')'".into()));
     }
     // Pulling EXISTS out of an OR changes SQL precedence. Refuse it explicitly.
-    if tokens[where_start + 1..if first { start } else { start - 1 }]
+    if tokens[where_start + 1..if first {
+        operator_start
+    } else {
+        operator_start - 1
+    }]
         .iter()
         .chain(tokens[end..].iter())
         .any(|t| matches!(t, Token::Word(w) if w.eq_ignore_ascii_case("OR")))
@@ -85,7 +95,7 @@ pub fn parse_correlated_exists(sql: &str) -> Result<Option<CorrelatedExists>, Pa
             "correlated EXISTS requires a simple SELECT * FROM table".into(),
         ));
     }
-    let mut outer_tokens = tokens[..start - 1].to_vec();
+    let mut outer_tokens = tokens[..operator_start - 1].to_vec();
     if first && matches!(tokens.get(end), Some(Token::Word(w)) if w.eq_ignore_ascii_case("AND")) {
         outer_tokens.push(tokens[where_start].clone());
         outer_tokens.extend_from_slice(&tokens[end + 1..]);
@@ -98,7 +108,11 @@ pub fn parse_correlated_exists(sql: &str) -> Result<Option<CorrelatedExists>, Pa
             "correlated EXISTS requires a stored outer table".into(),
         ));
     }
-    Ok(Some(CorrelatedExists { outer, inner }))
+    Ok(Some(CorrelatedExists {
+        outer,
+        inner,
+        negated,
+    }))
 }
 
 #[cfg(test)]
