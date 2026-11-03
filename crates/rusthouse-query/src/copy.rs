@@ -79,7 +79,10 @@ fn parse_copy_header(parser: &mut Parser) -> Result<bool, ParseError> {
         };
         parser.index += 1;
         Ok(enabled)
-    } else if parser.tokens.get(parser.index) == Some(&Token::RParen) {
+    } else if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::RParen | Token::Comma)
+    ) {
         Ok(true)
     } else {
         Err(ParseError("HEADER must be TRUE, FALSE, 0 or 1".into()))
@@ -102,12 +105,16 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
         }
         if parser.keyword("FORMAT") {
             options.format = parse_copy_format_option(parser)?;
-            if parser.take(Token::Comma) {
+            if parser.take(Token::Comma)
+                && parser.tokens.get(parser.index) != Some(&Token::RParen)
+            {
                 options.header = parse_copy_header(parser)?;
             }
         } else {
             options.header = parse_copy_header(parser)?;
-            if parser.take(Token::Comma) {
+            if parser.take(Token::Comma)
+                && parser.tokens.get(parser.index) != Some(&Token::RParen)
+            {
                 if !parser.keyword("FORMAT") {
                     return Err(ParseError("COPY HEADER option requires FORMAT after comma".into()));
                 }
@@ -119,6 +126,8 @@ fn parse_copy_options(parser: &mut Parser) -> Result<CopyOptions, ParseError> {
                 "JSONEachRow cannot use a CSV-style HEADER".into(),
             ));
         }
+        // A final comma is allowed after the complete option list.
+        parser.take(Token::Comma);
         if !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after COPY options".into()));
         }
@@ -284,6 +293,39 @@ mod copy_header_first_tests {
             "COPY events FROM 'rows.csv' WITH (HEADER TRUE, FORMAT JSONEACHROW)",
         ] {
             assert!(parse_copy_from(invalid).is_err(), "{invalid}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod copy_final_option_comma_tests {
+    use super::*;
+
+    #[test]
+    fn accepts_one_final_option_comma() {
+        for sql in [
+            "COPY t FROM 'rows.csv' WITH (FORMAT CSV,)",
+            "COPY t FROM 'rows.csv' WITH (HEADER TRUE,)",
+            "COPY t FROM 'rows.csv' WITH (FORMAT CSV, HEADER TRUE,)",
+            "COPY t FROM 'rows.csv' WITH (HEADER TRUE, FORMAT CSV,)",
+            "COPY t FROM 'rows.csv' WITH (HEADER,)",
+        ] {
+            let with_comma = parse_copy_from(sql).unwrap().unwrap();
+            let plain = parse_copy_from(&sql.replace(",)", ")"))
+                .unwrap()
+                .unwrap();
+            assert_eq!(with_comma, plain, "{sql}");
+        }
+    }
+
+    #[test]
+    fn continues_to_reject_repeated_options_or_double_commas() {
+        for sql in [
+            "COPY t FROM 'rows.csv' WITH (FORMAT CSV,,)",
+            "COPY t FROM 'rows.csv' WITH (FORMAT CSV, HEADER TRUE,,)",
+            "COPY t FROM 'rows.csv' WITH (HEADER TRUE, HEADER FALSE,)",
+        ] {
+            assert!(parse_copy_from(sql).is_err(), "{sql}");
         }
     }
 }
