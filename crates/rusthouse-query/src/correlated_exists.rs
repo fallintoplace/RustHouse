@@ -8,6 +8,18 @@ pub struct CorrelatedExists {
     pub negated: bool,
 }
 
+fn supported_inner_select(inner: &Select) -> bool {
+    matches!(&inner.source, Some(Source::Table(_)))
+        && matches!(&inner.projection, Projection::All)
+        && !inner.distinct
+        && inner.rename.is_none()
+        && inner.or_predicates.is_empty()
+        && inner.order_by.is_none()
+        && inner.limit.is_none()
+        && inner.offset.is_none()
+        && inner.having.is_none()
+}
+
 /// Recognize a conjunctive EXISTS in a WHERE clause.
 /// Other forms continue to use the regular parser and its diagnostics.
 pub fn parse_correlated_exists(sql: &str) -> Result<Option<CorrelatedExists>, ParseError> {
@@ -81,16 +93,7 @@ pub fn parse_correlated_exists(sql: &str) -> Result<Option<CorrelatedExists>, Pa
         ));
     }
     let inner = parse_select_tokens(tokens[start + 2..end - 1].to_vec())?;
-    if !matches!(inner.source, Some(Source::Table(_)))
-        || !matches!(inner.projection, Projection::All)
-        || inner.distinct
-        || inner.rename.is_some()
-        || !inner.or_predicates.is_empty()
-        || inner.order_by.is_some()
-        || inner.limit.is_some()
-        || inner.offset.is_some()
-        || inner.having.is_some()
-    {
+    if !supported_inner_select(&inner) {
         return Err(ParseError(
             "correlated EXISTS requires a simple SELECT * FROM table".into(),
         ));
