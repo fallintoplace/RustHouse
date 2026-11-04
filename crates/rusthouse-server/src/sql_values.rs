@@ -28,16 +28,20 @@ fn append_quoted_text(output: &mut Vec<u8>, value: &str) {
     output.push(b'\'');
     let bytes = value.as_bytes();
     let mut start = 0;
-    for (index, &byte) in bytes.iter().enumerate() {
-        if byte == b'\'' || byte == b'\\' {
-            output.extend_from_slice(&bytes[start..index]);
-            if byte == b'\'' {
-                output.extend_from_slice(b"''");
-            } else {
-                output.extend_from_slice(b"\\\\");
-            }
-            start = index + 1;
+    // Most text is ordinary data. Copy it as one span and only branch on
+    // actual SQL quote or backslash escapes.
+    while let Some(relative) = bytes[start..]
+        .iter()
+        .position(|&byte| byte == b'\'' || byte == b'\\')
+    {
+        let index = start + relative;
+        output.extend_from_slice(&bytes[start..index]);
+        if bytes[index] == b'\'' {
+            output.extend_from_slice(b"''");
+        } else {
+            output.extend_from_slice(b"\\\\");
         }
+        start = index + 1;
     }
     output.extend_from_slice(&bytes[start..]);
     output.push(b'\'');
@@ -223,6 +227,15 @@ mod tests {
             writer.finish()?;
         }
         String::from_utf8(output).map_err(|_| invalid("invalid output UTF-8"))
+    }
+
+    #[test]
+    fn long_plain_spans_preserve_quotes_backslashes_and_utf8() {
+        let input = format!("{}'back\\slash'{}", "café".repeat(256), "東京".repeat(256));
+        let mut encoded = Vec::new();
+        append_quoted_text(&mut encoded, &input);
+        let escaped = input.replace('\\', "\\\\").replace('\'', "''");
+        assert_eq!(encoded, format!("'{escaped}'").as_bytes());
     }
 
     #[test]
