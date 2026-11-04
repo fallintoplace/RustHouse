@@ -251,7 +251,7 @@ pub(crate) fn parse_multiple(
             return Err(ParseError("expected ')' after aggregate argument".into()));
         }
         let alias = if parser.keyword("AS") {
-            Some(parser.word()?)
+            Some(parser.output_alias_word()?)
         } else {
             None
         };

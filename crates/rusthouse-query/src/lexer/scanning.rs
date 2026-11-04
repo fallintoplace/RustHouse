@@ -4,16 +4,25 @@ pub(super) fn is_ascii_digit_at(bytes: &[u8], index: usize) -> bool {
     matches!(bytes.get(index), Some(b'0'..=b'9'))
 }
 
-pub(super) fn advance_ascii_digits(bytes: &[u8], index: &mut usize) {
+pub(super) fn advance_ascii_digits(bytes: &[u8], index: &mut usize) -> Result<(), ParseError> {
     while is_ascii_digit_at(bytes, *index) {
         *index += 1;
-        // ClickHouse accepts readability separators between numeric digits.
-        // Reject leading, trailing and consecutive underscores by stopping
-        // unless the separator is followed by another digit.
-        if bytes.get(*index) == Some(&b'_') && is_ascii_digit_at(bytes, *index + 1) {
-            *index += 1;
+        if bytes.get(*index) == Some(&b'_') {
+            if is_ascii_digit_at(bytes, *index + 1) {
+                *index += 1;
+            } else {
+                return Err(ParseError(
+                    "numeric separators must be between digits".into(),
+                ));
+            }
         }
     }
+    if bytes.get(*index) == Some(&b'_') {
+        return Err(ParseError(
+            "numeric separators must be between digits".into(),
+        ));
+    }
+    Ok(())
 }
 
 pub(super) fn require_digit(
@@ -34,7 +43,7 @@ fn scan_exponent(bytes: &[u8], index: &mut usize) -> Result<(), ParseError> {
             *index += 1;
         }
         require_digit(bytes, *index, "expected digits in exponent")?;
-        advance_ascii_digits(bytes, index);
+        advance_ascii_digits(bytes, index)?;
     }
     Ok(())
 }
@@ -48,14 +57,20 @@ pub(super) fn scan_radix_number(
     let start = *index + 2;
     *index = start;
     while let Some(&byte) = bytes.get(*index) {
-        if (byte as char).is_digit(radix)
-            || (byte == b'_'
-                && *index > start
+        if (byte as char).is_digit(radix) {
+            *index += 1;
+        } else if byte == b'_' {
+            if *index > start
                 && bytes
                     .get(*index + 1)
-                    .is_some_and(|&next| (next as char).is_digit(radix)))
-        {
-            *index += 1;
+                    .is_some_and(|&next| (next as char).is_digit(radix))
+            {
+                *index += 1;
+            } else {
+                return Err(ParseError(
+                    "numeric separators must be between radix digits".into(),
+                ));
+            }
         } else {
             break;
         }
@@ -89,14 +104,14 @@ pub(super) fn scan_number(sql: &str, index: &mut usize) -> Result<Token, ParseEr
             require_digit(bytes, *index, message)?;
         }
     }
-    advance_ascii_digits(bytes, index);
+    advance_ascii_digits(bytes, index)?;
     let has_whole_digits = *index > start + usize::from(sign);
     if bytes.get(*index) == Some(&b'.') {
         *index += 1;
         if !has_whole_digits {
             require_digit(bytes, *index, "expected digits after decimal point")?;
         }
-        advance_ascii_digits(bytes, index);
+        advance_ascii_digits(bytes, index)?;
     }
     scan_exponent(bytes, index)?;
     let raw = &sql[start..*index];

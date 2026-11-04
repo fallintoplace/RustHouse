@@ -10,7 +10,9 @@ fn run(sql: &str) -> String {
 #[test]
 fn quoted_alias_with_spaces_names_output_and_orders() {
     assert_eq!(
-        run("SELECT number AS \"order count\" FROM numbers(4) ORDER BY \"order count\" DESC LIMIT 2"),
+        run(
+            "SELECT number AS \"order count\" FROM numbers(4) ORDER BY \"order count\" DESC LIMIT 2"
+        ),
         "order count\n3\n2\n"
     );
     assert_eq!(
@@ -22,10 +24,20 @@ fn quoted_alias_with_spaces_names_output_and_orders() {
 #[test]
 fn grouped_aggregate_keeps_quoted_output_name() {
     assert_eq!(
-        run("SELECT number, COUNT(*) AS \"order count\" FROM numbers(2) GROUP BY number ORDER BY number"),
+        run(
+            "SELECT number, COUNT(*) AS \"order count\" FROM numbers(2) GROUP BY number ORDER BY number"
+        ),
         "number\torder count\n0\t1\n1\t1\n"
     );
     assert!(parse_select("SELECT number AS \"order count\" FROM numbers(1)").is_ok());
+}
+
+#[test]
+fn multiple_aggregates_keep_quoted_output_names() {
+    assert_eq!(
+        run("SELECT COUNT(*) AS \"order count\", SUM(number) AS \"number sum\" FROM numbers(4)"),
+        "order count\tnumber sum\n4\t6\n"
+    );
 }
 
 #[test]

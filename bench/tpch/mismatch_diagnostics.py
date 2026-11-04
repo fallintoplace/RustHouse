@@ -6,7 +6,7 @@ def describe_mismatch(actual, reference, mode):
     """Report shape and first differing position without exposing data values."""
     output = actual.splitlines()
     expected = reference.splitlines()
-    if mode in ("exact", "numeric", "unordered-header"):
+    if mode == "unordered-header":
         if output[:1] != expected[:1]:
             return "output differs from reference: header mismatch"
         body_out, body_expected = output[1:], expected[1:]

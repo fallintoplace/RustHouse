@@ -71,7 +71,9 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
                 let rest = &bytes[index..];
                 index += rest
                     .iter()
-                    .position(|&byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | b'\x0b' | b'\x0c'))
+                    .position(|&byte| {
+                        !matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | b'\x0b' | b'\x0c')
+                    })
                     .unwrap_or(rest.len());
                 continue;
             }
@@ -214,7 +216,6 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
     }
     Ok(tokens)
 }
-
 
 #[cfg(test)]
 mod whitespace_spans_tests {

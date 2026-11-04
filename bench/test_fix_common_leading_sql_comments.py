@@ -28,6 +28,19 @@ class CommentedSqlFormatTests(unittest.TestCase):
                     select_format="jsonl")
         run.assert_not_called()
 
+    @patch("bench.common.subprocess.run")
+    def test_select_after_ctes_uses_requested_verification_format(self, run):
+        def invoke(command, **kwargs):
+            kwargs["stdout"].write(b'{"value":1}\n')
+            return SimpleNamespace(returncode=0)
+        run.side_effect = invoke
+        statement = ("WITH revenue AS (SELECT sum(amount) AS total FROM lineitem), "
+                     "max_revenue AS (SELECT max(total) AS total FROM revenue) "
+                     "SELECT total FROM max_revenue")
+        output = cli_sql("binary", "db", statement, 5, select_format="jsonl")
+        self.assertEqual(output, b'{"value":1}\n')
+        self.assertEqual(run.call_args.args[0][-2:], ["--format", "jsonl"])
+
 
     @patch("bench.common.subprocess.run")
     def test_nested_comments_and_adjacent_tokens_keep_select_format(self, run):

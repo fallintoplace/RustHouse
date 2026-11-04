@@ -130,7 +130,8 @@ pub fn execute_bounded_except<W: Write>(
     paths: &[PathBuf],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    if plan.selects.len() < 2 || plan.selects.len() > MAX_OPERANDS
+    if plan.selects.len() < 2
+        || plan.selects.len() > MAX_OPERANDS
         || paths.len() != plan.selects.len()
     {
         return Err(invalid("EXCEPT requires 2 or 3 matching inputs"));

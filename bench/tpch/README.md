@@ -28,9 +28,11 @@ Parser-only inventory, without a populated database:
     python3 bench/tpch/parser_inventory.py --binary target/release/rusthouse \\
       --queries-dir bench/tpch/queries --output /tmp/tpch-parser-coverage.json
 
-The parser inventory attempts all 22 queries via `--show-ast`. It does not
-read TPC-H data and cannot establish whether the query executes correctly.
-Use `official_coverage.py` and independent references for execution coverage.
+The parser inventory attempts all 22 queries via `--show-ast`. A
+`recognized_by_special_handler` result means a specialized query handler
+accepted the SQL but does not expose an AST. The inventory does not read
+TPC-H data or establish result correctness. Use `run.py` with independent
+references for execution coverage.
 
 
 ## Unscaled Float64 compatibility fixture

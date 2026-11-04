@@ -13,11 +13,15 @@ fn between_folds_chained_addition_and_subtraction() {
         "number\n3\n4\n5\n"
     );
     assert_eq!(
-        run("SELECT number FROM numbers(9) WHERE number BETWEEN 2 + 1 AND 2 + 1 + 2 ORDER BY number"),
+        run(
+            "SELECT number FROM numbers(9) WHERE number BETWEEN 2 + 1 AND 2 + 1 + 2 ORDER BY number"
+        ),
         "number\n3\n4\n5\n"
     );
     assert_eq!(
-        run("SELECT number FROM numbers(9) WHERE number NOT BETWEEN 2 + 1 AND 2 + 4 - 1 ORDER BY number"),
+        run(
+            "SELECT number FROM numbers(9) WHERE number NOT BETWEEN 2 + 1 AND 2 + 4 - 1 ORDER BY number"
+        ),
         "number\n0\n1\n2\n6\n7\n8\n"
     );
 }

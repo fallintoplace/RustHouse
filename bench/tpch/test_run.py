@@ -162,6 +162,7 @@ class RunnerTests(unittest.TestCase):
     def test_opt_in_float64_numeric_reference_uses_strict_shape(self):
         expected = b"revenue\n8.000000000\n"
         self.assertTrue(compare_reference(b"revenue\n8.0000000005\n", expected, "numeric"))
+        self.assertTrue(compare_reference(b"8.0000000005\n", b"8.000000000\n", "numeric"))
         self.assertFalse(compare_reference(b"revenue\n8.01\n", expected, "numeric"))
         self.assertFalse(compare_reference(b"sum\n8\n", expected, "numeric"))
         self.assertFalse(compare_reference(b"revenue\n8\n8\n", expected, "numeric"))

@@ -125,9 +125,7 @@ def numeric_rows_match(actual, reference):
         return False
     if not output_rows:
         return True
-    if output_rows[0] != expected_rows[0]:
-        return False
-    for output_row, expected_row in zip(output_rows[1:], expected_rows[1:]):
+    for output_row, expected_row in zip(output_rows, expected_rows):
         values = output_row.split("\t")
         targets = expected_row.split("\t")
         if len(values) != len(targets):

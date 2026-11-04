@@ -69,17 +69,8 @@ fn filtered_dimension_build_matches_join_where_semantics() {
         execute_multi_join(&query, &paths, &mut out).unwrap();
         String::from_utf8(out).unwrap()
     };
-    assert_eq!(
-        run(&format!("{prefix} WHERE d.active = 1")),
-        "f.id\n1\n3\n"
-    );
-    assert_eq!(
-        run(&format!("{prefix} WHERE d.active = 0")),
-        "f.id\n1\n"
-    );
-    assert_eq!(
-        run(&format!("{prefix} WHERE d.active = 5")),
-        "f.id\n"
-    );
+    assert_eq!(run(&format!("{prefix} WHERE d.active = 1")), "f.id\n1\n3\n");
+    assert_eq!(run(&format!("{prefix} WHERE d.active = 0")), "f.id\n1\n");
+    assert_eq!(run(&format!("{prefix} WHERE d.active = 5")), "f.id\n");
     fs::remove_dir_all(root).unwrap();
 }

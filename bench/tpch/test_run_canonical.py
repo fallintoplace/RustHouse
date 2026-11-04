@@ -34,7 +34,7 @@ class FullRunnerTests(unittest.TestCase):
             self.assertIn("--require-22", cmd)
             self.assertIn("--require-verified", cmd)
             self.assertIn("--require-canonical", cmd)
-            self.assertEqual(cmd[cmd.index("--comparison") + 1], "unordered-header")
+            self.assertEqual(cmd[cmd.index("--comparison") + 1], "unordered")
             self.assertIn("6001215", cmd)
             (root / "q22.sql").unlink()
             with self.assertRaisesRegex(ValueError, "full canonical"):

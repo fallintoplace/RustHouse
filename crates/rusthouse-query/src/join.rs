@@ -191,8 +191,15 @@ pub struct JoinSelect {
     /// Column-to-column comparisons for two-table INNER joins.
     pub where_column_comparisons: Vec<(JoinColumn, crate::Operator, JoinColumn)>,
     /// Bounded SUBSTR/SUBSTRING comparisons between JOIN columns.
-    pub where_substring_comparisons:
-        Vec<(JoinColumn, usize, usize, crate::Operator, JoinColumn, usize, usize)>,
+    pub where_substring_comparisons: Vec<(
+        JoinColumn,
+        usize,
+        usize,
+        crate::Operator,
+        JoinColumn,
+        usize,
+        usize,
+    )>,
     /// Small IN lists for two-table INNER join filters.
     pub where_in_filters: Vec<(JoinColumn, Vec<String>)>,
     /// LIKE filters: column, pattern, case-insensitive, negated.
@@ -736,9 +743,7 @@ fn parse_distinct_not_in(parser: &mut Parser) -> Result<Option<JoinedSubqueryFil
 
 /// Parse a bounded ZIP-like prefix expression in a JOIN filter.
 fn parse_join_substring(parser: &mut Parser) -> Result<(JoinColumn, usize, usize), ParseError> {
-    if !(parser.keyword("SUBSTR") || parser.keyword("SUBSTRING"))
-        || !parser.take(Token::LParen)
-    {
+    if !(parser.keyword("SUBSTR") || parser.keyword("SUBSTRING")) || !parser.take(Token::LParen) {
         return Err(ParseError("expected SUBSTR or SUBSTRING(".into()));
     }
     let column = projected(parser)?;
@@ -762,7 +767,9 @@ fn parse_join_substring(parser: &mut Parser) -> Result<(JoinColumn, usize, usize
     }
     let length = bound(parser, "SUBSTRING length")?;
     if length == 0 || length > 64 || !parser.take(Token::RParen) {
-        return Err(ParseError("SUBSTRING length must be in 1..64 with closing ')'".into()));
+        return Err(ParseError(
+            "SUBSTRING length must be in 1..64 with closing ')'".into(),
+        ));
     }
     Ok((column, start, length))
 }
@@ -953,7 +960,9 @@ fn parse_join_tokens(
             {
                 loop {
                     if grouped_avg_metrics.len() == 8 {
-                        return Err(ParseError("JOIN supports at most 8 grouped AVG metrics".into()));
+                        return Err(ParseError(
+                            "JOIN supports at most 8 grouped AVG metrics".into(),
+                        ));
                     }
                     if !parser.keyword("AVG") || !parser.take(Token::LParen) {
                         return Err(ParseError("grouped JOIN expects AVG(".into()));
@@ -967,12 +976,18 @@ fn parse_join_tokens(
                     } else {
                         format!("avg({})", column.display_name())
                     };
-                    if grouped_avg_metrics.iter().any(|(_, previous): &(JoinColumn, String)| {
-                        previous.eq_ignore_ascii_case(&alias)
-                    }) || grouped_key_aliases.iter().any(|(_, key)| {
-                        key.eq_ignore_ascii_case(&alias)
-                    }) {
-                        return Err(ParseError("duplicate or ambiguous grouped AVG alias".into()));
+                    if grouped_avg_metrics
+                        .iter()
+                        .any(|(_, previous): &(JoinColumn, String)| {
+                            previous.eq_ignore_ascii_case(&alias)
+                        })
+                        || grouped_key_aliases
+                            .iter()
+                            .any(|(_, key)| key.eq_ignore_ascii_case(&alias))
+                    {
+                        return Err(ParseError(
+                            "duplicate or ambiguous grouped AVG alias".into(),
+                        ));
                     }
                     grouped_avg_metrics.push((column, alias));
                     if !parser.take(Token::Comma) {
@@ -981,7 +996,9 @@ fn parse_join_tokens(
                     if !matches!(parser.tokens.get(parser.index), Some(Token::Word(name))
                         if name.eq_ignore_ascii_case("AVG"))
                     {
-                        return Err(ParseError("grouped AVG projection expects another AVG".into()));
+                        return Err(ParseError(
+                            "grouped AVG projection expects another AVG".into(),
+                        ));
                     }
                 }
                 grouped_count_projection = true;
@@ -1035,7 +1052,11 @@ fn parse_join_tokens(
                             crate::multi_aggregate::render_expr(expression)
                         }
                     };
-                    aggregate_alias = Some(parser.select_output_alias()?.unwrap_or_else(|| format!("sum({name})")));
+                    aggregate_alias = Some(
+                        parser
+                            .select_output_alias()?
+                            .unwrap_or_else(|| format!("sum({name})")),
+                    );
                     grouped_sum = Some(metric);
                     grouped_sum_position = Some(columns.len());
                     grouped_count_projection = true;
@@ -1073,8 +1094,10 @@ fn parse_join_tokens(
                             "JOIN grouped CASE requires a closing ')' and alias".into(),
                         ));
                     }
-                    grouped_case_counts
-                        .push((filter.expect("CASE filter checked"), parser.output_alias_word()?));
+                    grouped_case_counts.push((
+                        filter.expect("CASE filter checked"),
+                        parser.output_alias_word()?,
+                    ));
                     if !parser.take(Token::Comma) {
                         break;
                     }
@@ -1099,7 +1122,11 @@ fn parse_join_tokens(
                 if column.name == "*" || !parser.take(Token::RParen) {
                     return Err(ParseError("grouped JOIN MIN requires one column".into()));
                 }
-                aggregate_alias = Some(parser.select_output_alias()?.unwrap_or_else(|| format!("min({})", column.display_name())));
+                aggregate_alias = Some(
+                    parser
+                        .select_output_alias()?
+                        .unwrap_or_else(|| format!("min({})", column.display_name())),
+                );
                 grouped_min = Some(column);
                 grouped_sum_position = Some(columns.len());
                 grouped_count_projection = true;
@@ -1447,109 +1474,6 @@ fn parse_join_tokens(
                 {
                     let (left, start, length) = parse_join_substring(&mut parser)?;
                     let operator = parser.operator()?;
-                    if !matches!(operator, crate::Operator::Eq | crate::Operator::Ne
-                        | crate::Operator::Lt | crate::Operator::Le
-                        | crate::Operator::Gt | crate::Operator::Ge)
-                    {
-                        return Err(ParseError("SUBSTRING requires a comparison operator".into()));
-                    }
-                    let (right, right_start, right_length) =
-                        parse_join_substring(&mut parser)?;
-                    where_substring_comparisons.push((
-                        left, start, length, operator, right, right_start, right_length,
-                    ));
-                } else {
-                let column = projected(&mut parser)?;
-                if column.name == "*" {
-                    return Err(ParseError("JOIN WHERE requires a column".into()));
-                }
-                if parser.keyword("IS") {
-                    if count != 1 {
-                        return Err(ParseError(
-                            "JOIN cannot combine NULL filters with other predicates".into(),
-                        ));
-                    }
-                    let not_null = parser.keyword("NOT");
-                    if !parser.keyword("NULL") && !parser.keyword("UNKNOWN") {
-                        return Err(ParseError(
-                            "JOIN WHERE requires IS [NOT] NULL or UNKNOWN".into(),
-                        ));
-                    }
-                    where_null = Some((column, not_null));
-                } else if parser.keyword("IN") {
-                    if !parser.take(Token::LParen) {
-                        return Err(ParseError("JOIN IN requires '('".into()));
-                    }
-                    if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT"))
-                    {
-                        if in_subquery.is_some() || !column.relation.is_empty() {
-                            return Err(ParseError(
-                                "JOIN supports one IN subquery with an unqualified key".into(),
-                            ));
-                        }
-                        let start = parser.index;
-                        let mut depth = 1usize;
-                        while parser.index < parser.tokens.len() && depth > 0 {
-                            match parser.tokens[parser.index] {
-                                Token::LParen => depth += 1,
-                                Token::RParen => depth -= 1,
-                                _ => {}
-                            }
-                            parser.index += 1;
-                        }
-                        if depth != 0 {
-                            return Err(ParseError("JOIN IN subquery requires ')'".into()));
-                        }
-                        let inner = crate::parse_select_tokens(
-                            parser.tokens[start..parser.index - 1].to_vec(),
-                        )?;
-                        if !inner.hidden_aggregate
-                            || !matches!(inner.source, Some(crate::Source::Table(_)))
-                            || inner
-                                .predicates
-                                .iter()
-                                .chain(inner.or_predicates.iter().flatten())
-                                .any(|predicate| {
-                                    matches!(predicate, crate::Predicate::ColumnComparison { .. })
-                                })
-                        {
-                            return Err(ParseError(
-                                "JOIN IN requires an uncorrelated grouped SUM subquery".into(),
-                            ));
-                        }
-                        in_subquery = Some(JoinInSubquery {
-                            column,
-                            inner: Box::new(inner),
-                            negated: false,
-                        });
-                    } else {
-                        let mut values = Vec::new();
-                        loop {
-                            if values.len() == 64 {
-                                return Err(ParseError(
-                                    "JOIN IN supports at most 64 values".into(),
-                                ));
-                            }
-                            values.push(parser.literal()?);
-                            if !parser.take(Token::Comma) {
-                                break;
-                            }
-                        }
-                        if !parser.take(Token::RParen) {
-                            return Err(ParseError("JOIN IN requires ')'".into()));
-                        }
-                        where_in_filters.push((column, values));
-                    }
-                } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if ["LIKE", "ILIKE", "NOT"].iter().any(|kw| word.eq_ignore_ascii_case(kw)))
-                {
-                    let negated = parser.keyword("NOT");
-                    let case_insensitive = parser.like_keyword().ok_or_else(|| {
-                        ParseError("JOIN WHERE expects LIKE or ILIKE after NOT".into())
-                    })?;
-                    let pattern = parser.literal()?;
-                    where_like_filters.push((column, pattern, case_insensitive, negated));
-                } else {
-                    let operator = parser.operator()?;
                     if !matches!(
                         operator,
                         crate::Operator::Eq
@@ -1560,39 +1484,157 @@ fn parse_join_tokens(
                             | crate::Operator::Ge
                     ) {
                         return Err(ParseError(
-                            "JOIN WHERE requires a comparison operator".into(),
+                            "SUBSTRING requires a comparison operator".into(),
                         ));
                     }
-                    let is_column = match parser.tokens.get(parser.index) {
-                        Some(Token::QuotedWord(_)) => true,
-                        Some(Token::Word(word)) => ![
-                            "CAST",
-                            "DATE",
-                            "TIMESTAMP",
-                            "NULL",
-                            "TRUE",
-                            "FALSE",
-                            "INTERVAL",
-                        ]
-                        .iter()
-                        .any(|kw| word.eq_ignore_ascii_case(kw)),
-                        _ => false,
-                    };
-                    if is_column {
-                        let other = projected(&mut parser)?;
-                        if other.name == "*" {
-                            return Err(ParseError("JOIN WHERE requires a column".into()));
+                    let (right, right_start, right_length) = parse_join_substring(&mut parser)?;
+                    where_substring_comparisons.push((
+                        left,
+                        start,
+                        length,
+                        operator,
+                        right,
+                        right_start,
+                        right_length,
+                    ));
+                } else {
+                    let column = projected(&mut parser)?;
+                    if column.name == "*" {
+                        return Err(ParseError("JOIN WHERE requires a column".into()));
+                    }
+                    if parser.keyword("IS") {
+                        if count != 1 {
+                            return Err(ParseError(
+                                "JOIN cannot combine NULL filters with other predicates".into(),
+                            ));
                         }
-                        where_column_comparisons.push((column, operator, other));
-                    } else {
-                        let comparison = (column, operator, parser.literal()?);
-                        if where_comparison.is_none() {
-                            where_comparison = Some(comparison);
+                        let not_null = parser.keyword("NOT");
+                        if !parser.keyword("NULL") && !parser.keyword("UNKNOWN") {
+                            return Err(ParseError(
+                                "JOIN WHERE requires IS [NOT] NULL or UNKNOWN".into(),
+                            ));
+                        }
+                        where_null = Some((column, not_null));
+                    } else if parser.keyword("IN") {
+                        if !parser.take(Token::LParen) {
+                            return Err(ParseError("JOIN IN requires '('".into()));
+                        }
+                        if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT"))
+                        {
+                            if in_subquery.is_some() || !column.relation.is_empty() {
+                                return Err(ParseError(
+                                    "JOIN supports one IN subquery with an unqualified key".into(),
+                                ));
+                            }
+                            let start = parser.index;
+                            let mut depth = 1usize;
+                            while parser.index < parser.tokens.len() && depth > 0 {
+                                match parser.tokens[parser.index] {
+                                    Token::LParen => depth += 1,
+                                    Token::RParen => depth -= 1,
+                                    _ => {}
+                                }
+                                parser.index += 1;
+                            }
+                            if depth != 0 {
+                                return Err(ParseError("JOIN IN subquery requires ')'".into()));
+                            }
+                            let inner = crate::parse_select_tokens(
+                                parser.tokens[start..parser.index - 1].to_vec(),
+                            )?;
+                            if !inner.hidden_aggregate
+                                || !matches!(inner.source, Some(crate::Source::Table(_)))
+                                || inner
+                                    .predicates
+                                    .iter()
+                                    .chain(inner.or_predicates.iter().flatten())
+                                    .any(|predicate| {
+                                        matches!(
+                                            predicate,
+                                            crate::Predicate::ColumnComparison { .. }
+                                        )
+                                    })
+                            {
+                                return Err(ParseError(
+                                    "JOIN IN requires an uncorrelated grouped SUM subquery".into(),
+                                ));
+                            }
+                            in_subquery = Some(JoinInSubquery {
+                                column,
+                                inner: Box::new(inner),
+                                negated: false,
+                            });
                         } else {
-                            where_comparisons_extra.push(comparison);
+                            let mut values = Vec::new();
+                            loop {
+                                if values.len() == 64 {
+                                    return Err(ParseError(
+                                        "JOIN IN supports at most 64 values".into(),
+                                    ));
+                                }
+                                values.push(parser.literal()?);
+                                if !parser.take(Token::Comma) {
+                                    break;
+                                }
+                            }
+                            if !parser.take(Token::RParen) {
+                                return Err(ParseError("JOIN IN requires ')'".into()));
+                            }
+                            where_in_filters.push((column, values));
+                        }
+                    } else if matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if ["LIKE", "ILIKE", "NOT"].iter().any(|kw| word.eq_ignore_ascii_case(kw)))
+                    {
+                        let negated = parser.keyword("NOT");
+                        let case_insensitive = parser.like_keyword().ok_or_else(|| {
+                            ParseError("JOIN WHERE expects LIKE or ILIKE after NOT".into())
+                        })?;
+                        let pattern = parser.literal()?;
+                        where_like_filters.push((column, pattern, case_insensitive, negated));
+                    } else {
+                        let operator = parser.operator()?;
+                        if !matches!(
+                            operator,
+                            crate::Operator::Eq
+                                | crate::Operator::Ne
+                                | crate::Operator::Lt
+                                | crate::Operator::Le
+                                | crate::Operator::Gt
+                                | crate::Operator::Ge
+                        ) {
+                            return Err(ParseError(
+                                "JOIN WHERE requires a comparison operator".into(),
+                            ));
+                        }
+                        let is_column = match parser.tokens.get(parser.index) {
+                            Some(Token::QuotedWord(_)) => true,
+                            Some(Token::Word(word)) => ![
+                                "CAST",
+                                "DATE",
+                                "TIMESTAMP",
+                                "NULL",
+                                "TRUE",
+                                "FALSE",
+                                "INTERVAL",
+                            ]
+                            .iter()
+                            .any(|kw| word.eq_ignore_ascii_case(kw)),
+                            _ => false,
+                        };
+                        if is_column {
+                            let other = projected(&mut parser)?;
+                            if other.name == "*" {
+                                return Err(ParseError("JOIN WHERE requires a column".into()));
+                            }
+                            where_column_comparisons.push((column, operator, other));
+                        } else {
+                            let comparison = (column, operator, parser.literal()?);
+                            if where_comparison.is_none() {
+                                where_comparison = Some(comparison);
+                            } else {
+                                where_comparisons_extra.push(comparison);
+                            }
                         }
                     }
-                }
                 }
                 if !parser.keyword("AND") {
                     break;
@@ -2059,8 +2101,8 @@ fn parse_join_tokens(
             "JOIN grouped CASE requires one key and two INNER inputs".into(),
         ));
     }
-    if !grouped_avg_metrics.is_empty() {
-        if steps.is_empty()
+    if !grouped_avg_metrics.is_empty()
+        && (steps.is_empty()
             || kind != JoinType::Inner
             || steps.iter().any(|step| step.kind != JoinType::Inner)
             || grouped_sum.is_some()
@@ -2069,12 +2111,13 @@ fn parse_join_tokens(
             || grouped_distinct.is_some()
             || grouped_count_column.is_some()
             || !grouped_case_counts.is_empty()
-            || order_by.iter().any(|(column, _, _)| column.is_count_order())
-        {
-            return Err(ParseError(
-                "multiple grouped AVGs require an INNER join chain with key ordering".into(),
-            ));
-        }
+            || order_by
+                .iter()
+                .any(|(column, _, _)| column.is_count_order()))
+    {
+        return Err(ParseError(
+            "multiple grouped AVGs require an INNER join chain with key ordering".into(),
+        ));
     }
     if grouped_distinct.is_some()
         && (kind != JoinType::Inner || steps.iter().any(|step| step.kind != JoinType::Inner))

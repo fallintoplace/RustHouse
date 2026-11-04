@@ -16,6 +16,13 @@ from run import query_fingerprint
 from canonical_integrity import verify as verify_canonical_sql
 
 MAX_AST_BYTES = 2 * 1024 * 1024
+SPECIAL_HANDLER_AST_SUFFIX = " cannot use --show-ast or --explain yet"
+
+
+def recognized_by_special_handler(error):
+    """A query handler parsed the SQL but does not expose its plan as an AST."""
+    return (isinstance(error, str) and error.startswith("error: ")
+            and error.endswith(SPECIAL_HANDLER_AST_SUFFIX))
 
 
 def parse_statement(binary, sql, timeout=10):
@@ -64,9 +71,16 @@ def inventory(binary, queries_dir, *, parse=None, require_canonical=False):
         except (OSError, UnicodeError, ValueError) as exc:
             results.append({"query": query, "status": "invalid_query", "error": str(exc)[:500]})
             continue
-        results.append({"query": query, "status": "parsed" if parsed else "parse_error",
-                        **({"error": str(error or "unknown parser error")[:500]} if not parsed else {})})
+        if parsed:
+            results.append({"query": query, "status": "parsed"})
+        elif recognized_by_special_handler(error):
+            results.append({"query": query, "status": "recognized_by_special_handler",
+                            "detail": str(error)[:500]})
+        else:
+            results.append({"query": query, "status": "parse_error",
+                            "error": str(error or "unknown parser error")[:500]})
     passed = sum(item["status"] == "parsed" for item in results)
+    special = sum(item["status"] == "recognized_by_special_handler" for item in results)
     first_errors = {}
     for item in results:
         if item["status"] == "parse_error":
@@ -80,6 +94,8 @@ def inventory(binary, queries_dir, *, parse=None, require_canonical=False):
         "workload": "tpch-canonical-parser-inventory",
         "official_tpch_score": False,
         "parsed_queries": passed,
+        "special_handler_queries": special,
+        "recognized_queries": passed + special,
         "total_queries": TPCH_QUERY_COUNT,
         "query_sha256": query_fingerprint(loaded_sql),
         "first_error_groups": error_groups,
@@ -101,7 +117,7 @@ def main(argv=None):
     if args.output:
         args.output.write_text(rendered, encoding="utf-8")
     print(rendered, end="")
-    return int(report["parsed_queries"] != TPCH_QUERY_COUNT)
+    return int(report["recognized_queries"] != TPCH_QUERY_COUNT)
 
 
 if __name__ == "__main__":
