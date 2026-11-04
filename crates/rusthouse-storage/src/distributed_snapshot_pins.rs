@@ -29,12 +29,7 @@ fn valid_reader(reader: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 
-fn valid_pin_request(
-    pin: &ReaderPin,
-    now_ms: u64,
-    ttl_limit: u64,
-    last_clock_ms: u64,
-) -> bool {
+fn valid_pin_request(pin: &ReaderPin, now_ms: u64, ttl_limit: u64, last_clock_ms: u64) -> bool {
     valid_reader(&pin.reader)
         && pin.snapshot.epoch != 0
         && pin.snapshot.generation != 0
