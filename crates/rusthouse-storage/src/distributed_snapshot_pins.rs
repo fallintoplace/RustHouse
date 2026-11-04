@@ -29,6 +29,18 @@ fn valid_reader(reader: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == b'_' || c == b'-')
 }
 
+fn valid_pin_request(pin: &ReaderPin, now_ms: u64, ttl_limit: u64, last_clock_ms: u64) -> bool {
+    valid_reader(&pin.reader)
+        && pin.snapshot.epoch != 0
+        && pin.snapshot.generation != 0
+        && pin.token.epoch != 0
+        && pin.token.sequence != 0
+        && now_ms >= last_clock_ms
+        && ttl_limit != 0
+        && pin.expires_at_ms > now_ms
+        && pin.expires_at_ms <= now_ms.saturating_add(ttl_limit)
+}
+
 impl ReaderPinLedger {
     pub fn new() -> Self {
         Self::default()
@@ -37,16 +49,7 @@ impl ReaderPinLedger {
     /// A caller must pin before using a snapshot. An identical token can
     /// renew only the same reader's snapshot and never shorten its expiry.
     pub fn pin(&mut self, pin: ReaderPin, now_ms: u64, ttl_limit: u64) -> Result<(), &'static str> {
-        if !valid_reader(&pin.reader)
-            || pin.snapshot.epoch == 0
-            || pin.snapshot.generation == 0
-            || pin.token.epoch == 0
-            || pin.token.sequence == 0
-            || now_ms < self.last_clock_ms
-            || ttl_limit == 0
-            || pin.expires_at_ms <= now_ms
-            || pin.expires_at_ms > now_ms.saturating_add(ttl_limit)
-        {
+        if !valid_pin_request(&pin, now_ms, ttl_limit, self.last_clock_ms) {
             return Err("invalid reader snapshot pin or clock");
         }
         if let Some(&previous) = self.highest.get(&pin.reader) {
