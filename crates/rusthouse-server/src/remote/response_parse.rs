@@ -154,6 +154,14 @@ fn response_head(raw: &[u8]) -> Result<Option<ResponseHead<'_>>, String> {
     }))
 }
 
+fn complete_response_head(raw: &[u8]) -> Result<ResponseHead<'_>, String> {
+    let head = response_head(raw)?.ok_or("peer response has no header terminator")?;
+    if raw.len() != head.body_start + head.body_length {
+        return Err("peer response size mismatch or exceeds 8 MiB".into());
+    }
+    Ok(head)
+}
+
 /// Total valid wire bytes needed for a complete content-length response.
 pub(super) fn expected_wire_length(raw: &[u8]) -> Result<Option<usize>, String> {
     response_head(raw)?
@@ -167,10 +175,7 @@ pub(super) fn expected_wire_length(raw: &[u8]) -> Result<Option<usize>, String> 
 
 #[cfg(test)]
 pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
-    let head = response_head(raw)?.ok_or("peer response has no header terminator")?;
-    if raw.len() != head.body_start + head.body_length {
-        return Err("peer response size mismatch or exceeds 8 MiB".into());
-    }
+    let head = complete_response_head(raw)?;
     let body = if head.compressed {
         decode_compressed_peer_body(&raw[head.body_start..])?
     } else {
@@ -186,10 +191,7 @@ pub(super) fn parse_response(raw: &[u8]) -> Result<PeerResponse, String> {
 /// Decode a response when the caller owns the network buffer. Plain bodies
 /// are shifted in place rather than cloning up to 16 MiB of uncompressed TSV.
 pub(super) fn parse_response_owned(mut raw: Vec<u8>) -> Result<PeerResponse, String> {
-    let head = response_head(&raw)?.ok_or("peer response has no header terminator")?;
-    if raw.len() != head.body_start + head.body_length {
-        return Err("peer response size mismatch or exceeds 8 MiB".into());
-    }
+    let head = complete_response_head(&raw)?;
     // Only completed responses need an owned Content-Type. Copy all fields
     // needed after compacting before releasing the network-buffer borrow.
     let content_type = head.content_type.to_owned();
