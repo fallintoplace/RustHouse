@@ -35,6 +35,20 @@ fn write_padded_span<const N: usize, W: Write>(output: &mut W, span: &[u8]) -> i
     output.write_all(&buffer[..span.len() + 1])
 }
 
+fn write_colon_span<W: Write>(output: &mut W, span: &[u8]) -> io::Result<()> {
+    if span.len() < 256 {
+        // Emit short keys and their required whitespace in one write.
+        write_padded_span::<256, _>(output, span)
+    } else if span.len() < 1024 {
+        write_padded_span::<1024, _>(output, span)
+    } else if span.len() < 4096 {
+        write_padded_span::<4096, _>(output, span)
+    } else {
+        output.write_all(span)?;
+        output.write_all(b" ")
+    }
+}
+
 fn is_empty_json_container_pair(open: u8, close: u8) -> bool {
     matches!((open, close), (b'{', b'}') | (b'[', b']'))
 }
@@ -182,23 +196,7 @@ fn write_pretty_json_row_into<W: Write>(output: &mut W, row: &[u8]) -> io::Resul
                 start = index + 1;
             }
             b':' => {
-                let span = &row[start..=index];
-                if span.len() < 256 {
-                    // One writer call for longer JSON keys (up to 254 bytes
-                    // plus a colon) and the required whitespace.
-                    write_padded_span::<256, _>(output, span)?;
-                } else if span.len() < 1024 {
-                    // Keep a separate medium-key path so short keys do not
-                    // pay to initialize a larger stack buffer.
-                    write_padded_span::<1024, _>(output, span)?;
-                } else if span.len() < 4096 {
-                    // Long JSON keys should not make two writer calls to
-                    // append their single required space.
-                    write_padded_span::<4096, _>(output, span)?;
-                } else {
-                    output.write_all(span)?;
-                    output.write_all(b" ")?;
-                }
+                write_colon_span(output, &row[start..=index])?;
                 start = index + 1;
             }
             _ => {}
