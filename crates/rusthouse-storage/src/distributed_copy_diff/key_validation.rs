@@ -17,9 +17,9 @@ fn valid_key_segment(segment: &str) -> bool {
         && bytes[0].is_ascii_alphanumeric()
         && bytes.last() != Some(&b'.')
         && !bytes.windows(2).any(|pair| pair == b"..")
-        && bytes[1..].iter().all(|&byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.')
-        })
+        && bytes[1..]
+            .iter()
+            .all(|&byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
         && !windows_device_segment(segment)
 }
 
@@ -69,8 +69,19 @@ mod key_segment_tests {
             assert!(valid_key(key), "{key}");
         }
         for key in [
-            "", "/a", "a/", "a//b", "a/./b", "a/..b", "a/b..c", "a/b.",
-            "a/CON", "a/com1.txt", "a/LPT9", "a/é", "a/b c",
+            "",
+            "/a",
+            "a/",
+            "a//b",
+            "a/./b",
+            "a/..b",
+            "a/b..c",
+            "a/b.",
+            "a/CON",
+            "a/com1.txt",
+            "a/LPT9",
+            "a/é",
+            "a/b c",
         ] {
             assert!(!valid_key(key), "{key}");
         }
