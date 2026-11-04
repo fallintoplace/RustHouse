@@ -94,8 +94,9 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           key: rust-tests-${{ matrix.os }}-${{ matrix.shard }}
-          save-if: ${{ github.ref == 'refs/heads/main' }}
+          save-if: ${{ github.ref == 'refs/heads/main' || (matrix.shard == 'query' && github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository) }}
           cache-on-failure: true
+          cache-workspace-crates: ${{ matrix.shard == 'query' }}
       - name: Run all Rust tests in the shard
         shell: bash
         env:
