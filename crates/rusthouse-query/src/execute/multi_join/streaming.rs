@@ -5,7 +5,7 @@ use super::*;
 use rusthouse_storage::TypedQueryReader;
 use std::collections::HashSet;
 
-use super::super::join::read_projected_build_rows;
+use super::super::join::{read_filtered_projected_build_rows, read_projected_build_rows};
 
 const MAX_STREAM_GROUPS: usize = 100_000;
 const MAX_STREAM_GROUP_BYTES: usize = 64 * 1024 * 1024;
@@ -680,14 +680,34 @@ pub(super) fn execute<W: Write>(
         let (left_keys, right_keys) =
             step_keys(step, &relations[..=step_index + 1], relation.start)?;
         let available = MAX_CHAIN_BYTES.saturating_sub(retained);
-        let right_rows = read_projected_build_rows(
-            &paths[step_index + 1],
-            &relation.names,
-            &projections[step_index + 1],
-            relation.rows,
-            crate::join::MAX_STREAM_JOIN_BUILD_ROWS,
-            available.min(MAX_STREAM_BUILD_BYTES),
-        )?;
+        // For all-INNER chains, a conjunctive filter on this dimension
+        // can be applied while scanning its rows, before hash retention.
+        // The same predicate remains in the final visitor for correctness.
+        let dimension_filter = comparisons.iter().find(|(index, _, _)| {
+            index
+                .checked_sub(relation.start)
+                .is_some_and(|local| local < relation.names.len())
+        });
+        let right_rows = if let Some((index, operator, value)) = dimension_filter {
+            read_filtered_projected_build_rows(
+                &paths[step_index + 1],
+                &relation.names,
+                &projections[step_index + 1],
+                relation.rows,
+                crate::join::MAX_STREAM_JOIN_BUILD_ROWS,
+                available.min(MAX_STREAM_BUILD_BYTES),
+                (*index - relation.start, *operator, value),
+            )?
+        } else {
+            read_projected_build_rows(
+                &paths[step_index + 1],
+                &relation.names,
+                &projections[step_index + 1],
+                relation.rows,
+                crate::join::MAX_STREAM_JOIN_BUILD_ROWS,
+                available.min(MAX_STREAM_BUILD_BYTES),
+            )?
+        };
         for row in &right_rows {
             retained = retained
                 .checked_add(retained_row_bytes(row)?)

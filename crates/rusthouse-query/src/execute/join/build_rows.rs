@@ -138,6 +138,27 @@ pub(in crate::execute) fn read_projected_build_rows(
 
 /// JOIN plans that already inspected their immutable snapshot do not need to
 /// reopen and validate its part metadata a second time.
+pub(in crate::execute) fn read_filtered_projected_build_rows(
+    path: &Path,
+    names: &[String],
+    indices: &[usize],
+    expected_rows: u64,
+    row_limit: u64,
+    byte_limit: usize,
+    filter: (usize, crate::Operator, &typed::Cell),
+) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
+    read_projected_build_rows_filtered(
+        path,
+        names,
+        indices,
+        expected_rows,
+        row_limit,
+        byte_limit,
+        None,
+        Some(filter),
+    )
+}
+
 pub(in crate::execute) fn read_projected_build_rows_using_metadata(
     path: &Path,
     names: &[String],
@@ -147,7 +168,32 @@ pub(in crate::execute) fn read_projected_build_rows_using_metadata(
     byte_limit: usize,
     metadata: Option<&PartMetadata>,
 ) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
-    if expected_rows > row_limit {
+    read_projected_build_rows_filtered(
+        path,
+        names,
+        indices,
+        expected_rows,
+        row_limit,
+        byte_limit,
+        metadata,
+        None,
+    )
+}
+
+/// Scan every physical row, but retain only those satisfying one safe
+/// conjunctive predicate. The retained row and byte limits still apply.
+#[allow(clippy::too_many_arguments)]
+fn read_projected_build_rows_filtered(
+    path: &Path,
+    names: &[String],
+    indices: &[usize],
+    expected_rows: u64,
+    row_limit: u64,
+    byte_limit: usize,
+    metadata: Option<&PartMetadata>,
+    filter: Option<(usize, crate::Operator, &typed::Cell)>,
+) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
+    if filter.is_none() && expected_rows > row_limit {
         return Err(invalid(format!(
             "JOIN supports at most {row_limit} input rows per table"
         )));
@@ -155,6 +201,15 @@ pub(in crate::execute) fn read_projected_build_rows_using_metadata(
     if indices.is_empty() || names.is_empty() {
         return Err(invalid("JOIN requires nonempty build columns"));
     }
+    let filter_column = filter
+        .as_ref()
+        .map(|(column, _, _)| {
+            indices
+                .iter()
+                .position(|index| index == column)
+                .ok_or_else(|| invalid("filtered JOIN column was not projected"))
+        })
+        .transpose()?;
     let projected = indices
         .iter()
         .map(|&i| names[i].clone())
@@ -166,8 +221,19 @@ pub(in crate::execute) fn read_projected_build_rows_using_metadata(
     };
     let mut rows = Vec::with_capacity(initial_join_row_capacity(expected_rows));
     let mut retained_bytes = 0usize;
+    let mut scanned = 0u64;
     while let Some(batch) = reader.next_batch()? {
         for row_index in 0..batch[0].len() {
+            scanned = scanned
+                .checked_add(1)
+                .ok_or_else(|| invalid("JOIN input row count overflow"))?;
+            if let Some((_, operator, value)) = filter {
+                let index = filter_column.expect("filtered column projected");
+                let candidate = typed::cell(&batch[index], row_index);
+                if !typed::matches_comparison(&candidate, value, operator) {
+                    continue;
+                }
+            }
             if rows.len() >= row_limit as usize {
                 return Err(invalid("JOIN input row limit exceeded"));
             }
@@ -199,7 +265,7 @@ pub(in crate::execute) fn read_projected_build_rows_using_metadata(
             rows.push(cells);
         }
     }
-    if rows.len() as u64 != expected_rows {
+    if scanned != expected_rows {
         return Err(invalid("JOIN input row count changed during scan"));
     }
     Ok(rows)
