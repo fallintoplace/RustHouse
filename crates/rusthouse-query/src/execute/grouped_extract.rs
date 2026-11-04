@@ -100,50 +100,68 @@ pub(super) fn execute<W: Write>(
             "invalid EXTRACT grouping header".into(),
         ));
     }
-    let mut groups = HashMap::<Vec<Vec<u8>>, u64>::new();
+    // Fixed-size keys and direct field splitting avoid two temporary
+    // allocations per row before hash probing.
+    let mut groups = HashMap::<[Vec<u8>; 3], u64>::new();
     let mut retained = 0usize;
     for line in lines {
         if line.is_empty() {
             continue;
         }
-        let fields = line.split(|&byte| byte == b'\t').collect::<Vec<_>>();
-        if fields.len() != 4 {
+        let mut fields = line.split(|&byte| byte == b'\t');
+        let (Some(first), Some(raw_time), Some(last), Some(raw_count)) =
+            (fields.next(), fields.next(), fields.next(), fields.next())
+        else {
+            return Err(ExecutionError::Invalid(
+                "invalid EXTRACT grouping row".into(),
+            ));
+        };
+        if fields.next().is_some() {
             return Err(ExecutionError::Invalid(
                 "invalid EXTRACT grouping row".into(),
             ));
         }
-        let minute = if fields[1] == b"\\N" {
+        let minute = if raw_time == b"\\N" {
             b"\\N".to_vec()
         } else {
-            let timestamp = std::str::from_utf8(fields[1])
+            let timestamp = std::str::from_utf8(raw_time)
                 .map_err(|_| ExecutionError::Invalid("invalid EXTRACT timestamp".into()))?;
             let seconds = rusthouse_storage::parse_datetime(timestamp)
                 .ok_or_else(|| ExecutionError::Invalid("invalid EXTRACT timestamp".into()))?;
             ((seconds / 60) % 60).to_string().into_bytes()
         };
-        let key = vec![fields[0].to_vec(), minute, fields[2].to_vec()];
-        let count = std::str::from_utf8(fields[3])
+        let key = [first.to_vec(), minute, last.to_vec()];
+        let count = std::str::from_utf8(raw_count)
             .ok()
             .and_then(|value| value.parse::<u64>().ok())
             .ok_or_else(|| ExecutionError::Invalid("invalid EXTRACT grouping count".into()))?;
-        if !groups.contains_key(&key) {
-            if groups.len() >= MAX_GROUPS {
-                return Err(ExecutionError::Invalid(
-                    "EXTRACT grouping exceeds 200000 groups".into(),
-                ));
+        let group_count = groups.len();
+        let group = match groups.entry(key) {
+            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                if group_count >= MAX_GROUPS {
+                    return Err(ExecutionError::Invalid(
+                        "EXTRACT grouping exceeds 200000 groups".into(),
+                    ));
+                }
+                let bytes = entry
+                    .key()
+                    .iter()
+                    .try_fold(128usize, |sum, value| {
+                        sum.checked_add(value.len().saturating_mul(2))
+                    })
+                    .ok_or_else(|| {
+                        ExecutionError::Invalid("EXTRACT group memory overflow".into())
+                    })?;
+                retained = retained
+                    .checked_add(bytes)
+                    .filter(|&n| n <= MAX_GROUP_BYTES)
+                    .ok_or_else(|| {
+                        ExecutionError::Invalid("EXTRACT groups exceed 64 MiB".into())
+                    })?;
+                entry.insert(0)
             }
-            let bytes = key
-                .iter()
-                .try_fold(128usize, |sum, value| {
-                    sum.checked_add(value.len().saturating_mul(2))
-                })
-                .ok_or_else(|| ExecutionError::Invalid("EXTRACT group memory overflow".into()))?;
-            retained = retained
-                .checked_add(bytes)
-                .filter(|&n| n <= MAX_GROUP_BYTES)
-                .ok_or_else(|| ExecutionError::Invalid("EXTRACT groups exceed 64 MiB".into()))?;
-        }
-        let group = groups.entry(key).or_insert(0);
+        };
         *group = group
             .checked_add(count)
             .ok_or_else(|| ExecutionError::Invalid("EXTRACT grouping count overflow".into()))?;
