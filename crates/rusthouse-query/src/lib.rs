@@ -534,14 +534,24 @@ impl Parser {
         Ok(name)
     }
 
+    /// Accept multi-word quoted aliases only at output positions.
+    fn output_alias_word(&mut self) -> Result<String, ParseError> {
+        if let Some(Token::QuotedAlias(name)) = self.tokens.get(self.index) {
+            let name = name.clone();
+            self.index += 1;
+            return Ok(name);
+        }
+        self.bounded_word()
+    }
+
     /// Only output positions can consume an alias without AS. Keep clause
     /// keywords out so a missing comma cannot swallow FROM, GROUP BY, etc.
     fn select_output_alias(&mut self) -> Result<Option<String>, ParseError> {
         if self.keyword("AS") {
-            return Ok(Some(self.bounded_word()?));
+            return Ok(Some(self.output_alias_word()?));
         }
         let implicit = match self.tokens.get(self.index) {
-            Some(Token::QuotedWord(_)) => true,
+            Some(Token::QuotedWord(_) | Token::QuotedAlias(_)) => true,
             Some(Token::Word(name)) => ![
                 "FROM", "PREWHERE", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT",
                 "OFFSET", "FETCH", "FORMAT", "SETTINGS", "RENAME", "JOIN", "INNER",
@@ -553,7 +563,7 @@ impl Parser {
             _ => false,
         };
         if implicit {
-            Ok(Some(self.bounded_word()?))
+            Ok(Some(self.output_alias_word()?))
         } else {
             Ok(None)
         }
@@ -795,7 +805,7 @@ impl Parser {
                 _ => return Err(ParseError("ORDER BY requires column projections".into())),
             }
         } else {
-            self.word()?
+            self.output_alias_word()?
         };
         if matches!(
             projection,
@@ -1617,11 +1627,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                 }
                 _ => return Err(ParseError("expected a constant after comma".into())),
             };
-            let alias = if parser.keyword("AS") {
-                Some(parser.word()?)
-            } else {
-                None
-            };
+            let alias = parser.select_output_alias()?;
             columns.push(Constant { value, alias });
             if !parser.take(Token::Comma) {
                 break;
