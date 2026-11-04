@@ -5,7 +5,10 @@ use super::*;
 use rusthouse_storage::TypedQueryReader;
 use std::collections::HashSet;
 
-use super::super::join::{read_filtered_projected_build_rows, read_projected_build_rows};
+use super::super::join::{
+    read_filtered_projected_build_rows, read_projected_build_rows,
+    read_projected_build_rows_matching,
+};
 
 const MAX_STREAM_GROUPS: usize = 100_000;
 const MAX_STREAM_GROUP_BYTES: usize = 64 * 1024 * 1024;
@@ -719,6 +722,8 @@ pub(super) fn execute<W: Write>(
                 .checked_sub(relation.start)
                 .is_some_and(|local| local < relation.names.len())
         });
+        let row_filter = row_filters
+            .filter(|filters| filters.can_prefilter_relation(relation.start, relation.names.len()));
         let right_rows = if let Some((index, operator, value)) = dimension_filter {
             read_filtered_projected_build_rows(
                 &paths[step_index + 1],
@@ -728,6 +733,17 @@ pub(super) fn execute<W: Write>(
                 crate::join::MAX_STREAM_JOIN_BUILD_ROWS,
                 available.min(MAX_STREAM_BUILD_BYTES),
                 (*index - relation.start, *operator, value),
+            )?
+        } else if let Some(filters) = row_filter {
+            let mut predicate = |row: &[typed::Cell]| filters.passes_relation(row, relation.start);
+            read_projected_build_rows_matching(
+                &paths[step_index + 1],
+                &relation.names,
+                &projections[step_index + 1],
+                relation.rows,
+                crate::join::MAX_STREAM_JOIN_BUILD_ROWS,
+                available.min(MAX_STREAM_BUILD_BYTES),
+                &mut predicate,
             )?
         } else {
             read_projected_build_rows(
