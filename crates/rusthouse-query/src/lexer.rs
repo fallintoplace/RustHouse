@@ -64,7 +64,13 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
         let byte = bytes[index];
         let token = match byte {
             b' ' | b'\t' | b'\r' | b'\n' | b'\x0b' | b'\x0c' => {
-                index += 1;
+                // Long formatted statements may have large whitespace runs.
+                // Skip the entire run before dispatching another token.
+                let rest = &bytes[index..];
+                index += rest
+                    .iter()
+                    .position(|&byte| !matches!(byte, b' ' | b'\t' | b'\r' | b'\n' | b'\x0b' | b'\x0c'))
+                    .unwrap_or(rest.len());
                 continue;
             }
             b'\'' => scan_string(sql, &mut index)?,
@@ -205,6 +211,22 @@ fn tokenize_with_limit(sql: &str, max_bytes: usize) -> Result<Vec<Token>, ParseE
         tokens.push(token);
     }
     Ok(tokens)
+}
+
+
+#[cfg(test)]
+mod whitespace_spans_tests {
+    use super::*;
+
+    #[test]
+    fn skips_long_runs_of_all_supported_sql_whitespace() {
+        let statement = format!("SELECT{}1", " \t\r\n\x0b\x0c".repeat(8_000));
+        let tokens = tokenize(&statement).unwrap();
+        assert_eq!(
+            tokens,
+            vec![Token::Word("SELECT".into()), Token::Number("1".into())]
+        );
+    }
 }
 
 #[cfg(test)]
