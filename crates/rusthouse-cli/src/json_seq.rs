@@ -16,21 +16,28 @@ impl<W: Write> JsonSeqSink<W> {
         }
     }
 
+    fn write_record_start(&mut self, chunk: &[u8]) -> io::Result<()> {
+        if chunk.len() <= 4095 {
+            let mut framed = [0u8; 4096];
+            framed[0] = 0x1e;
+            framed[1..chunk.len() + 1].copy_from_slice(chunk);
+            self.output.write_all(&framed[..chunk.len() + 1])?;
+        } else {
+            self.output.write_all(b"\x1e")?;
+            // The separator was already emitted, even if the row write fails.
+            self.at_row_start = false;
+            self.output.write_all(chunk)?;
+        }
+        self.at_row_start = chunk.ends_with(b"\n");
+        Ok(())
+    }
+
     fn write_framed_json_fragment(&mut self, chunk: &[u8]) -> io::Result<()> {
         if chunk.is_empty() {
             return Ok(());
         }
         if self.at_row_start {
-            if chunk.len() <= 4095 {
-                let mut framed = [0u8; 4096];
-                framed[0] = 0x1e;
-                framed[1..chunk.len() + 1].copy_from_slice(chunk);
-                self.output.write_all(&framed[..chunk.len() + 1])?;
-                self.at_row_start = chunk.ends_with(b"\n");
-                return Ok(());
-            }
-            self.output.write_all(b"\x1e")?;
-            self.at_row_start = false;
+            return self.write_record_start(chunk);
         }
         self.output.write_all(chunk)?;
         if chunk.ends_with(b"\n") {
@@ -89,6 +96,18 @@ mod tests {
             sink.output,
             b"\x1e{\"key\":\"one\"}\n\x1e{\"key\":\"two\"}\n\x1e{\"key\":\"three\"}\n"
         );
+    }
+
+    #[test]
+    fn large_fragment_preserves_one_record_separator() {
+        let mut sink = JsonSeqSink::new(Vec::new());
+        let fragment = vec![b'x'; 5000];
+        sink.write_all(&fragment).unwrap();
+        sink.write_all(b"\n{}\n").unwrap();
+        let mut expected = vec![0x1e];
+        expected.extend_from_slice(&fragment);
+        expected.extend_from_slice(b"\n\x1e{}\n");
+        assert_eq!(sink.output, expected);
     }
 
     #[test]
