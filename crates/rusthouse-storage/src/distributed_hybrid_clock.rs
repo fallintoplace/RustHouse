@@ -13,9 +13,7 @@ pub struct HybridClock {
 }
 
 fn next_logical(value: u32) -> Result<u32, &'static str> {
-    value
-        .checked_add(1)
-        .ok_or("hybrid clock logical overflow")
+    value.checked_add(1).ok_or("hybrid clock logical overflow")
 }
 
 impl HybridClock {
