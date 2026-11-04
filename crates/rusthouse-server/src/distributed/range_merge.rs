@@ -3,6 +3,38 @@
 
 use super::{MergeError, extrema_fits_declared_type};
 
+fn parse_peer_range<'a>(
+    cap: usize,
+    body: &'a [u8],
+    header: &[u8],
+    kind: &str,
+) -> Result<Option<(&'a str, &'a str)>, MergeError> {
+    if cap == 0 || !body.starts_with(header) || !body.ends_with(b"\n") {
+        return Err(MergeError::InvalidExtremum);
+    }
+    let values = &body[header.len()..body.len() - 1];
+    let Some(tab) = values.iter().position(|&byte| byte == b'\t') else {
+        return Err(MergeError::InvalidExtremum);
+    };
+    let lower = &values[..tab];
+    let upper = &values[tab + 1..];
+    if upper.contains(&b'\t') {
+        return Err(MergeError::InvalidExtremum);
+    }
+    if lower == b"NULL" && upper == b"NULL" {
+        return Ok(None);
+    }
+    if lower == b"NULL" || upper == b"NULL" {
+        return Err(MergeError::InvalidExtremum);
+    }
+    let low = std::str::from_utf8(lower).map_err(|_| MergeError::InvalidExtremum)?;
+    let high = std::str::from_utf8(upper).map_err(|_| MergeError::InvalidExtremum)?;
+    if !extrema_fits_declared_type(kind, low) || !extrema_fits_declared_type(kind, high) {
+        return Err(MergeError::InvalidExtremum);
+    }
+    Ok(Some((low, high)))
+}
+
 pub(super) fn merge_global_range(
     shards: &[(usize, Vec<u8>)],
     column: &str,
@@ -21,29 +53,9 @@ pub(super) fn merge_global_range(
     let mut unsigned_min = None::<u128>;
     let mut unsigned_max = None::<u128>;
     for (cap, body) in shards {
-        if *cap == 0 || !body.starts_with(header.as_bytes()) || !body.ends_with(b"\n") {
-            return Err(MergeError::InvalidExtremum);
-        }
-        let values = &body[header.len()..body.len() - 1];
-        let Some(tab) = values.iter().position(|&byte| byte == b'\t') else {
-            return Err(MergeError::InvalidExtremum);
-        };
-        let lower = &values[..tab];
-        let upper = &values[tab + 1..];
-        if upper.contains(&b'\t') {
-            return Err(MergeError::InvalidExtremum);
-        }
-        if lower == b"NULL" && upper == b"NULL" {
+        let Some((low, high)) = parse_peer_range(*cap, body, header.as_bytes(), kind)? else {
             continue;
-        }
-        if lower == b"NULL" || upper == b"NULL" {
-            return Err(MergeError::InvalidExtremum);
-        }
-        let low = std::str::from_utf8(lower).map_err(|_| MergeError::InvalidExtremum)?;
-        let high = std::str::from_utf8(upper).map_err(|_| MergeError::InvalidExtremum)?;
-        if !extrema_fits_declared_type(kind, low) || !extrema_fits_declared_type(kind, high) {
-            return Err(MergeError::InvalidExtremum);
-        }
+        };
         if unsigned {
             let lo = low
                 .parse::<u128>()
