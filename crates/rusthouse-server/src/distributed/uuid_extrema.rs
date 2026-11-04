@@ -39,6 +39,38 @@ fn format_uuid(value: u128) -> String {
     )
 }
 
+fn parse_peer_uuid<'a>(
+    body: &'a [u8],
+    header: &mut Option<&'a [u8]>,
+) -> Result<Option<u128>, MergeError> {
+    if !body.ends_with(b"\n") {
+        return Err(MergeError::InvalidExtremum);
+    }
+    let split = body
+        .iter()
+        .position(|&byte| byte == b'\n')
+        .ok_or(MergeError::InvalidExtremum)?;
+    let next_header = &body[..=split];
+    if next_header.len() <= 1 {
+        return Err(MergeError::InvalidExtremum);
+    }
+    if let Some(expected) = *header {
+        if expected != next_header {
+            return Err(MergeError::SchemaMismatch);
+        }
+    } else {
+        *header = Some(next_header);
+    }
+    if split + 1 >= body.len() {
+        return Err(MergeError::InvalidExtremum);
+    }
+    let raw = &body[split + 1..body.len() - 1];
+    if raw == b"NULL" {
+        return Ok(None);
+    }
+    Ok(Some(uuid_value(raw).ok_or(MergeError::InvalidExtremum)?))
+}
+
 pub(super) fn merge_uuid_extrema(
     shards: &[(usize, Vec<u8>)],
     function: AggregateFunction,
@@ -49,32 +81,9 @@ pub(super) fn merge_uuid_extrema(
     let mut header = None;
     let mut best = None::<u128>;
     for (_, body) in shards {
-        if !body.ends_with(b"\n") {
-            return Err(MergeError::InvalidExtremum);
-        }
-        let split = body
-            .iter()
-            .position(|&byte| byte == b'\n')
-            .ok_or(MergeError::InvalidExtremum)?;
-        let next_header = &body[..=split];
-        if next_header.len() <= 1 {
-            return Err(MergeError::InvalidExtremum);
-        }
-        if let Some(expected) = header {
-            if expected != next_header {
-                return Err(MergeError::SchemaMismatch);
-            }
-        } else {
-            header = Some(next_header);
-        }
-        if split + 1 >= body.len() {
-            return Err(MergeError::InvalidExtremum);
-        }
-        let raw = &body[split + 1..body.len() - 1];
-        if raw == b"NULL" {
+        let Some(value) = parse_peer_uuid(body, &mut header)? else {
             continue;
-        }
-        let value = uuid_value(raw).ok_or(MergeError::InvalidExtremum)?;
+        };
         best = Some(best.map_or(value, |previous| match function {
             AggregateFunction::Min => previous.min(value),
             AggregateFunction::Max => previous.max(value),
