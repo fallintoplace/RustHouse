@@ -47,6 +47,10 @@ impl ChunkReceipts {
         Ok(restored)
     }
 
+    fn active_end(&self) -> u64 {
+        self.next.saturating_add(self.window).min(self.total)
+    }
+
     pub fn contiguous_received(&self) -> u64 {
         self.next
     }
@@ -61,7 +65,7 @@ impl ChunkReceipts {
     /// An old, already-finalized index cannot be revalidated from the compact
     /// window alone and must be rejected instead of silently accepted.
     pub fn acknowledge(&mut self, index: u64, crc32c: u32) -> Result<u64, &'static str> {
-        let end = self.next.saturating_add(self.window).min(self.total);
+        let end = self.active_end();
         if index < self.next {
             return Err("receipt predates finalized transfer cursor");
         }
@@ -83,7 +87,7 @@ impl ChunkReceipts {
 
     /// Missing half-open chunk intervals within the current receive window.
     pub fn missing_ranges(&self) -> Vec<Range<u64>> {
-        let end = self.next.saturating_add(self.window).min(self.total);
+        let end = self.active_end();
         let mut cursor = self.next;
         let mut ranges = Vec::new();
         // The BTreeMap is already sorted. Visit received chunks instead of
