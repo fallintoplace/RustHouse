@@ -714,9 +714,8 @@ pub(super) fn execute<W: Write>(
         let (left_keys, right_keys) =
             step_keys(step, &relations[..=step_index + 1], relation.start)?;
         let available = MAX_CHAIN_BYTES.saturating_sub(retained);
-        // For all-INNER chains, a conjunctive filter on this dimension
-        // can be applied while scanning its rows, before hash retention.
-        // The same predicate remains in the final visitor for correctness.
+        // Safe relation-local predicates can reject build rows before hash
+        // retention. The full filter still runs in the final visitor.
         let dimension_filter = comparisons.iter().find(|(index, _, _)| {
             index
                 .checked_sub(relation.start)
@@ -815,6 +814,8 @@ pub(super) fn execute<W: Write>(
     // Reuse the same dependency projection for the fact scan.
     let fact_width = relations[0].names.len();
     let fact_comparisons = fact_side_comparisons(comparisons, fact_width);
+    let fact_row_filter =
+        row_filters.filter(|filters| filters.can_prefilter_relation(0, fact_width));
     let projected = &projections[0];
     let projected_names = projected
         .iter()
@@ -838,6 +839,11 @@ pub(super) fn execute<W: Write>(
                 row[column] = typed::cell(&batch[position], index);
             }
             if !passes_fact_comparisons(&row, &fact_comparisons) {
+                continue;
+            }
+            // Common OR-branch predicates can reject fact rows before any
+            // hash probes. The final visitor checks the full WHERE filter.
+            if fact_row_filter.is_some_and(|filters| !filters.passes_relation(&row, 0)) {
                 continue;
             }
             visit(

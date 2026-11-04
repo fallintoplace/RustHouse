@@ -19,6 +19,7 @@ struct RowCondition {
 
 pub(super) struct RowFilters {
     branches: Vec<Vec<RowCondition>>,
+    common_conditions: Vec<usize>,
     pub(super) indices: Vec<usize>,
 }
 
@@ -48,6 +49,21 @@ impl RowFilters {
         predicates: &[Vec<Predicate>],
         relations: &[Relation],
     ) -> Result<Self, ExecutionError> {
+        let common_conditions = predicates
+            .first()
+            .map(|first| {
+                first
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, predicate)| {
+                        predicates[1..]
+                            .iter()
+                            .all(|branch| branch.contains(predicate))
+                            .then_some(index)
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
         let mut indices = Vec::new();
         let resolve = |name: &str| {
             let (relation, name) = name.split_once('\0').unwrap_or(("", name));
@@ -146,7 +162,11 @@ impl RowFilters {
         }
         indices.sort_unstable();
         indices.dedup();
-        Ok(Self { branches, indices })
+        Ok(Self {
+            branches,
+            common_conditions,
+            indices,
+        })
     }
 
     pub(super) fn passes(&self, row: &[typed::Cell]) -> bool {
@@ -157,17 +177,18 @@ impl RowFilters {
         })
     }
 
-    /// A single AND branch that uses only one relation can safely reject
-    /// build rows before they are retained by an INNER join.
+    /// Conditions shared by every OR branch can safely reject rows before
+    /// an INNER join, even when the full filter spans multiple relations.
     pub(super) fn can_prefilter_relation(&self, start: usize, width: usize) -> bool {
         let Some(end) = start.checked_add(width) else {
             return false;
         };
-        let [branch] = self.branches.as_slice() else {
+        let Some(branch) = self.branches.first() else {
             return false;
         };
-        !branch.is_empty()
-            && branch.iter().all(|condition| {
+        !self.common_conditions.is_empty()
+            && self.common_conditions.iter().all(|&index| {
+                let condition = &branch[index];
                 (start..end).contains(&condition.index)
                     && match &condition.test {
                         RowTest::Column(_, other) => (start..end).contains(other),
@@ -178,9 +199,9 @@ impl RowFilters {
 
     pub(super) fn passes_relation(&self, row: &[typed::Cell], start: usize) -> bool {
         debug_assert!(self.can_prefilter_relation(start, row.len()));
-        self.branches[0]
+        self.common_conditions
             .iter()
-            .all(|condition| Self::condition_passes(condition, row, start))
+            .all(|&index| Self::condition_passes(&self.branches[0][index], row, start))
     }
 
     fn condition_passes(condition: &RowCondition, row: &[typed::Cell], offset: usize) -> bool {
@@ -250,6 +271,14 @@ mod tests {
         }
     }
 
+    fn comparison(column: &str, operator: Operator, value: &str) -> Predicate {
+        Predicate::Comparison {
+            column: column.into(),
+            operator,
+            value: value.into(),
+        }
+    }
+
     #[test]
     fn prefilters_only_a_single_conjunctive_branch_local_to_one_relation() {
         let filters =
@@ -282,5 +311,40 @@ mod tests {
             ];
             assert_eq!(filters.passes_relation(&local, 1), filters.passes(&full));
         }
+    }
+
+    #[test]
+    fn prefilters_conditions_shared_by_every_or_branch() {
+        let shared = comparison("orders\0id", Operator::Gt, "10");
+        let filters = RowFilters::bind(
+            &[
+                vec![shared.clone(), like("part\0p_name", "%green%")],
+                vec![shared, like("part\0p_name", "%blue%")],
+            ],
+            &relations(),
+        )
+        .unwrap();
+
+        assert!(filters.can_prefilter_relation(0, 1));
+        assert!(!filters.can_prefilter_relation(1, 1));
+        assert!(filters.passes_relation(
+            &[typed::Cell::Numeric(super::super::super::Number::Unsigned(
+                11
+            ))],
+            0
+        ));
+        assert!(!filters.passes_relation(
+            &[typed::Cell::Numeric(super::super::super::Number::Unsigned(
+                10
+            ))],
+            0
+        ));
+
+        let full_row = [
+            typed::Cell::Numeric(super::super::super::Number::Unsigned(11)),
+            typed::Cell::Text(b"blue part".to_vec()),
+        ];
+        assert!(filters.passes(&full_row));
+        assert!(filters.passes_relation(&full_row[..1], 0));
     }
 }
