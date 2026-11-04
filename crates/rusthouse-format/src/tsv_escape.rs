@@ -71,12 +71,19 @@ fn decode_escape(field: &[u8], index: &mut usize) -> io::Result<u8> {
     }
 }
 
+fn next_escape(field: &[u8], from: usize) -> Option<usize> {
+    field[from..]
+        .iter()
+        .position(|&byte| byte == b'\\')
+        .map(|relative| from + relative)
+}
+
 /// Check TSV escape syntax without allocating a decoded field.
 /// Use this when forwarding peer rows without materializing their values.
 pub fn validate_tsv_field(field: &[u8]) -> io::Result<()> {
     let mut cursor = 0;
-    while let Some(relative) = field[cursor..].iter().position(|&byte| byte == b'\\') {
-        cursor += relative;
+    while let Some(next) = next_escape(field, cursor) {
+        cursor = next;
         decode_escape(field, &mut cursor)?;
     }
     Ok(())
@@ -87,7 +94,7 @@ pub fn validate_tsv_field(field: &[u8]) -> io::Result<()> {
 /// across many rows to avoid a per-field allocation.
 pub fn decode_tsv_field_into(field: &[u8], output: &mut Vec<u8>) -> io::Result<()> {
     output.clear();
-    let Some(first_escape) = field.iter().position(|&byte| byte == b'\\') else {
+    let Some(first_escape) = next_escape(field, 0) else {
         output.extend_from_slice(field);
         return Ok(());
     };
@@ -107,10 +114,10 @@ pub fn decode_tsv_field_into(field: &[u8], output: &mut Vec<u8>) -> io::Result<(
         };
         output.push(decoded);
         start = index;
-        let Some(next_escape_offset) = field[index..].iter().position(|&byte| byte == b'\\') else {
+        let Some(next) = next_escape(field, index) else {
             break;
         };
-        index += next_escape_offset;
+        index = next;
     }
     output.extend_from_slice(&field[start..]);
     Ok(())
