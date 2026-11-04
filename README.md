@@ -86,6 +86,11 @@ On an Apple M1 Pro with 32 GB RAM, a release build at `7c450104` ran these queri
 
 Each result matched SQLite. These are synthetic, warm-cache tests with seven runs after two warmups. Times include CLI startup and output, but not data generation or import. Rust 1.96.0 was used. See the [benchmark guide](bench/README.md) and [reproduction commands](docs/reference.md#benchmarks).
 
+A local smoke run matched all 43 ClickBench queries against SQLite with tie-aware comparisons. It
+used 100,500 synthetic rows and 25 query-used columns (2026-11-04). This is not an official
+ClickBench score. Query 40 exceeded the 64 MiB `GROUP BY` memory limit on a higher-cardinality
+synthetic fixture. See the [ClickBench smoke guide](bench/clickbench/README.md).
+
 ## Learn more
 
 - [SQL features and limits](docs/reference.md#supported-features)
