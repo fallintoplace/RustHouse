@@ -31,9 +31,9 @@ impl TimedLeaseLedger {
         Self::default()
     }
 
-    pub fn apply(
-        &mut self,
-        proposed: TimedLease,
+    fn validate_proposed_lease(
+        &self,
+        proposed: &TimedLease,
         now_ms: u64,
         max_ttl_ms: u64,
     ) -> Result<(), &'static str> {
@@ -48,6 +48,16 @@ impl TimedLeaseLedger {
         {
             return Err("invalid replica lease, token, or clock");
         }
+        Ok(())
+    }
+
+    pub fn apply(
+        &mut self,
+        proposed: TimedLease,
+        now_ms: u64,
+        max_ttl_ms: u64,
+    ) -> Result<(), &'static str> {
+        self.validate_proposed_lease(&proposed, now_ms, max_ttl_ms)?;
         if let Some(existing) = self.entries.get(&proposed.resource) {
             if proposed.token < existing.token
                 || (proposed.token == existing.token
