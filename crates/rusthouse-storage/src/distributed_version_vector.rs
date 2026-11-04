@@ -59,16 +59,18 @@ impl VersionVector {
         Ok(next)
     }
 
-    /// Merge by component-wise maximum. The receiver is unchanged on error.
-    pub fn merge(&mut self, other: &Self) -> Result<(), &'static str> {
-        if self.counters.len()
+    fn merged_member_count(&self, other: &Self) -> usize {
+        self.counters.len()
             + other
                 .counters
                 .keys()
                 .filter(|node| !self.counters.contains_key(*node))
                 .count()
-            > MAX_NODES
-        {
+    }
+
+    /// Merge by component-wise maximum. The receiver is unchanged on error.
+    pub fn merge(&mut self, other: &Self) -> Result<(), &'static str> {
+        if self.merged_member_count(other) > MAX_NODES {
             return Err("merged version-vector membership limit reached");
         }
         for (node, &count) in &other.counters {
