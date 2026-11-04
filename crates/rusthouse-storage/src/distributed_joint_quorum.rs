@@ -35,7 +35,11 @@ fn intersect(
         let mut old_weight = old_only;
         let mut new_weight = new_only;
         for (index, &(first, second)) in shared.iter().enumerate() {
-            let (old, new) = if swapped { (second, first) } else { (first, second) };
+            let (old, new) = if swapped {
+                (second, first)
+            } else {
+                (first, second)
+            };
             if mask & (1u64 << index) == 0 {
                 old_weight += old;
             } else {
