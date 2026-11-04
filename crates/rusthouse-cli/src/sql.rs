@@ -377,6 +377,59 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         }
         return Err("--catalog is only supported for DDL statements".into());
     }
+    if first_word.is_some_and(|word| word.eq_ignore_ascii_case("SELECT")) {
+        if let Some(plan) =
+            rusthouse_query::parse_bounded_except(&query).map_err(|error| error.to_string())?
+        {
+            let directory = database.as_deref().ok_or("EXCEPT requires --database")?;
+            if part.is_some() || explain || max_rows.is_some() {
+                return Err("EXCEPT does not support --part, --explain, or --max-rows".into());
+            }
+            if !matches!(format.unwrap_or(SqlOutputFormat::Tsv), SqlOutputFormat::Tsv) {
+                return Err("bounded EXCEPT currently supports TSV output only".into());
+            }
+            if show_ast {
+                if output_path.is_some() || time {
+                    return Err("--show-ast cannot use --output or --time".into());
+                }
+                println!("{plan:#?}");
+                return Ok(());
+            }
+            let _read_lock = crate::database::read_lock(directory)?;
+            let paths = plan
+                .selects
+                .iter()
+                .map(|select| match &select.source {
+                    Some(Source::Table(table)) => crate::database::select_source(directory, table),
+                    _ => Err("EXCEPT requires table sources".into()),
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let mut output: Box<dyn std::io::Write> = match &output_path {
+                Some(path) => Box::new(
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                        .map_err(|error| {
+                            format!("cannot create {}: {error}", path.display())
+                        })?,
+                ),
+                None => Box::new(std::io::stdout()),
+            };
+            let start = std::time::Instant::now();
+            let result = rusthouse_query::execute_bounded_except(&plan, &paths, &mut output);
+            if time {
+                eprintln!("Elapsed: {:.3} ms", start.elapsed().as_secs_f64() * 1_000.0);
+            }
+            if result.is_err() {
+                drop(output);
+                if let Some(path) = output_path {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            return result.map_err(|error| error.to_string());
+        }
+    }
     let implicit = has_implicit_join(&query).map_err(|error| error.to_string())?;
     let cte = has_cte_max_join(&query).map_err(|error| error.to_string())?;
     let derived = has_derived_join_count(&query).map_err(|error| error.to_string())?;
