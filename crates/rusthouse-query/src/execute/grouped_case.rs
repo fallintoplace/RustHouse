@@ -1,23 +1,76 @@
-//! Combine raw string groups into a bounded conditional CASE grouping.
+//! Apply a conditional CASE before retaining grouped key values.
 use super::*;
-const MAX_BYTES: usize = 16 * 1024 * 1024;
+use rusthouse_storage::{TypedColumn, TypedQueryReader, inspect_query_source};
 const MAX_GROUPS: usize = 200_000;
 const MAX_GROUP_BYTES: usize = 64 * 1024 * 1024;
-struct Bounded(Vec<u8>);
-impl Write for Bounded {
-    fn write(&mut self, data: &[u8]) -> io::Result<usize> {
-        if self.0.len().saturating_add(data.len()) > MAX_BYTES {
-            return Err(io::Error::other(
-                "CASE grouping intermediate exceeds 16 MiB",
-            ));
-        }
-        self.0.extend_from_slice(data);
-        Ok(data.len())
-    }
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
+const GROUP_MEMORY_OVERHEAD: usize = 192;
+
+fn charge_group_bytes(
+    retained: &mut usize,
+    encoded_capacity: usize,
+    output_capacity: usize,
+) -> Result<(), ExecutionError> {
+    let bytes = GROUP_MEMORY_OVERHEAD
+        .checked_add(encoded_capacity)
+        .and_then(|total| total.checked_add(output_capacity))
+        .ok_or_else(|| ExecutionError::Invalid("CASE group memory overflow".into()))?;
+    *retained = retained
+        .checked_add(bytes)
+        .filter(|&total| total <= MAX_GROUP_BYTES)
+        .ok_or_else(|| ExecutionError::Invalid("CASE groups exceed 64 MiB".into()))?;
+    Ok(())
 }
+
+fn charge_group_memory(
+    retained: &mut usize,
+    encoded_capacity: usize,
+    output_key: &[Vec<u8>; 5],
+) -> Result<(), ExecutionError> {
+    let output_capacity = output_key
+        .iter()
+        .try_fold(0usize, |total, value| total.checked_add(value.capacity()));
+    let output_capacity = output_capacity
+        .ok_or_else(|| ExecutionError::Invalid("CASE group memory overflow".into()))?;
+    charge_group_bytes(retained, encoded_capacity, output_capacity)
+}
+
+fn integer_zero(column: &TypedColumn, row: usize) -> bool {
+    matches!(
+        typed::cell(column, row),
+        typed::Cell::Numeric(super::Number::Signed(0) | super::Number::Unsigned(0))
+    )
+}
+
+fn output_component(column: &TypedColumn, row: usize) -> Result<Vec<u8>, ExecutionError> {
+    let mut output = Vec::new();
+    typed::write_value(&mut output, &typed::cell(column, row))?;
+    Ok(output)
+}
+
+fn output_group_key(
+    batch: &[TypedColumn],
+    group_indices: &[usize],
+    row: usize,
+    use_source: bool,
+) -> Result<[Vec<u8>; 5], ExecutionError> {
+    Ok([
+        output_component(&batch[group_indices[0]], row)?,
+        output_component(&batch[group_indices[1]], row)?,
+        output_component(&batch[group_indices[2]], row)?,
+        if use_source {
+            output_component(&batch[group_indices[3]], row)?
+        } else {
+            Vec::new()
+        },
+        output_component(&batch[group_indices[4]], row)?,
+    ])
+}
+
+fn append_empty_text_component(buffer: &mut Vec<u8>) {
+    buffer.push(1);
+    buffer.extend_from_slice(&0u64.to_le_bytes());
+}
+
 fn integer(kind: &str) -> bool {
     matches!(
         typed::base_type(kind),
@@ -84,12 +137,27 @@ pub(super) fn execute<W: Write>(
             "CASE alias conflicts with a source column".into(),
         ));
     }
-    let keys = match &query.projection {
-        Projection::GroupedMultiCount { columns }
-        | Projection::GroupedMultiAggregates { columns, .. } => columns,
+    let (keys, count_label) = match &query.projection {
+        Projection::GroupedMultiCount { columns } => (
+            columns.as_slice(),
+            query.alias.as_deref().unwrap_or("count"),
+        ),
+        Projection::GroupedMultiAggregates {
+            columns,
+            items,
+            aliases,
+            ..
+        } if matches!(items.as_slice(), [(AggregateFunction::Count, value)] if value == "*") => (
+            columns.as_slice(),
+            aliases
+                .first()
+                .and_then(|alias| alias.as_deref())
+                .or(query.alias.as_deref())
+                .unwrap_or("count"),
+        ),
         _ => {
             return Err(ExecutionError::Invalid(
-                "CASE grouping requires five keys".into(),
+                "CASE grouping requires one COUNT and five keys".into(),
             ));
         }
     };
@@ -118,94 +186,93 @@ pub(super) fn execute<W: Write>(
     if keys[1] != case.first_flag || keys[2] != case.second_flag {
         return Err(ExecutionError::Invalid("CASE grouping flags differ".into()));
     }
-    let mut source = query.clone();
-    source.grouped_case_key = None;
-    source.order_by = None;
-    source.order_by_extra.clear();
-    source.offset = None;
-    source.limit = if query.limit == Some(0) {
-        Some(0)
-    } else {
-        None
-    };
-    let mut intermediate = Bounded(Vec::new());
-    execute_into(&source, Some(path), &mut intermediate)?;
-    let mut lines = intermediate.0.split(|&byte| byte == b'\n');
-    let header = lines
-        .next()
-        .ok_or_else(|| ExecutionError::Invalid("missing CASE grouping header".into()))?
-        .split(|&byte| byte == b'\t')
-        .collect::<Vec<_>>();
-    if header.len() != 6 {
-        return Err(ExecutionError::Invalid(
-            "invalid CASE grouping header".into(),
-        ));
+    let mut names = keys.to_vec();
+    for predicate in query
+        .predicates
+        .iter()
+        .chain(query.or_predicates.iter().flatten())
+    {
+        let name = predicate.column();
+        if !names.iter().any(|existing| existing == name) {
+            names.push(name.to_owned());
+        }
     }
-    // A fixed-size key removes the outer Vec allocation on each input row.
-    let mut groups = HashMap::<[Vec<u8>; 5], u64>::new();
+    let indices = names
+        .iter()
+        .enumerate()
+        .map(|(index, name)| (name.clone(), index))
+        .collect::<HashMap<_, _>>();
+    let types = metadata
+        .columns
+        .iter()
+        .map(|column| (column.name.clone(), column.data_type.clone()))
+        .collect::<HashMap<_, _>>();
+    let conditions = std::iter::once(query.predicates.as_slice())
+        .chain(query.or_predicates.iter().map(Vec::as_slice))
+        .map(|predicates| typed::compile(predicates, &indices, &types))
+        .collect::<Result<Vec<_>, _>>()?;
+    let group_indices = keys.iter().map(|name| indices[name]).collect::<Vec<_>>();
+    if query.limit == Some(0) {
+        write_case_header(output, keys, case, count_label)?;
+        return Ok(());
+    }
+    let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
+    let mut reader = TypedQueryReader::open_with_metadata(path, &names, &metadata)?;
+    let mut encoded_groups = HashMap::<Vec<u8>, usize>::new();
+    let mut encoded_probe = Vec::with_capacity(128);
+    let mut groups = Vec::<([Vec<u8>; 5], u64)>::new();
     let mut retained = 0usize;
-    for line in lines {
-        if line.is_empty() {
-            continue;
-        }
-        let mut fields = line.split(|&byte| byte == b'\t');
-        let (Some(first), Some(flag1), Some(flag2), Some(destination), Some(last), Some(raw_count)) = (
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-            fields.next(),
-        ) else {
-            return Err(ExecutionError::Invalid("invalid CASE grouping row".into()));
-        };
-        if fields.next().is_some() {
-            return Err(ExecutionError::Invalid("invalid CASE grouping row".into()));
-        }
-        let case_value = if flag1 == b"0" && flag2 == b"0" {
-            destination
-        } else {
-            b""
-        };
-        let key = [
-            first.to_vec(),
-            flag1.to_vec(),
-            flag2.to_vec(),
-            case_value.to_vec(),
-            last.to_vec(),
-        ];
-        let count = std::str::from_utf8(raw_count)
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .ok_or_else(|| ExecutionError::Invalid("invalid CASE grouping count".into()))?;
-        let group_count = groups.len();
-        let group = match groups.entry(key) {
-            std::collections::hash_map::Entry::Occupied(entry) => entry.into_mut(),
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                if group_count >= MAX_GROUPS {
-                    return Err(ExecutionError::Invalid(
-                        "CASE grouping exceeds 200000 groups".into(),
-                    ));
-                }
-                let bytes = entry
-                    .key()
-                    .iter()
-                    .try_fold(192usize, |sum, value| {
-                        sum.checked_add(value.len().saturating_mul(2))
-                    })
-                    .ok_or_else(|| ExecutionError::Invalid("CASE group memory overflow".into()))?;
-                retained = retained
-                    .checked_add(bytes)
-                    .filter(|&n| n <= MAX_GROUP_BYTES)
-                    .ok_or_else(|| ExecutionError::Invalid("CASE groups exceed 64 MiB".into()))?;
-                entry.insert(0)
+    while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            if !no_filters && !typed::passes(&batch, row, &conditions) {
+                continue;
             }
-        };
-        *group = group
-            .checked_add(count)
-            .ok_or_else(|| ExecutionError::Invalid("CASE grouping count overflow".into()))?;
+            // Collapse the unused referer before retaining a group key.
+            let use_source = integer_zero(&batch[group_indices[1]], row)
+                && integer_zero(&batch[group_indices[2]], row);
+            encoded_probe.clear();
+            for &index in &group_indices[..3] {
+                super::grouped_numeric_keys::append_group_component(
+                    &batch[index],
+                    row,
+                    &mut encoded_probe,
+                );
+            }
+            if use_source {
+                super::grouped_numeric_keys::append_group_component(
+                    &batch[group_indices[3]],
+                    row,
+                    &mut encoded_probe,
+                );
+            } else {
+                append_empty_text_component(&mut encoded_probe);
+            }
+            super::grouped_numeric_keys::append_group_component(
+                &batch[group_indices[4]],
+                row,
+                &mut encoded_probe,
+            );
+
+            if let Some(&index) = encoded_groups.get(encoded_probe.as_slice()) {
+                groups[index].1 = groups[index].1.checked_add(1).ok_or_else(|| {
+                    ExecutionError::Invalid("CASE grouping count overflow".into())
+                })?;
+                continue;
+            }
+            if groups.len() >= MAX_GROUPS {
+                return Err(ExecutionError::Invalid(
+                    "CASE grouping exceeds 200000 groups".into(),
+                ));
+            }
+            let key = output_group_key(&batch, &group_indices, row, use_source)?;
+            charge_group_memory(&mut retained, encoded_probe.capacity(), &key)?;
+            let index = groups.len();
+            encoded_groups.insert(std::mem::take(&mut encoded_probe), index);
+            encoded_probe = Vec::with_capacity(128);
+            groups.push((key, 1));
+        }
     }
-    let mut rows = groups.into_iter().collect::<Vec<_>>();
+    let mut rows = groups;
     let descending = query
         .order_by
         .as_ref()
@@ -216,18 +283,7 @@ pub(super) fn execute<W: Write>(
         query.offset.unwrap_or(0),
         query.limit,
     );
-    output.write_all(header[0])?;
-    output.write_all(b"\t")?;
-    output.write_all(header[1])?;
-    output.write_all(b"\t")?;
-    output.write_all(header[2])?;
-    write!(
-        output,
-        "\t{}\t{}\t",
-        case.case_label, case.destination_label
-    )?;
-    output.write_all(header[5])?;
-    output.write_all(b"\n")?;
+    write_case_header(output, keys, case, count_label)?;
     for (keys, count) in rows
         .into_iter()
         .skip(query.offset.unwrap_or(0))
@@ -241,6 +297,26 @@ pub(super) fn execute<W: Write>(
         }
         writeln!(output, "\t{count}")?;
     }
+    Ok(())
+}
+
+fn write_case_header<W: Write>(
+    output: &mut W,
+    keys: &[String],
+    case: &crate::GroupedCaseKey,
+    count_label: &str,
+) -> Result<(), ExecutionError> {
+    for (index, name) in keys.iter().take(3).enumerate() {
+        if index > 0 {
+            output.write_all(b"\t")?;
+        }
+        output.write_all(name.as_bytes())?;
+    }
+    writeln!(
+        output,
+        "\t{}\t{}\t{}",
+        case.case_label, case.destination_label, count_label
+    )?;
     Ok(())
 }
 
@@ -287,5 +363,48 @@ mod topk_tests {
                 );
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod case_memory_tests {
+    use super::*;
+
+    #[test]
+    fn retained_budget_counts_both_stored_key_buffers_and_checks_overflow() {
+        let keys = std::array::from_fn::<_, 5, _>(|_| vec![b'x'; 8]);
+        let mut retained = 0;
+        charge_group_memory(&mut retained, 24, &keys).unwrap();
+        assert_eq!(retained, GROUP_MEMORY_OVERHEAD + 24 + 5 * 8);
+
+        let before = retained;
+        assert!(charge_group_bytes(&mut retained, usize::MAX, 0).is_err());
+        assert_eq!(retained, before);
+
+        let mut at_limit = 0;
+        charge_group_bytes(&mut at_limit, MAX_GROUP_BYTES - GROUP_MEMORY_OVERHEAD, 0).unwrap();
+        assert_eq!(at_limit, MAX_GROUP_BYTES);
+        assert!(charge_group_bytes(&mut at_limit, 0, 0).is_err());
+        assert_eq!(at_limit, MAX_GROUP_BYTES);
+    }
+
+    #[test]
+    fn null_case_flags_do_not_select_the_source_string() {
+        use rusthouse_storage::NumericColumn;
+
+        let flags = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int16(vec![0, 0, 1]),
+            nulls: vec![0, 1, 0],
+        };
+        assert!(integer_zero(&flags, 0));
+        assert!(!integer_zero(&flags, 1));
+        assert!(!integer_zero(&flags, 2));
+    }
+
+    #[test]
+    fn empty_case_component_matches_an_empty_string_key() {
+        let mut actual = Vec::new();
+        append_empty_text_component(&mut actual);
+        assert_eq!(actual, [vec![1], vec![0; 8]].concat());
     }
 }
