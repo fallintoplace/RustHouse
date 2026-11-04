@@ -188,6 +188,9 @@ pub struct JoinSelect {
     pub where_comparisons_extra: Vec<(JoinColumn, crate::Operator, String)>,
     /// Column-to-column comparisons for two-table INNER joins.
     pub where_column_comparisons: Vec<(JoinColumn, crate::Operator, JoinColumn)>,
+    /// Bounded SUBSTR/SUBSTRING comparisons between JOIN columns.
+    pub where_substring_comparisons:
+        Vec<(JoinColumn, usize, usize, crate::Operator, JoinColumn, usize, usize)>,
     /// Small IN lists for two-table INNER join filters.
     pub where_in_filters: Vec<(JoinColumn, Vec<String>)>,
     /// LIKE filters: column, pattern, case-insensitive, negated.
@@ -727,6 +730,39 @@ fn parse_distinct_not_in(parser: &mut Parser) -> Result<Option<JoinedSubqueryFil
     }
     parser.index = end;
     Ok(Some((subquery, branches)))
+}
+
+/// Parse a bounded ZIP-like prefix expression in a JOIN filter.
+fn parse_join_substring(parser: &mut Parser) -> Result<(JoinColumn, usize, usize), ParseError> {
+    if !(parser.keyword("SUBSTR") || parser.keyword("SUBSTRING"))
+        || !parser.take(Token::LParen)
+    {
+        return Err(ParseError("expected SUBSTR or SUBSTRING(".into()));
+    }
+    let column = projected(parser)?;
+    if column.name == "*" {
+        return Err(ParseError("SUBSTRING requires a source column".into()));
+    }
+    let comma = parser.take(Token::Comma);
+    if !comma && !parser.keyword("FROM") {
+        return Err(ParseError("SUBSTRING requires FROM or comma".into()));
+    }
+    let start = bound(parser, "SUBSTRING start")?;
+    if !(1..=64).contains(&start) {
+        return Err(ParseError("SUBSTRING start must be in 1..64".into()));
+    }
+    if comma {
+        if !parser.take(Token::Comma) {
+            return Err(ParseError("SUBSTR requires a length".into()));
+        }
+    } else if !parser.keyword("FOR") {
+        return Err(ParseError("SUBSTRING requires FOR".into()));
+    }
+    let length = bound(parser, "SUBSTRING length")?;
+    if length == 0 || length > 64 || !parser.take(Token::RParen) {
+        return Err(ParseError("SUBSTRING length must be in 1..64 with closing ')'".into()));
+    }
+    Ok((column, start, length))
 }
 
 fn parse_join_tokens(
@@ -1383,6 +1419,7 @@ fn parse_join_tokens(
     let mut where_comparison = None;
     let mut where_comparisons_extra = Vec::new();
     let mut where_column_comparisons = Vec::new();
+    let mut where_substring_comparisons = Vec::new();
     let mut where_in_filters = Vec::new();
     let mut where_like_filters = Vec::new();
     let mut scalar_where = None;
@@ -1410,6 +1447,24 @@ fn parse_join_tokens(
                 if count > 16 {
                     return Err(ParseError("JOIN supports at most 16 comparisons".into()));
                 }
+                if matches!(parser.tokens.get(parser.index), Some(Token::Word(name))
+                    if name.eq_ignore_ascii_case("SUBSTR")
+                        || name.eq_ignore_ascii_case("SUBSTRING"))
+                {
+                    let (left, start, length) = parse_join_substring(&mut parser)?;
+                    let operator = parser.operator()?;
+                    if !matches!(operator, crate::Operator::Eq | crate::Operator::Ne
+                        | crate::Operator::Lt | crate::Operator::Le
+                        | crate::Operator::Gt | crate::Operator::Ge)
+                    {
+                        return Err(ParseError("SUBSTRING requires a comparison operator".into()));
+                    }
+                    let (right, right_start, right_length) =
+                        parse_join_substring(&mut parser)?;
+                    where_substring_comparisons.push((
+                        left, start, length, operator, right, right_start, right_length,
+                    ));
+                } else {
                 let column = projected(&mut parser)?;
                 if column.name == "*" {
                     return Err(ParseError("JOIN WHERE requires a column".into()));
@@ -1543,6 +1598,7 @@ fn parse_join_tokens(
                             where_comparisons_extra.push(comparison);
                         }
                     }
+                }
                 }
                 if !parser.keyword("AND") {
                     break;
@@ -1907,6 +1963,24 @@ fn parse_join_tokens(
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
+    if !where_substring_comparisons.is_empty()
+        && (steps.is_empty()
+            || kind != JoinType::Inner
+            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || aggregate.is_some()
+            || scalar_sum.is_some()
+            || scalar_formula.is_some()
+            || grouped_sum.is_some()
+            || grouped_min.is_some()
+            || grouped_formula.is_some()
+            || grouped_distinct.is_some()
+            || !grouped_case_counts.is_empty()
+            || (!order_by.is_empty() && !grouped_count_projection))
+    {
+        return Err(ParseError(
+            "SUBSTRING comparisons require a streaming INNER join chain".into(),
+        ));
+    }
     if (scalar_sum.is_some() || scalar_formula.is_some())
         && (kind != JoinType::Inner
             || steps.iter().any(|step| step.kind != JoinType::Inner)
@@ -2208,6 +2282,7 @@ fn parse_join_tokens(
         where_comparison,
         where_comparisons_extra,
         where_column_comparisons,
+        where_substring_comparisons,
         where_in_filters,
         where_like_filters,
         order_by,

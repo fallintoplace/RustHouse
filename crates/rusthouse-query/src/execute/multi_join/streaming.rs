@@ -75,6 +75,7 @@ struct OutputSpec<'a> {
     null_filter: Option<(usize, bool)>,
     comparisons: &'a [(usize, crate::Operator, typed::Cell)],
     column_comparisons: &'a [(usize, crate::Operator, usize)],
+    substring_comparisons: &'a [BoundSubstringComparison],
     group_indices: Option<Vec<usize>>,
     avg_indices: Vec<usize>,
     group_year: Option<usize>,
@@ -124,6 +125,42 @@ fn compare_sum_values(
     }
 }
 
+// SUBSTRING uses bounded 1-based byte offsets, matching the scalar path.
+// NULL comparisons cannot satisfy WHERE; empty suffixes remain valid values.
+fn substring_bytes(value: &typed::Cell, start: usize, length: usize) -> Option<&[u8]> {
+    let typed::Cell::Text(bytes) = value else {
+        return None;
+    };
+    let from = (start - 1).min(bytes.len());
+    let to = from.saturating_add(length).min(bytes.len());
+    let part = &bytes[from..to];
+    std::str::from_utf8(part).ok()?;
+    Some(part)
+}
+
+fn passes_substring(
+    row: &[typed::Cell],
+    &(left, left_start, left_len, operator, right, right_start, right_len):
+        &BoundSubstringComparison,
+) -> bool {
+    let (Some(left), Some(right)) = (
+        substring_bytes(&row[left], left_start, left_len),
+        substring_bytes(&row[right], right_start, right_len),
+    ) else {
+        return false;
+    };
+    let ordering = left.cmp(right);
+    match operator {
+        crate::Operator::Eq => ordering.is_eq(),
+        crate::Operator::Ne => ordering.is_ne(),
+        crate::Operator::Lt => ordering.is_lt(),
+        crate::Operator::Le => ordering.is_le(),
+        crate::Operator::Gt => ordering.is_gt(),
+        crate::Operator::Ge => ordering.is_ge(),
+        _ => false,
+    }
+}
+
 fn group_value(row: &[typed::Cell], index: usize, year: bool) -> typed::Cell {
     if !year {
         return row[index].clone();
@@ -165,6 +202,13 @@ fn visit<W: Write>(
             .all(|(left, operator, right)| {
                 typed::matches_comparison(&row[*left], &row[*right], *operator)
             })
+        {
+            return Ok(());
+        }
+        if !spec
+            .substring_comparisons
+            .iter()
+            .all(|filter| passes_substring(row, filter))
         {
             return Ok(());
         }
@@ -457,6 +501,7 @@ pub(super) fn execute<W: Write>(
     initial_step: &JoinStep,
     comparisons: &[(usize, crate::Operator, typed::Cell)],
     column_comparisons: &[(usize, crate::Operator, usize)],
+    substring_comparisons: &[BoundSubstringComparison],
     sum: Option<&BoundSum>,
     formula: Option<&BoundFormula>,
     distinct_index: Option<usize>,
@@ -505,6 +550,7 @@ pub(super) fn execute<W: Write>(
         null_filter,
         comparisons,
         column_comparisons,
+        substring_comparisons,
         sum,
         scalar_sum: query.scalar_sum.is_some(),
         grouped_min: query.grouped_min.is_some(),
@@ -567,6 +613,10 @@ pub(super) fn execute<W: Write>(
     for (left, _, right) in column_comparisons {
         referenced[*left] = true;
         referenced[*right] = true;
+    }
+    for &(left, _, _, _, right, _, _) in substring_comparisons {
+        referenced[left] = true;
+        referenced[right] = true;
     }
     if let Some(sum) = sum {
         for &index in &sum.indices {
