@@ -17,6 +17,18 @@ fn append_decoded<T, const WIDTH: usize>(
     );
 }
 
+fn read_single_batch<R: Read, T, const WIDTH: usize, const BUFFER_BYTES: usize>(
+    reader: &mut R,
+    batch_bytes: usize,
+    result: &mut Vec<T>,
+    decode: &impl Fn([u8; WIDTH]) -> T,
+) -> io::Result<()> {
+    let mut buffer = [0u8; BUFFER_BYTES];
+    reader.read_exact(&mut buffer[..batch_bytes])?;
+    append_decoded::<T, WIDTH>(result, &buffer[..batch_bytes], decode);
+    Ok(())
+}
+
 pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     reader: &mut R,
     rows: usize,
@@ -40,17 +52,13 @@ pub(crate) fn read_fixed_width<R: Read, T, const WIDTH: usize>(
     const SMALL_BYTES: usize = 512;
     let batch_bytes = rows * WIDTH;
     if batch_bytes <= SMALL_BYTES {
-        let mut buffer = [0u8; SMALL_BYTES];
-        reader.read_exact(&mut buffer[..batch_bytes])?;
-        append_decoded::<T, WIDTH>(&mut result, &buffer[..batch_bytes], &decode);
+        read_single_batch::<R, T, WIDTH, SMALL_BYTES>(reader, batch_bytes, &mut result, &decode)?;
         return Ok(result);
     }
     // Medium marks should not zero the bulk 64 KiB buffer either.
     const MEDIUM_BYTES: usize = 8 * 1024;
     if batch_bytes <= MEDIUM_BYTES {
-        let mut buffer = [0u8; MEDIUM_BYTES];
-        reader.read_exact(&mut buffer[..batch_bytes])?;
-        append_decoded::<T, WIDTH>(&mut result, &buffer[..batch_bytes], &decode);
+        read_single_batch::<R, T, WIDTH, MEDIUM_BYTES>(reader, batch_bytes, &mut result, &decode)?;
         return Ok(result);
     }
     let mut buffer = [0u8; READ_BUFFER_BYTES];
