@@ -54,6 +54,7 @@ type GroupRow = (
     Option<super::super::Number>,
     Option<HashSet<typed::Key>>,
     Option<Box<[Option<super::super::Number>]>>,
+    Option<Box<[(Option<super::super::Number>, u64)]>>,
 );
 
 #[derive(Default)]
@@ -75,6 +76,7 @@ struct OutputSpec<'a> {
     comparisons: &'a [(usize, crate::Operator, typed::Cell)],
     column_comparisons: &'a [(usize, crate::Operator, usize)],
     group_indices: Option<Vec<usize>>,
+    avg_indices: Vec<usize>,
     group_year: Option<usize>,
     sum: Option<&'a BoundSum>,
     scalar_sum: bool,
@@ -225,6 +227,14 @@ fn visit<W: Write>(
                 }
                 None => None,
             };
+            let mut average_values = [None; 8];
+            for (index, &column) in spec.avg_indices.iter().enumerate() {
+                average_values[index] = match &row[column] {
+                    typed::Cell::Numeric(value) => Some(*value),
+                    typed::Cell::Null => None,
+                    _ => return Err(invalid("grouped AVG requires numeric values")),
+                };
+            }
             let mut formula_values = [None; 8];
             if let Some(formula) = spec.grouped_formula {
                 for (index, sum) in formula.sums.iter().enumerate() {
@@ -232,8 +242,29 @@ fn visit<W: Write>(
                         super::super::multi_aggregate::eval_row_arithmetic(&sum.expression, row)?;
                 }
             }
-            if let Some((_, count, sum, _, sums)) = state.groups.get_mut(state.group_key.as_slice())
+            if let Some((_, count, sum, _, sums, avgs)) =
+                state.groups.get_mut(state.group_key.as_slice())
             {
+                if let Some(avgs) = avgs {
+                    for (index, value) in average_values
+                        .iter()
+                        .enumerate()
+                        .take(spec.avg_indices.len())
+                    {
+                        if let Some(value) = value {
+                            avgs[index].0 = Some(match avgs[index].0 {
+                                Some(previous) => {
+                                    super::super::checked_aggregate_sum(previous, *value)?
+                                }
+                                None => *value,
+                            });
+                            avgs[index].1 = avgs[index]
+                                .1
+                                .checked_add(1)
+                                .ok_or_else(|| invalid("grouped AVG count overflow"))?;
+                        }
+                    }
+                }
                 if let Some(formula) = spec.grouped_formula {
                     let sums = sums.as_mut().expect("grouped formula sums exist");
                     for (index, value) in formula_values.iter().enumerate().take(formula.sums.len())
@@ -293,6 +324,7 @@ fn visit<W: Write>(
                             Option<super::super::Number>,
                             Option<HashSet<typed::Key>>,
                             Option<Box<[Option<super::super::Number>]>>,
+                            Option<Box<[(Option<super::super::Number>, u64)]>>,
                         )>())
                     })
                     .ok_or_else(|| invalid("chained JOIN group size overflow"))?;
@@ -305,7 +337,13 @@ fn visit<W: Write>(
                             16 + formula.sums.len()
                                 * std::mem::size_of::<Option<super::super::Number>>()
                         });
-                        bytes.checked_add(extra)
+                        let avg_extra = if spec.avg_indices.is_empty() {
+                            0
+                        } else {
+                            16 + spec.avg_indices.len()
+                                * std::mem::size_of::<(Option<super::super::Number>, u64)>()
+                        };
+                        bytes.checked_add(extra).and_then(|bytes| bytes.checked_add(avg_extra))
                     })
                     .filter(|&bytes| bytes <= MAX_STREAM_GROUP_BYTES)
                     .ok_or_else(|| invalid("chained JOIN grouped memory budget exceeded"))?;
@@ -327,13 +365,20 @@ fn visit<W: Write>(
                                 .to_vec()
                                 .into_boxed_slice()
                         }),
+                        (!spec.avg_indices.is_empty()).then(|| {
+                            average_values[..spec.avg_indices.len()]
+                                .iter()
+                                .map(|value| (*value, u64::from(value.is_some())))
+                                .collect::<Vec<_>>()
+                                .into_boxed_slice()
+                        }),
                     ),
                 );
             }
             if let Some(index) = spec.distinct_index {
                 if !matches!(row[index], typed::Cell::Null) {
                     let key = row[index].key();
-                    let (_, count, _, distinct, _) = state
+                    let (_, count, _, distinct, _, _) = state
                         .groups
                         .get_mut(state.group_key.as_slice())
                         .expect("group exists");
@@ -434,6 +479,23 @@ pub(super) fn execute<W: Write>(
         .as_ref()
         .map(|(column, not_null)| column_index(relations, column).map(|index| (index, *not_null)))
         .transpose()?;
+    let avg_indices = query
+        .grouped_avg_metrics
+        .iter()
+        .map(|(column, _)| {
+            let index = column_index(relations, column)?;
+            let kind = typed::base_type(column_type(relations, index));
+            if !matches!(
+                kind,
+                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
+                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
+                    | "Float32" | "Float64"
+            ) {
+                return Err(invalid("grouped JOIN AVG requires numeric columns"));
+            }
+            Ok(index)
+        })
+        .collect::<Result<Vec<_>, ExecutionError>>()?;
     let spec = OutputSpec {
         selected: &selected,
         types: relations
@@ -466,6 +528,7 @@ pub(super) fn execute<W: Write>(
             .grouped_count
             .as_ref()
             .map(|_| selected.iter().map(|(index, _, _)| *index).collect()),
+        avg_indices,
         offset: query.offset,
         limit: query.limit,
     };
@@ -518,6 +581,9 @@ pub(super) fn execute<W: Write>(
         }
     }
     if let Some(index) = distinct_index {
+        referenced[index] = true;
+    }
+    for &index in &spec.avg_indices {
         referenced[index] = true;
     }
     if let Some(filters) = row_filters {
@@ -792,8 +858,38 @@ pub(super) fn execute<W: Write>(
         write_group_header(query, &selected, output)?;
         let mut write_group = |values: &[typed::Cell],
                                count: u64,
-                               sum: Option<super::super::Number>|
+                               sum: Option<super::super::Number>,
+                               averages: Option<&[(Option<super::super::Number>, u64)]>|
          -> Result<(), ExecutionError> {
+            if !query.grouped_avg_metrics.is_empty() {
+                let averages = averages.expect("grouped AVG states allocated");
+                for (index, value) in values.iter().enumerate() {
+                    if index > 0 {
+                        output.write_all(b"\t")?;
+                    }
+                    let source = selected[index].0;
+                    typed::write_typed_value(output, value, spec.types[source])?;
+                }
+                for &(sum, observations) in averages {
+                    output.write_all(b"\t")?;
+                    let value = match (sum, observations) {
+                        (Some(sum), count) if count > 0 => {
+                            let numeric = match sum {
+                                super::super::Number::Unsigned(value) => value as f64,
+                                super::super::Number::Signed(value) => value as f64,
+                                super::super::Number::Float(value) => value,
+                            };
+                            typed::Cell::Numeric(super::super::Number::Float(
+                                numeric / count as f64,
+                            ))
+                        }
+                        _ => typed::Cell::Null,
+                    };
+                    typed::write_value(output, &value)?;
+                }
+                writeln!(output)?;
+                return Ok(());
+            }
             let metric = query.grouped_sum_position.unwrap_or(values.len());
             for index in 0..=values.len() {
                 if index > 0 {
@@ -823,17 +919,17 @@ pub(super) fn execute<W: Write>(
         };
         if let Some(positions) = bounded {
             for index in positions.into_iter().skip(query.offset) {
-                let (values, count, sum, _, _) = &rows[index];
-                write_group(values, *count, *sum)?;
+                let (values, count, sum, _, _, avgs) = &rows[index];
+                write_group(values, *count, *sum, avgs.as_deref())?;
             }
         } else {
             rows.sort_by(compare);
-            for (values, count, sum, _, _) in rows
+            for (values, count, sum, _, _, avgs) in rows
                 .iter()
                 .skip(query.offset)
                 .take(query.limit.unwrap_or(usize::MAX))
             {
-                write_group(values, *count, *sum)?;
+                write_group(values, *count, *sum, avgs.as_deref())?;
             }
         }
     }

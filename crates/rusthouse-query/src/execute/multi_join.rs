@@ -105,6 +105,20 @@ fn write_group_header<W: Write>(
     selected: &[(usize, String, Option<usize>)],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if !query.grouped_avg_metrics.is_empty() {
+        for (_, name, _) in selected {
+            output.write_all(name.as_bytes())?;
+            output.write_all(b"\t")?;
+        }
+        for (index, (_, name)) in query.grouped_avg_metrics.iter().enumerate() {
+            if index > 0 {
+                output.write_all(b"\t")?;
+            }
+            output.write_all(name.as_bytes())?;
+        }
+        output.write_all(b"\n")?;
+        return Ok(());
+    }
     let metric = query.grouped_sum_position.unwrap_or(selected.len());
     for index in 0..=selected.len() {
         if index > 0 {

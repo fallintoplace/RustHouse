@@ -154,6 +154,8 @@ pub struct JoinSelect {
     pub grouped_sum: Option<GroupedSum>,
     /// A numeric MIN over an INNER join.
     pub grouped_min: Option<JoinColumn>,
+    /// Independently nullable numeric AVG metrics over grouped INNER join chains.
+    pub grouped_avg_metrics: Vec<(JoinColumn, String)>,
     /// Arithmetic over grouped SUM expressions.
     pub grouped_formula: Option<JoinAggregateFormula>,
     /// Position and alias of an EXTRACT(YEAR FROM date) grouping key.
@@ -854,6 +856,7 @@ fn parse_join_tokens(
     let mut grouped_case_counts = Vec::new();
     let mut grouped_sum = None;
     let mut grouped_min = None;
+    let mut grouped_avg_metrics = Vec::new();
     let mut grouped_formula = None;
     let mut grouped_year: Option<(usize, String)> = None;
     let mut grouped_key_aliases: Vec<(usize, String)> = Vec::new();
@@ -905,6 +908,45 @@ fn parse_join_tokens(
                 columns.push(column);
             }
             if !parser.take(Token::Comma) {
+                break;
+            }
+            if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("AVG"))
+                && matches!(parser.tokens.get(parser.index + 1), Some(Token::LParen))
+            {
+                loop {
+                    if grouped_avg_metrics.len() == 8 {
+                        return Err(ParseError("JOIN supports at most 8 grouped AVG metrics".into()));
+                    }
+                    if !parser.keyword("AVG") || !parser.take(Token::LParen) {
+                        return Err(ParseError("grouped JOIN expects AVG(".into()));
+                    }
+                    let column = projected(&mut parser)?;
+                    if column.name == "*" || !parser.take(Token::RParen) {
+                        return Err(ParseError("grouped JOIN AVG requires one column".into()));
+                    }
+                    let alias = if parser.keyword("AS") {
+                        parser.bounded_word()?
+                    } else {
+                        format!("avg({})", column.display_name())
+                    };
+                    if grouped_avg_metrics.iter().any(|(_, previous): &(JoinColumn, String)| {
+                        previous.eq_ignore_ascii_case(&alias)
+                    }) || grouped_key_aliases.iter().any(|(_, key)| {
+                        key.eq_ignore_ascii_case(&alias)
+                    }) {
+                        return Err(ParseError("duplicate or ambiguous grouped AVG alias".into()));
+                    }
+                    grouped_avg_metrics.push((column, alias));
+                    if !parser.take(Token::Comma) {
+                        break;
+                    }
+                    if !matches!(parser.tokens.get(parser.index), Some(Token::Word(name))
+                        if name.eq_ignore_ascii_case("AVG"))
+                    {
+                        return Err(ParseError("grouped AVG projection expects another AVG".into()));
+                    }
+                }
+                grouped_count_projection = true;
                 break;
             }
             if matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("SUM"))
@@ -1933,6 +1975,23 @@ fn parse_join_tokens(
             "JOIN grouped CASE requires one key and two INNER inputs".into(),
         ));
     }
+    if !grouped_avg_metrics.is_empty() {
+        if steps.is_empty()
+            || kind != JoinType::Inner
+            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || grouped_sum.is_some()
+            || grouped_min.is_some()
+            || grouped_formula.is_some()
+            || grouped_distinct.is_some()
+            || grouped_count_column.is_some()
+            || !grouped_case_counts.is_empty()
+            || order_by.iter().any(|(column, _, _)| column.is_count_order())
+        {
+            return Err(ParseError(
+                "multiple grouped AVGs require an INNER join chain with key ordering".into(),
+            ));
+        }
+    }
     if grouped_distinct.is_some()
         && (kind != JoinType::Inner || steps.iter().any(|step| step.kind != JoinType::Inner))
     {
@@ -2131,6 +2190,7 @@ fn parse_join_tokens(
         grouped_case_counts,
         grouped_sum,
         grouped_min,
+        grouped_avg_metrics,
         grouped_formula,
         grouped_year,
         grouped_key_aliases,
