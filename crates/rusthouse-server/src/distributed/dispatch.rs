@@ -3,6 +3,14 @@ use crate::cluster::Peer;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+fn run_peer<T>(
+    peer: Peer,
+    work: &impl Fn(Peer) -> Result<T, String>,
+) -> Result<T, String> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(peer)))
+        .unwrap_or_else(|_| Err("peer query panicked".into()))
+}
+
 /// Run all peers at bounded concurrency, retaining the configured peer order.
 ///
 /// Claim indices dynamically to avoid head-of-line blocking between fixed
@@ -36,10 +44,7 @@ fn map_peers_bounded_impl<T: Send + Sync>(
     // The common one-peer case does not need a new scoped OS thread.
     // Keep the same panic isolation and error slot semantics as workers.
     if let [peer] = peers {
-        return vec![
-            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(*peer)))
-                .unwrap_or_else(|_| Err("peer query panicked".into())),
-        ];
+        return vec![run_peer(*peer, &work)];
     }
     let cursor = AtomicUsize::new(0);
     let cancelled = AtomicBool::new(false);
@@ -50,8 +55,7 @@ fn map_peers_bounded_impl<T: Send + Sync>(
         if index >= peers.len() || (fail_fast && cancelled.load(Ordering::Acquire)) {
             break;
         }
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(peers[index])))
-            .unwrap_or_else(|_| Err("peer query panicked".into()));
+        let result = run_peer(peers[index], &work);
         if fail_fast && result.is_err() {
             cancelled.store(true, Ordering::Release);
         }
