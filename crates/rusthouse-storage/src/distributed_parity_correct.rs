@@ -20,6 +20,34 @@ fn gf256_mul(mut left: u8, mut right: u8) -> u8 {
     result
 }
 
+fn verify_syndrome(
+    current: &DoubleParity,
+    parity: &DoubleParity,
+    coefficient: u8,
+    candidate_len: usize,
+) -> Result<(), &'static str> {
+    let width = parity.xor.len();
+    if width < 1024 {
+        for offset in 0..width {
+            let p = current.xor[offset] ^ parity.xor[offset];
+            let q = current.weighted[offset] ^ parity.weighted[offset];
+            if gf256_mul(coefficient, p) != q || (offset >= candidate_len && p != 0) {
+                return Err("uncorrectable dual-parity syndrome");
+            }
+        }
+    } else {
+        let products: [u8; 256] = std::array::from_fn(|byte| gf256_mul(coefficient, byte as u8));
+        for offset in 0..width {
+            let p = current.xor[offset] ^ parity.xor[offset];
+            let q = current.weighted[offset] ^ parity.weighted[offset];
+            if products[usize::from(p)] != q || (offset >= candidate_len && p != 0) {
+                return Err("uncorrectable dual-parity syndrome");
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Diagnose and correct exactly one unknown data corruption using P/Q parity.
 ///
 /// Returns None if the supplied data reproduces both parity shards. If P/Q
@@ -63,24 +91,7 @@ pub fn correct_one_unknown_corruption(
         coefficient = gf256_mul(coefficient, 2);
     }
     let (index, coefficient) = candidate.ok_or("uncorrectable dual-parity syndrome")?;
-    if width < 1024 {
-        for offset in 0..width {
-            let p = current.xor[offset] ^ parity.xor[offset];
-            let q = current.weighted[offset] ^ parity.weighted[offset];
-            if gf256_mul(coefficient, p) != q || (offset >= shards[index].len() && p != 0) {
-                return Err("uncorrectable dual-parity syndrome");
-            }
-        }
-    } else {
-        let products: [u8; 256] = std::array::from_fn(|byte| gf256_mul(coefficient, byte as u8));
-        for offset in 0..width {
-            let p = current.xor[offset] ^ parity.xor[offset];
-            let q = current.weighted[offset] ^ parity.weighted[offset];
-            if products[usize::from(p)] != q || (offset >= shards[index].len() && p != 0) {
-                return Err("uncorrectable dual-parity syndrome");
-            }
-        }
-    }
+    verify_syndrome(&current, parity, coefficient, shards[index].len())?;
     let restored = shards[index]
         .iter()
         .zip(current.xor.iter().zip(&parity.xor))
