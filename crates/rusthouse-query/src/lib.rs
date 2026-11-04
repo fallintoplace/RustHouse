@@ -647,26 +647,28 @@ impl Parser {
             return Ok("0".into());
         }
         let is_number = matches!(self.tokens.get(self.index), Some(Token::Number(_)));
-        let value = match self.tokens.get(self.index) {
+        let mut value = match self.tokens.get(self.index) {
             Some(Token::Number(value) | Token::String(value)) => value.clone(),
             _ => return Err(ParseError("expected a SQL literal".into())),
         };
         self.index += 1;
         if is_number {
-            let subtract = if self.take(Token::Plus) {
-                Some(false)
-            } else if self.take(Token::Minus) {
-                Some(true)
-            } else {
-                None
-            };
-            if let Some(subtract) = subtract {
+            loop {
+                let subtract = if self.take(Token::Plus) {
+                    Some(false)
+                } else if self.take(Token::Minus) {
+                    Some(true)
+                } else {
+                    None
+                };
+                let Some(subtract) = subtract else {
+                    break;
+                };
                 let Some(Token::Number(right)) = self.tokens.get(self.index) else {
                     return Err(ParseError("numeric arithmetic requires a literal".into()));
                 };
-                let result = literal::arithmetic(&value, right, subtract)?;
+                value = literal::arithmetic(&value, right, subtract)?;
                 self.index += 1;
-                return Ok(result);
             }
         }
         Ok(value)
