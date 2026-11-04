@@ -177,7 +177,14 @@ impl<'a> Parser<'a> {
         let mut output = String::new();
         let mut start = self.offset;
         loop {
-            let byte = self.next().ok_or("unterminated JSON string")?;
+            // Once a string contains an escape, forward the ordinary UTF-8
+            // between escapes as a span instead of branching per byte.
+            let plain = self.bytes()[self.offset..]
+                .iter()
+                .position(|&byte| byte == b'"' || byte == b'\\' || byte < 0x20)
+                .ok_or("unterminated JSON string")?;
+            self.offset += plain;
+            let byte = self.bytes()[self.offset];
             if byte == b'"' {
                 output.push_str(&self.text[start..self.offset]);
                 self.offset += 1;
@@ -185,10 +192,6 @@ impl<'a> Parser<'a> {
             }
             if byte < 0x20 {
                 return Err("unescaped control character in JSON string");
-            }
-            if byte != b'\\' {
-                self.offset += 1;
-                continue;
             }
             output.push_str(&self.text[start..self.offset]);
             self.offset += 1;
@@ -417,6 +420,16 @@ mod tests {
         );
         assert!(parse_json("{\"bad\":\"unterminated").is_err());
         assert!(parse_json("{\"bad\":\"unescaped\ncontrol\"}").is_err());
+    }
+
+    #[test]
+    fn long_spans_around_json_escapes_preserve_utf8() {
+        let before = "café".repeat(4096);
+        let after = "東京".repeat(4096);
+        let json = format!(r#"{{"value":"{}\n{}"}}"#, before, after);
+        let value = parse_json(&json).unwrap();
+        let expected = format!("{before}\n{after}");
+        assert_eq!(value.at_path("value").unwrap().as_string(), Some(expected.as_str()));
     }
 
     #[test]
