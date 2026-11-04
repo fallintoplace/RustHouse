@@ -33,6 +33,14 @@ fn grouped_aggregate_keeps_quoted_output_name() {
 }
 
 #[test]
+fn multiple_aggregates_keep_quoted_output_names() {
+    assert_eq!(
+        run("SELECT COUNT(*) AS \"order count\", SUM(number) AS \"number sum\" FROM numbers(4)"),
+        "order count\tnumber sum\n4\t6\n"
+    );
+}
+
+#[test]
 fn joined_group_aliases_with_spaces_are_output_only() {
     let query = parse_join(
         "SELECT l.region AS \"region name\", COUNT(*) AS \"order count\" FROM lefts l INNER JOIN rights r ON l.id = r.id GROUP BY l.region",

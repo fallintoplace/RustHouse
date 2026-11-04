@@ -535,7 +535,7 @@ impl Parser {
     }
 
     /// Accept multi-word quoted aliases only at output positions.
-    fn output_alias_word(&mut self) -> Result<String, ParseError> {
+    pub(crate) fn output_alias_word(&mut self) -> Result<String, ParseError> {
         if let Some(Token::QuotedAlias(name)) = self.tokens.get(self.index) {
             let name = name.clone();
             self.index += 1;
