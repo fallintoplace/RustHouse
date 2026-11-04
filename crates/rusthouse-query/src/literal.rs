@@ -48,14 +48,18 @@ pub(super) fn arithmetic(left: &str, right: &str, subtract: bool) -> Result<Stri
     Ok(format_decimal(value, scale))
 }
 
-/// Add calendar years while preserving month/day, clamping Feb 29 to Feb 28.
-pub(super) fn add_date_years(date: &str, years: i64) -> Result<String, ParseError> {
+fn parse_valid_date_year(date: &str) -> Result<i64, ParseError> {
     if rusthouse_storage::parse_date(date).is_none() {
         return Err(ParseError("invalid DATE constant".into()));
     }
-    let year = date[..4]
+    date[..4]
         .parse::<i64>()
-        .map_err(|_| ParseError("invalid DATE year".into()))?;
+        .map_err(|_| ParseError("invalid DATE year".into()))
+}
+
+/// Add calendar years while preserving month/day, clamping Feb 29 to Feb 28.
+pub(super) fn add_date_years(date: &str, years: i64) -> Result<String, ParseError> {
+    let year = parse_valid_date_year(date)?;
     let year = year
         .checked_add(years)
         .ok_or_else(|| ParseError("DATE interval overflow".into()))?;
@@ -88,12 +92,7 @@ pub(super) fn add_date_days(date: &str, days: i64) -> Result<String, ParseError>
 
 /// Add whole calendar months, clamping a month-end date when necessary.
 pub(super) fn add_date_months(date: &str, months: i64) -> Result<String, ParseError> {
-    if rusthouse_storage::parse_date(date).is_none() {
-        return Err(ParseError("invalid DATE constant".into()));
-    }
-    let year = date[..4]
-        .parse::<i64>()
-        .map_err(|_| ParseError("invalid DATE year".into()))?;
+    let year = parse_valid_date_year(date)?;
     let month = date[5..7]
         .parse::<i64>()
         .map_err(|_| ParseError("invalid DATE month".into()))?;
