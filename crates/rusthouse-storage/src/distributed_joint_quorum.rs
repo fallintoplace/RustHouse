@@ -29,11 +29,17 @@ fn intersect(
     new_only: u64,
     old_threshold: u64,
     new_threshold: u64,
+    swapped: bool,
 ) -> bool {
     for mask in 0..(1u64 << shared.len()) {
         let mut old_weight = old_only;
         let mut new_weight = new_only;
-        for (index, &(old, new)) in shared.iter().enumerate() {
+        for (index, &(first, second)) in shared.iter().enumerate() {
+            let (old, new) = if swapped {
+                (second, first)
+            } else {
+                (first, second)
+            };
             if mask & (1u64 << index) == 0 {
                 old_weight += old;
             } else {
@@ -81,20 +87,29 @@ pub fn validate_joint_quorums(
         .map(|member| u64::from(member.weight))
         .sum();
     Ok(JointQuorumSafety {
-        writes_intersect: intersect(&shared, before_only, after_only, old.writes, new.writes),
+        writes_intersect: intersect(
+            &shared,
+            before_only,
+            after_only,
+            old.writes,
+            new.writes,
+            false,
+        ),
         old_reads_intersect_new_writes: intersect(
             &shared,
             before_only,
             after_only,
             old.reads,
             new.writes,
+            false,
         ),
         new_reads_intersect_old_writes: intersect(
-            &shared.iter().map(|&(a, b)| (b, a)).collect::<Vec<_>>(),
+            &shared,
             after_only,
             before_only,
             new.reads,
             old.writes,
+            true,
         ),
     })
 }
