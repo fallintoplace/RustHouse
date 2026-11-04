@@ -54,18 +54,7 @@ impl Parser<'_> {
                     let escape = *self.input.get(self.offset).ok_or_else(invalid)?;
                     self.offset += 1;
                     if escape == b'u' {
-                        let first = self.unicode_hex()?;
-                        if (0xD800..=0xDBFF).contains(&first) {
-                            if !self.eat(b'\\') || !self.eat(b'u') {
-                                return Err(invalid());
-                            }
-                            let second = self.unicode_hex()?;
-                            if !(0xDC00..=0xDFFF).contains(&second) {
-                                return Err(invalid());
-                            }
-                        } else if (0xDC00..=0xDFFF).contains(&first) {
-                            return Err(invalid());
-                        }
+                        self.unicode_escape()?;
                     } else if !matches!(
                         escape,
                         b'"' | b'\\' | b'/' | b'b' | b'f' | b'n' | b'r' | b't'
@@ -93,6 +82,22 @@ impl Parser<'_> {
             self.offset += 1;
         }
         Ok(value)
+    }
+
+    fn unicode_escape(&mut self) -> io::Result<()> {
+        let first = self.unicode_hex()?;
+        if (0xD800..=0xDBFF).contains(&first) {
+            if !self.eat(b'\\') || !self.eat(b'u') {
+                return Err(invalid());
+            }
+            let second = self.unicode_hex()?;
+            if !(0xDC00..=0xDFFF).contains(&second) {
+                return Err(invalid());
+            }
+        } else if (0xDC00..=0xDFFF).contains(&first) {
+            return Err(invalid());
+        }
+        Ok(())
     }
 
     fn number(&mut self) -> io::Result<()> {
