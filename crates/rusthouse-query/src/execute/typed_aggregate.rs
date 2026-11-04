@@ -8,7 +8,7 @@ use std::io::Write;
 use std::path::Path;
 
 fn group_limit_error() -> ExecutionError {
-    ExecutionError::Invalid("GROUP BY supports at most 100000 groups".into())
+    ExecutionError::Invalid("GROUP BY supports at most 200000 groups".into())
 }
 
 fn replaces_text_extreme(
@@ -259,7 +259,7 @@ fn update_group_numeric(
     }
 }
 
-const MAX_GROUPS: usize = 100_000;
+const MAX_GROUPS: usize = 200_000;
 const MAX_GROUPED_TEXT_BYTES: usize = 64 * 1024 * 1024;
 
 /// A new String GROUP BY key is owned by the lookup map and output Cell.
@@ -772,6 +772,10 @@ mod nullable_numeric_aggregate_bucket_tests;
 #[cfg(test)]
 #[path = "typed_aggregate/grouped_text_budget_tests.rs"]
 mod grouped_text_budget_tests;
+
+#[cfg(test)]
+#[path = "typed_aggregate/group_limit_tests.rs"]
+mod group_limit_tests;
 
 #[cfg(test)]
 mod direct_unfiltered_aggregate_scan_tests {

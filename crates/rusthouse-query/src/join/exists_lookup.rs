@@ -2,7 +2,7 @@
 use crate::ExecutionError;
 use std::collections::HashMap;
 
-const MAX_KEYS: usize = 100_000;
+const MAX_KEYS: usize = 200_000;
 
 /// Integer keys must use matching signedness on both sides of a correlation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -59,7 +59,7 @@ impl JoinExistsLookup {
         } else {
             if self.rows.len() >= MAX_KEYS {
                 return Err(ExecutionError::Invalid(
-                    "JOIN EXISTS supports at most 100000 keys".into(),
+                    "JOIN EXISTS supports at most 200000 keys".into(),
                 ));
             }
             self.rows.insert(key, value);
