@@ -22,6 +22,12 @@ class NestedLeadingCommentsTests(unittest.TestCase):
         for statement in ("/* never closed SELECT 1", "/*" * 33 + "*/" * 33 + "SELECT 1"):
             self.assertEqual(_leading_sql_keyword(statement), "")
 
+    def test_cte_select_is_found_only_after_nested_query_bodies(self):
+        statement = ("WITH first AS (SELECT 'SELECT' AS value), "
+                     "second AS (SELECT value FROM first) SELECT value FROM second")
+        self.assertEqual(_leading_sql_keyword(statement), "SELECT")
+        self.assertEqual(_leading_sql_keyword("WITH source AS (SELECT 1) DELETE FROM t"), "WITH")
+
     @patch("bench.common.subprocess.run")
     def test_select_format_survives_nested_comments(self, run):
         def execute(command, **kwargs):

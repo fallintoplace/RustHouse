@@ -4,13 +4,15 @@ from mismatch_diagnostics import describe_mismatch
 
 class MismatchDiagnosticTests(unittest.TestCase):
     def test_reports_headers_and_counts(self):
-        self.assertIn("header mismatch",
+        self.assertIn("row 1, column 1",
                       describe_mismatch(b"bad\n1\n", b"good\n1\n", "exact"))
+        self.assertIn("header mismatch",
+                      describe_mismatch(b"wrong\n2\n", b"id\n2\n", "unordered-header"))
         self.assertIn("expected 2, got 1",
-                      describe_mismatch(b"id\n1\n", b"id\n1\n2\n", "exact"))
+                      describe_mismatch(b"1\n", b"1\n2\n", "exact"))
 
     def test_locates_field_without_exposing_values(self):
-        summary = describe_mismatch(b"id\tx\n1\tsecret\n", b"id\tx\n1\tother\n", "exact")
+        summary = describe_mismatch(b"1\tsecret\n", b"1\tother\n", "exact")
         self.assertIn("row 1, column 2", summary)
         self.assertNotIn("secret", summary)
         self.assertNotIn("other", summary)

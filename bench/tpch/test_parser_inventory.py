@@ -22,6 +22,8 @@ class ParserInventoryTests(unittest.TestCase):
 
             report = inventory("unused", source, parse=parse)
             self.assertEqual(report["parsed_queries"], 1)
+            self.assertEqual(report["special_handler_queries"], 0)
+            self.assertEqual(report["recognized_queries"], 1)
             self.assertEqual(report["total_queries"], 22)
             self.assertFalse(report["official_tpch_score"])
             self.assertEqual([r["query"] for r in report["results"]], list(range(1, 23)))
@@ -33,6 +35,20 @@ class ParserInventoryTests(unittest.TestCase):
             self.assertEqual(report["query_sha256"], query_fingerprint([
                 (1, "SELECT 1"), (6, "SELECT failure"),
             ]))
+
+    def test_counts_queries_recognized_by_special_handlers_without_an_ast(self):
+        with tempfile.TemporaryDirectory() as root:
+            source = Path(root)
+            (source / "q15.sql").write_text("WITH revenue AS (SELECT 1) SELECT * FROM revenue")
+            report = inventory(
+                "unused", source,
+                parse=lambda _sql: (False, "error: CTE JOIN cannot use --show-ast or --explain yet"),
+            )
+            self.assertEqual(report["parsed_queries"], 0)
+            self.assertEqual(report["special_handler_queries"], 1)
+            self.assertEqual(report["recognized_queries"], 1)
+            self.assertEqual(report["first_error_groups"], [])
+            self.assertEqual(report["results"][14]["status"], "recognized_by_special_handler")
 
     def test_canonical_option_verifies_source_before_parser(self):
         with tempfile.TemporaryDirectory() as root:

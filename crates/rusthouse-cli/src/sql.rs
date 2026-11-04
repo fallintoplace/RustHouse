@@ -244,8 +244,12 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     }
     // ClickHouse clients may select a supported text encoding directly in SQL.
     // Only inspect SELECT statements; large INSERT payloads have a separate lexer limit.
-    let first_word = query.trim_start().split_ascii_whitespace().next();
-    if first_word.is_some_and(|word| word.eq_ignore_ascii_case("SELECT")) {
+    let starts_with_select = query
+        .trim_start()
+        .split_ascii_whitespace()
+        .next()
+        .is_some_and(|word| word.eq_ignore_ascii_case("SELECT"));
+    if starts_with_select {
         let (statement, inline_format) =
             split_clickhouse_format(&query).map_err(|error| error.to_string())?;
         if let Some(name) = inline_format {
@@ -377,7 +381,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         }
         return Err("--catalog is only supported for DDL statements".into());
     }
-    if first_word.is_some_and(|word| word.eq_ignore_ascii_case("SELECT")) {
+    if starts_with_select {
         if let Some(plan) =
             rusthouse_query::parse_bounded_except(&query).map_err(|error| error.to_string())?
         {

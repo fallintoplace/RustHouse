@@ -58,7 +58,71 @@ def _leading_sql_keyword(statement):
     while end < length and (statement[end].isascii() and
                             (statement[end].isalnum() or statement[end] == "_")):
         end += 1
-    return statement[index:end].upper()
+    keyword = statement[index:end].upper()
+    if keyword == "WITH":
+        return _cte_statement_keyword(statement, end)
+    return keyword
+
+
+def _cte_statement_keyword(statement, index):
+    """Find the outer statement after a WITH clause without reading its SQL."""
+    depth = 0
+    length = len(statement)
+    while index < length:
+        if statement[index] in " \t\r\n\v\f":
+            index += 1
+        elif statement.startswith(("--", "#"), index):
+            while index < length and statement[index] not in "\r\n":
+                index += 1
+        elif statement.startswith("/*", index):
+            comment_depth = 1
+            index += 2
+            while index < length and comment_depth:
+                if statement.startswith("/*", index):
+                    comment_depth += 1
+                    if comment_depth > 32:
+                        return "WITH"
+                    index += 2
+                elif statement.startswith("*/", index):
+                    comment_depth -= 1
+                    index += 2
+                else:
+                    index += 1
+            if comment_depth:
+                return "WITH"
+        elif statement[index] in "'\"`[":
+            opener = statement[index]
+            closer = "]" if opener == "[" else opener
+            index += 1
+            while index < length:
+                if statement[index] == "\\" and opener != "[":
+                    index += 2
+                elif statement[index] == closer:
+                    if index + 1 < length and statement[index + 1] == closer:
+                        index += 2
+                    else:
+                        index += 1
+                        break
+                else:
+                    index += 1
+        elif statement[index] == "(":
+            depth += 1
+            index += 1
+        elif statement[index] == ")":
+            depth = max(0, depth - 1)
+            index += 1
+        elif (statement[index].isascii() and
+              (statement[index].isalnum() or statement[index] == "_")):
+            end = index + 1
+            while end < length and statement[end].isascii() and (
+                    statement[end].isalnum() or statement[end] == "_"):
+                end += 1
+            if depth == 0 and statement[index:end].upper() == "SELECT":
+                return "SELECT"
+            index = end
+        else:
+            index += 1
+    return "WITH"
 
 
 def cli_sql(binary, database, statement, timeout, *, select_format="tsv-no-header"):
