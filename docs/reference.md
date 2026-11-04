@@ -32,7 +32,7 @@ Two-table INNER joins also support one grouping key with up to eight `SUM(CASE W
 - An ordered or non-streaming outer JOIN normally retains up to **32,768 rows per input**, also within the byte limit. Some ordered and RIGHT OUTER paths can stream larger inputs.
 - An unbounded two-table JOIN rejects more than **131,072 matched rows**. Supported paged INNER JOINs can scan more matches without retaining every output row. LIMIT and OFFSET select the returned page.
 
-**Joins with three to eight tables** keep intermediate rows in memory. They have a **64 MiB** retained-row budget and a **131,072 matched-row** limit. This experimental hash join does not spill to disk. See `crates/rusthouse-query/src/join.rs` for the shared limits.
+**Joins with three to eight tables** keep intermediate rows in memory. They have a **128 MiB** retained-row budget and a **131,072 matched-row** limit. This experimental hash join does not spill to disk. See `crates/rusthouse-query/src/join.rs` for the shared limits.
 
 Chained INNER joins support scalar `COUNT(column)` and skip NULL values. This path materializes bounded intermediate rows, so the 131,072 matched-row limit applies.
 
