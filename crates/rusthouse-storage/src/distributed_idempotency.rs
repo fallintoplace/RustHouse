@@ -73,9 +73,7 @@ impl IdempotencyLedger {
         {
             return Err("invalid or regressing replica request");
         }
-        now_ms
-            .checked_add(ttl_ms)
-            .ok_or("idempotency TTL overflow")
+        now_ms.checked_add(ttl_ms).ok_or("idempotency TTL overflow")
     }
 
     pub fn admit(
