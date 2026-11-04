@@ -35,8 +35,7 @@ fn next_hedged_replica<'a>(
         .iter()
         .copied()
         .find(|candidate| {
-            !used.contains(candidate.node.as_str())
-                && !seen_zones.contains(candidate.zone.as_str())
+            !used.contains(candidate.node.as_str()) && !seen_zones.contains(candidate.zone.as_str())
         })
         .or_else(|| {
             eligible
