@@ -65,10 +65,7 @@ impl TransferCreditWindow {
         Ok(frame)
     }
 
-    fn verified_prefix_bytes(
-        &self,
-        acknowledgements: &[(u64, u32)],
-    ) -> Result<u64, &'static str> {
+    fn verified_prefix_bytes(&self, acknowledgements: &[(u64, u32)]) -> Result<u64, &'static str> {
         if acknowledgements.len() > self.frames.len() {
             return Err("too many verified transfer acknowledgements");
         }
