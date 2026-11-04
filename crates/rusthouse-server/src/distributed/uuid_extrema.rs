@@ -39,7 +39,6 @@ fn format_uuid(value: u128) -> String {
     )
 }
 
-
 fn parse_peer_uuid<'a>(
     body: &'a [u8],
     header: &mut Option<&'a [u8]>,
