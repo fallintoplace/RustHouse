@@ -161,6 +161,26 @@ fn passes_substring(
     }
 }
 
+fn fact_side_comparisons(
+    comparisons: &[(usize, crate::Operator, typed::Cell)],
+    fact_width: usize,
+) -> Vec<(usize, crate::Operator, typed::Cell)> {
+    comparisons
+        .iter()
+        .filter(|(index, _, _)| *index < fact_width)
+        .cloned()
+        .collect()
+}
+
+fn passes_fact_comparisons(
+    row: &[typed::Cell],
+    comparisons: &[(usize, crate::Operator, typed::Cell)],
+) -> bool {
+    comparisons.iter().all(|(index, operator, literal)| {
+        typed::matches_comparison(&row[*index], literal, *operator)
+    })
+}
+
 fn group_value(row: &[typed::Cell], index: usize, year: bool) -> typed::Cell {
     if !year {
         return row[index].clone();
@@ -778,6 +798,7 @@ pub(super) fn execute<W: Write>(
         .collect::<Vec<Vec<typed::Key>>>();
     // Reuse the same dependency projection for the fact scan.
     let fact_width = relations[0].names.len();
+    let fact_comparisons = fact_side_comparisons(comparisons, fact_width);
     let projected = &projections[0];
     let projected_names = projected
         .iter()
@@ -799,6 +820,9 @@ pub(super) fn execute<W: Write>(
                 .ok_or_else(|| invalid("JOIN input row count overflow"))?;
             for (position, &column) in projected.iter().enumerate() {
                 row[column] = typed::cell(&batch[position], index);
+            }
+            if !passes_fact_comparisons(&row, &fact_comparisons) {
+                continue;
             }
             visit(
                 0,
@@ -1035,3 +1059,7 @@ mod stream_output_limit_tests;
 #[cfg(test)]
 #[path = "streaming/streaming_hash_budget_tests.rs"]
 mod streaming_hash_budget_tests;
+
+#[cfg(test)]
+#[path = "streaming/fact_comparison_tests.rs"]
+mod fact_comparison_tests;
