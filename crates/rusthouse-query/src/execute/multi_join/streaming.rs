@@ -931,6 +931,17 @@ pub(super) fn execute<W: Write>(
                                sum: Option<super::super::Number>,
                                averages: Option<&[(Option<super::super::Number>, u64)]>|
          -> Result<(), ExecutionError> {
+            if query.grouped_keys_only {
+                for (index, value) in values.iter().enumerate() {
+                    if index != 0 {
+                        output.write_all(b"\t")?;
+                    }
+                    let source = selected[index].0;
+                    typed::write_typed_value(output, value, spec.types[source])?;
+                }
+                writeln!(output)?;
+                return Ok(());
+            }
             if !query.grouped_avg_metrics.is_empty() {
                 let averages = averages.expect("grouped AVG states allocated");
                 for (index, value) in values.iter().enumerate() {

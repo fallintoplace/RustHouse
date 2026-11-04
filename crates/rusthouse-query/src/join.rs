@@ -142,6 +142,8 @@ pub struct JoinSelect {
     pub aggregate_alias: Option<String>,
     /// Exactly one qualified GROUP BY key with COUNT(*) projected last.
     pub grouped_count: Option<Vec<JoinColumn>>,
+    /// Stream distinct projected keys for GROUP BY without an aggregate.
+    pub grouped_keys_only: bool,
     /// Count non-NULL values of this column in grouped joins.
     pub grouped_count_column: Option<JoinColumn>,
     /// Right-side LIKE predicate applied before a grouped LEFT JOIN matches.
@@ -1651,6 +1653,22 @@ fn parse_join_tokens(
     } else {
         None
     };
+    let grouped_keys_only = !grouped_count_projection && group_by.is_some();
+    if grouped_keys_only {
+        if steps.is_empty()
+            || kind != JoinType::Inner
+            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || aggregate.is_some()
+            || columns.as_ref().is_none_or(Vec::is_empty)
+            || grouped_year.is_some()
+        {
+            return Err(ParseError(
+                "GROUP BY without aggregates requires projected keys over chained INNER joins"
+                    .into(),
+            ));
+        }
+        grouped_count_projection = true;
+    }
     let grouped_sum_having = if parser.keyword("HAVING") {
         let metric = grouped_sum
             .as_ref()
@@ -2178,12 +2196,12 @@ fn parse_join_tokens(
                 "chained grouped JOIN COUNT requires INNER joins".into(),
             ));
         }
-        if order_by
-            .iter()
-            .any(|(column, _, _)| !column.is_count_order() && !projected_keys.contains(column))
-        {
+        if order_by.iter().any(|(column, _, _)| {
+            (column.is_count_order() && grouped_keys_only)
+                || (!column.is_count_order() && !projected_keys.contains(column))
+        }) {
             return Err(ParseError(
-                "grouped JOIN ORDER BY must use a group key".into(),
+                "grouped JOIN ORDER BY must use a projected group key or aggregate".into(),
             ));
         }
         if steps.is_empty() {
@@ -2258,6 +2276,7 @@ fn parse_join_tokens(
         aggregate,
         aggregate_alias,
         grouped_count,
+        grouped_keys_only,
         grouped_count_column,
         on_right_like,
         grouped_distinct,

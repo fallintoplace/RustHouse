@@ -105,6 +105,9 @@ fn write_group_header<W: Write>(
     selected: &[(usize, String, Option<usize>)],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if query.grouped_keys_only {
+        return write_join_header(output, selected);
+    }
     if !query.grouped_avg_metrics.is_empty() {
         for (_, name, _) in selected {
             output.write_all(name.as_bytes())?;
