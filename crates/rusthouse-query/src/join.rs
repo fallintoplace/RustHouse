@@ -17,8 +17,8 @@ mod syntax;
 pub(crate) const MAX_BUFFERED_JOIN_ROWS: u64 = 32_768;
 pub(crate) const MAX_STREAM_JOIN_BUILD_ROWS: u64 = 262_144;
 pub(crate) const MAX_JOIN_RESULT_ROWS: usize = 131_072;
-pub(crate) const MAX_JOIN_BUILD_BYTES: usize = 32 * 1024 * 1024;
-pub(crate) const MAX_JOIN_CHAIN_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_JOIN_BUILD_BYTES: usize = 64 * 1024 * 1024;
+pub(crate) const MAX_JOIN_CHAIN_BYTES: usize = 128 * 1024 * 1024;
 
 use self::syntax::*;
 pub use correlated::{
@@ -2660,7 +2660,7 @@ mod tests {
             plan.contains("streaming INNER build <= 262144 rows"),
             "{plan}"
         );
-        assert!(plan.contains("build budget 32 MiB"), "{plan}");
+        assert!(plan.contains("build budget 64 MiB"), "{plan}");
 
         let chained =
             parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id JOIN c z ON y.id = z.id")
@@ -2668,7 +2668,7 @@ mod tests {
                 .unwrap();
         let chain_plan = explain_join(&chained);
         assert!(
-            chain_plan.contains("chained intermediate <= 131072 rows and 64 MiB"),
+            chain_plan.contains("chained intermediate <= 131072 rows and 128 MiB"),
             "{chain_plan}"
         );
     }
