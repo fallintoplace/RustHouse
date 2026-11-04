@@ -20,6 +20,13 @@ pub struct JointCommitObservation {
     pub can_commit: bool,
 }
 
+fn member_weight(members: &[Member], node: &str) -> Option<u64> {
+    members
+        .iter()
+        .find(|member| member.node == node)
+        .map(|member| u64::from(member.weight))
+}
+
 /// Verify every accepted acknowledgement refers to the exact proposed
 /// immutable generation and fingerprint, not only the generation number.
 /// Shared members contribute their own configured weight in each membership.
@@ -51,17 +58,13 @@ pub fn observe_joint_commit(
         if !seen.insert(ack.node) {
             return Err("duplicate joint commit acknowledgement");
         }
-        let old = old_members.iter().find(|m| m.node == ack.node);
-        let new = new_members.iter().find(|m| m.node == ack.node);
+        let old = member_weight(old_members, ack.node);
+        let new = member_weight(new_members, ack.node);
         if old.is_none() && new.is_none() {
             return Err("joint ACK from unrecognized replica");
         }
-        if let Some(member) = old {
-            old_weight += u64::from(member.weight);
-        }
-        if let Some(member) = new {
-            new_weight += u64::from(member.weight);
-        }
+        old_weight += old.unwrap_or(0);
+        new_weight += new.unwrap_or(0);
     }
     let old_quorum = old_weight >= old_policy.writes;
     let new_quorum = new_weight >= new_policy.writes;
