@@ -33,6 +33,37 @@ fn integer(kind: &str) -> bool {
             | "Int128"
     )
 }
+
+// Group keys are unique, so a bounded result needs only the prefix ending
+// at OFFSET + LIMIT rather than a full sort of every group.
+fn sort_group_page<K: Ord>(
+    rows: &mut Vec<(K, u64)>,
+    descending: bool,
+    offset: usize,
+    limit: Option<usize>,
+) {
+    if limit == Some(0) || offset >= rows.len() {
+        rows.clear();
+        return;
+    }
+    let compare = |a: &(K, u64), b: &(K, u64)| {
+        let cmp = if descending {
+            b.1.cmp(&a.1)
+        } else {
+            a.1.cmp(&b.1)
+        };
+        cmp.then_with(|| a.0.cmp(&b.0))
+    };
+    let page_end = offset
+        .saturating_add(limit.unwrap_or(usize::MAX))
+        .min(rows.len());
+    if page_end < rows.len() {
+        rows.select_nth_unstable_by(page_end - 1, &compare);
+        rows.truncate(page_end);
+    }
+    rows.sort_unstable_by(compare);
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     path: Option<&Path>,
@@ -163,14 +194,7 @@ pub(super) fn execute<W: Write>(
         .order_by
         .as_ref()
         .is_some_and(|order| order.descending);
-    rows.sort_by(|a, b| {
-        let cmp = if descending {
-            b.1.cmp(&a.1)
-        } else {
-            a.1.cmp(&b.1)
-        };
-        cmp.then_with(|| a.0.cmp(&b.0))
-    });
+    sort_group_page(&mut rows, descending, query.offset.unwrap_or(0), query.limit);
     output.write_all(header[0])?;
     output.write_all(b"\t")?;
     output.write_all(header[1])?;
@@ -197,4 +221,50 @@ pub(super) fn execute<W: Write>(
         writeln!(output, "\t{count}")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod topk_tests {
+    use super::sort_group_page;
+
+    #[test]
+    fn bounded_case_group_pages_match_full_sort_with_ties() {
+        let groups = (0..128u32)
+            .map(|key| (key, u64::from(key % 9)))
+            .collect::<Vec<_>>();
+        for descending in [false, true] {
+            for (offset, limit) in [
+                (0, Some(1)),
+                (5, Some(11)),
+                (120, Some(20)),
+                (128, None),
+                (0, None),
+                (0, Some(0)),
+            ] {
+                let mut expected = groups.clone();
+                expected.sort_by(|a, b| {
+                    let cmp = if descending {
+                        b.1.cmp(&a.1)
+                    } else {
+                        a.1.cmp(&b.1)
+                    };
+                    cmp.then_with(|| a.0.cmp(&b.0))
+                });
+                let mut actual = groups.clone();
+                sort_group_page(&mut actual, descending, offset, limit);
+                assert_eq!(
+                    actual
+                        .into_iter()
+                        .skip(offset)
+                        .take(limit.unwrap_or(usize::MAX))
+                        .collect::<Vec<_>>(),
+                    expected
+                        .into_iter()
+                        .skip(offset)
+                        .take(limit.unwrap_or(usize::MAX))
+                        .collect::<Vec<_>>()
+                );
+            }
+        }
+    }
 }
