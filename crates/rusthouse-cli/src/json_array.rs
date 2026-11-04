@@ -4,6 +4,16 @@ use std::io::{self, Write};
 
 const MAX_JSON_ROW_BYTES: usize = 4 * 1024 * 1024;
 
+fn ensure_row_budget(buffered: usize, fragment: usize) -> io::Result<()> {
+    if fragment > MAX_JSON_ROW_BYTES.saturating_sub(buffered) {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "JSON object exceeds 4 MiB",
+        ));
+    }
+    Ok(())
+}
+
 fn json_array_row_prefix(first: bool, pretty: bool) -> &'static [u8] {
     match (first, pretty) {
         (true, true) => b"[\n  ",
@@ -102,12 +112,7 @@ impl<W: Write> Write for JsonArraySink<W> {
         if self.row.is_empty() {
             if let Some(row) = bytes.strip_suffix(b"\n") {
                 if !row.contains(&b'\n') {
-                    if row.len() > MAX_JSON_ROW_BYTES {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "JSON object exceeds 4 MiB",
-                        ));
-                    }
+                    ensure_row_budget(0, row.len())?;
                     write_array_item(&mut self.output, row, self.first, self.pretty)?;
                     self.first = false;
                     return Ok(bytes.len());
@@ -121,12 +126,7 @@ impl<W: Write> Write for JsonArraySink<W> {
             } else {
                 chunk
             };
-            if fragment.len() > MAX_JSON_ROW_BYTES.saturating_sub(self.row.len()) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "JSON object exceeds 4 MiB",
-                ));
-            }
+            ensure_row_budget(self.row.len(), fragment.len())?;
             if has_newline && self.row.is_empty() {
                 write_array_item(&mut self.output, fragment, self.first, self.pretty)?;
                 self.first = false;
@@ -197,6 +197,14 @@ impl<W: Write> Write for JsonArrayWriter<W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn row_budget_applies_to_complete_and_fragmented_rows() {
+        assert!(ensure_row_budget(0, MAX_JSON_ROW_BYTES).is_ok());
+        assert!(ensure_row_budget(MAX_JSON_ROW_BYTES, 0).is_ok());
+        assert!(ensure_row_budget(0, MAX_JSON_ROW_BYTES + 1).is_err());
+        assert!(ensure_row_budget(1, MAX_JSON_ROW_BYTES).is_err());
+    }
 
     #[test]
     fn batched_json_objects_skip_row_allocation() {
