@@ -54,13 +54,12 @@ impl IdempotencyLedger {
         Ok(results)
     }
 
-    pub fn admit(
-        &mut self,
-        key: RequestKey,
-        payload_fingerprint: u128,
+    fn validated_expiry(
+        &self,
+        key: &RequestKey,
         now_ms: u64,
         ttl_ms: u64,
-    ) -> Result<Admission, &'static str> {
+    ) -> Result<u64, &'static str> {
         if key.node.is_empty()
             || key.node.len() > 64
             || !key
@@ -74,9 +73,17 @@ impl IdempotencyLedger {
         {
             return Err("invalid or regressing replica request");
         }
-        let expiry = now_ms
-            .checked_add(ttl_ms)
-            .ok_or("idempotency TTL overflow")?;
+        now_ms.checked_add(ttl_ms).ok_or("idempotency TTL overflow")
+    }
+
+    pub fn admit(
+        &mut self,
+        key: RequestKey,
+        payload_fingerprint: u128,
+        now_ms: u64,
+        ttl_ms: u64,
+    ) -> Result<Admission, &'static str> {
+        let expiry = self.validated_expiry(&key, now_ms, ttl_ms)?;
         if self
             .highest_epoch
             .get(&key.node)
