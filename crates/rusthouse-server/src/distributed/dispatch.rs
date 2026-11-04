@@ -3,10 +3,7 @@ use crate::cluster::Peer;
 use std::sync::OnceLock;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
-fn run_peer<T>(
-    peer: Peer,
-    work: &impl Fn(Peer) -> Result<T, String>,
-) -> Result<T, String> {
+fn run_peer<T>(peer: Peer, work: &impl Fn(Peer) -> Result<T, String>) -> Result<T, String> {
     std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| work(peer)))
         .unwrap_or_else(|_| Err("peer query panicked".into()))
 }
