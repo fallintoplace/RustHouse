@@ -6,6 +6,13 @@ use std::collections::VecDeque;
 const MAX_WINDOW: usize = 256;
 const LN_10: f64 = std::f64::consts::LN_10;
 
+fn validate_suspicion_threshold(threshold: f64) -> Result<(), &'static str> {
+    if !threshold.is_finite() || threshold <= 0.0 || threshold > 100.0 {
+        return Err("invalid heartbeat suspicion threshold");
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct HeartbeatDetector {
     last_ms: Option<u64>,
@@ -61,12 +68,8 @@ impl HeartbeatDetector {
         self.intervals_ms.len()
     }
 
-    /// Compute phi = -log10(P(next heartbeat arrives later than elapsed)).
-    ///
-    /// For a memoryless exponential interarrival model this simplifies to
-    /// elapsed / (sample_mean * ln(10)). Return None until the warmup window
-    /// has enough intervals. This is not a Gaussian phi-accrual detector.
-    pub fn phi(&self, now_ms: u64) -> Result<Option<f64>, &'static str> {
+    // Keep the warmup and clock rules identical for both suspicion estimates.
+    fn sampled_elapsed_ms(&self, now_ms: u64) -> Result<Option<(f64, f64)>, &'static str> {
         let Some(last) = self.last_ms else {
             return Ok(None);
         };
@@ -78,14 +81,23 @@ impl HeartbeatDetector {
         }
         let mean_ms = self.sum_intervals as f64 / self.intervals_ms.len() as f64;
         let elapsed = (now_ms - last) as f64;
-        Ok(Some(elapsed / (mean_ms * LN_10)))
+        Ok(Some((mean_ms, elapsed)))
+    }
+
+    /// Compute phi = -log10(P(next heartbeat arrives later than elapsed)).
+    ///
+    /// For a memoryless exponential interarrival model this simplifies to
+    /// elapsed / (sample_mean * ln(10)). Return None until the warmup window
+    /// has enough intervals. This is not a Gaussian phi-accrual detector.
+    pub fn phi(&self, now_ms: u64) -> Result<Option<f64>, &'static str> {
+        Ok(self
+            .sampled_elapsed_ms(now_ms)?
+            .map(|(mean_ms, elapsed)| elapsed / (mean_ms * LN_10)))
     }
 
     /// Evaluate a finite, positive caller threshold without deciding elections.
     pub fn suspicious(&self, now_ms: u64, threshold: f64) -> Result<Option<bool>, &'static str> {
-        if !threshold.is_finite() || threshold <= 0.0 || threshold > 100.0 {
-            return Err("invalid heartbeat suspicion threshold");
-        }
+        validate_suspicion_threshold(threshold)?;
         Ok(self.phi(now_ms)?.map(|phi| phi >= threshold))
     }
 
@@ -99,22 +111,10 @@ impl HeartbeatDetector {
         now_ms: u64,
         threshold: f64,
     ) -> Result<Option<f64>, &'static str> {
-        if !threshold.is_finite() || threshold <= 0.0 || threshold > 100.0 {
-            return Err("invalid heartbeat suspicion threshold");
-        }
-        let Some(last) = self.last_ms else {
-            return Ok(None);
-        };
-        if now_ms < last {
-            return Err("heartbeat suspicion clock moved backwards");
-        }
-        if self.intervals_ms.len() < self.minimum_samples {
-            return Ok(None);
-        }
-        let mean_ms = self.sum_intervals as f64 / self.intervals_ms.len() as f64;
-        let target_elapsed = threshold * mean_ms * LN_10;
-        let elapsed = (now_ms - last) as f64;
-        Ok(Some((target_elapsed - elapsed).max(0.0)))
+        validate_suspicion_threshold(threshold)?;
+        Ok(self.sampled_elapsed_ms(now_ms)?.map(|(mean_ms, elapsed)| {
+            (threshold * mean_ms * LN_10 - elapsed).max(0.0)
+        }))
     }
 
     /// Clear observations after an explicit node restart or epoch change.
