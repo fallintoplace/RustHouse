@@ -429,7 +429,10 @@ mod tests {
         let json = format!(r#"{{"value":"{}\n{}"}}"#, before, after);
         let value = parse_json(&json).unwrap();
         let expected = format!("{before}\n{after}");
-        assert_eq!(value.at_path("value").unwrap().as_string(), Some(expected.as_str()));
+        assert_eq!(
+            value.at_path("value").unwrap().as_string(),
+            Some(expected.as_str())
+        );
     }
 
     #[test]

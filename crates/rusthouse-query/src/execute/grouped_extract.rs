@@ -201,7 +201,12 @@ pub(super) fn execute<W: Write>(
         .order_by
         .as_ref()
         .is_some_and(|order| order.descending);
-    sort_group_page(&mut rows, descending, query.offset.unwrap_or(0), query.limit);
+    sort_group_page(
+        &mut rows,
+        descending,
+        query.offset.unwrap_or(0),
+        query.limit,
+    );
     output.write_all(header[0])?;
     write!(output, "\t{}\t", extract.label)?;
     output.write_all(header[2])?;

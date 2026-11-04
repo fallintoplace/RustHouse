@@ -387,7 +387,9 @@ fn visit<W: Write>(
                             16 + spec.avg_indices.len()
                                 * std::mem::size_of::<(Option<super::super::Number>, u64)>()
                         };
-                        bytes.checked_add(extra).and_then(|bytes| bytes.checked_add(avg_extra))
+                        bytes
+                            .checked_add(extra)
+                            .and_then(|bytes| bytes.checked_add(avg_extra))
                     })
                     .filter(|&bytes| bytes <= MAX_STREAM_GROUP_BYTES)
                     .ok_or_else(|| invalid("chained JOIN grouped memory budget exceeded"))?;
@@ -532,9 +534,18 @@ pub(super) fn execute<W: Write>(
             let kind = typed::base_type(column_type(relations, index));
             if !matches!(
                 kind,
-                "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128"
-                    | "Int8" | "Int16" | "Int32" | "Int64" | "Int128"
-                    | "Float32" | "Float64"
+                "UInt8"
+                    | "UInt16"
+                    | "UInt32"
+                    | "UInt64"
+                    | "UInt128"
+                    | "Int8"
+                    | "Int16"
+                    | "Int32"
+                    | "Int64"
+                    | "Int128"
+                    | "Float32"
+                    | "Float64"
             ) {
                 return Err(invalid("grouped JOIN AVG requires numeric columns"));
             }

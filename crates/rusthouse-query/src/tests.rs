@@ -804,6 +804,8 @@ fn parses_distinct_and_rejects_invalid_projections() {
         "SELECT DISTINCT count(*) FROM part",
         "SELECT DISTINCT sum(id) FROM part",
         "SELECT DISTINCT DISTINCT id FROM part",
+        "SELECT DISTINCT ALL id FROM part",
+        "SELECT ALL DISTINCT id FROM part",
         "SELECT DISTINCT FROM part",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");

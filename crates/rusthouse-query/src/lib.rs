@@ -23,12 +23,12 @@ mod join;
 mod json;
 pub mod memory_budget;
 pub use json::parse_json_each_row_fields;
+mod bounded_except;
 mod lexer;
 mod literal;
 mod multi_aggregate;
 mod scalar;
 mod text_scalar;
-mod bounded_except;
 mod update;
 mod where_parser;
 pub use bounded_except::{ExceptSelect, execute_bounded_except, parse_bounded_except};
@@ -553,10 +553,31 @@ impl Parser {
         let implicit = match self.tokens.get(self.index) {
             Some(Token::QuotedWord(_) | Token::QuotedAlias(_)) => true,
             Some(Token::Word(name)) => ![
-                "FROM", "PREWHERE", "WHERE", "GROUP", "HAVING", "ORDER", "LIMIT",
-                "OFFSET", "FETCH", "FORMAT", "SETTINGS", "RENAME", "JOIN", "INNER",
-                "LEFT", "RIGHT", "FULL", "CROSS", "ON", "USING", "UNION", 
-                "INTERSECT", "EXCEPT", "ALL", "DISTINCT",
+                "FROM",
+                "PREWHERE",
+                "WHERE",
+                "GROUP",
+                "HAVING",
+                "ORDER",
+                "LIMIT",
+                "OFFSET",
+                "FETCH",
+                "FORMAT",
+                "SETTINGS",
+                "RENAME",
+                "JOIN",
+                "INNER",
+                "LEFT",
+                "RIGHT",
+                "FULL",
+                "CROSS",
+                "ON",
+                "USING",
+                "UNION",
+                "INTERSECT",
+                "EXCEPT",
+                "ALL",
+                "DISTINCT",
             ]
             .iter()
             .any(|word| name.eq_ignore_ascii_case(word)),
@@ -1403,6 +1424,17 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         parser.keyword("DISTINCT") || parser.keyword("DISTINCTROW") || parser.keyword("UNIQUE");
     if !distinct {
         parser.keyword("ALL");
+    }
+    if matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word))
+            if ["ALL", "DISTINCT", "DISTINCTROW", "UNIQUE"]
+                .iter()
+                .any(|modifier| word.eq_ignore_ascii_case(modifier))
+    ) {
+        return Err(ParseError(
+            "SELECT accepts only one DISTINCT or ALL modifier".into(),
+        ));
     }
     let top_limit = if parser.keyword("TOP") {
         let parenthesized = parser.take(Token::LParen);

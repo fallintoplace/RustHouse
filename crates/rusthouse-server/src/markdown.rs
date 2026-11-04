@@ -166,10 +166,9 @@ fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     let mut start = 0;
     // Ordinary cell data can be forwarded as a single span. Only actual
     // Markdown/HTML metacharacters and control bytes need a dispatch.
-    while let Some(relative) = field[start..]
-        .iter()
-        .position(|&byte| matches!(byte, b'|' | b'\\' | b'&' | b'<' | b'>') || byte.is_ascii_control())
-    {
+    while let Some(relative) = field[start..].iter().position(|&byte| {
+        matches!(byte, b'|' | b'\\' | b'&' | b'<' | b'>') || byte.is_ascii_control()
+    }) {
         let index = start + relative;
         if start < index {
             output.write_all(&field[start..index])?;

@@ -17,16 +17,15 @@ fn single_projection_alias_without_as_renames_output_and_binds_order() {
         run("SELECT number AS value FROM numbers(3) ORDER BY value DESC LIMIT 1"),
         "value\n2\n"
     );
-    assert_eq!(
-        run("SELECT number FROM numbers(2)"),
-        "number\n0\n1\n"
-    );
+    assert_eq!(run("SELECT number FROM numbers(2)"), "number\n0\n1\n");
 }
 
 #[test]
 fn grouped_metrics_allow_implicit_aliases_and_reject_duplicates() {
     assert_eq!(
-        run("SELECT number, COUNT(*) row_count, SUM(number) total FROM numbers(3) GROUP BY number ORDER BY number"),
+        run(
+            "SELECT number, COUNT(*) row_count, SUM(number) total FROM numbers(3) GROUP BY number ORDER BY number"
+        ),
         "number\trow_count\ttotal\n0\t1\t0\n1\t1\t1\n2\t1\t2\n"
     );
     assert!(

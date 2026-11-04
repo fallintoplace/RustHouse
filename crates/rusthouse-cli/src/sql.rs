@@ -414,9 +414,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                         .write(true)
                         .create_new(true)
                         .open(path)
-                        .map_err(|error| {
-                            format!("cannot create {}: {error}", path.display())
-                        })?,
+                        .map_err(|error| format!("cannot create {}: {error}", path.display()))?,
                 ),
                 None => Box::new(std::io::stdout()),
             };

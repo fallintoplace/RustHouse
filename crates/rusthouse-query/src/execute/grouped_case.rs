@@ -149,16 +149,14 @@ pub(super) fn execute<W: Write>(
             continue;
         }
         let mut fields = line.split(|&byte| byte == b'\t');
-        let (Some(first), Some(flag1), Some(flag2), Some(destination), Some(last), Some(raw_count)) =
-            (
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-                fields.next(),
-            )
-        else {
+        let (Some(first), Some(flag1), Some(flag2), Some(destination), Some(last), Some(raw_count)) = (
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+            fields.next(),
+        ) else {
             return Err(ExecutionError::Invalid("invalid CASE grouping row".into()));
         };
         if fields.next().is_some() {
@@ -212,7 +210,12 @@ pub(super) fn execute<W: Write>(
         .order_by
         .as_ref()
         .is_some_and(|order| order.descending);
-    sort_group_page(&mut rows, descending, query.offset.unwrap_or(0), query.limit);
+    sort_group_page(
+        &mut rows,
+        descending,
+        query.offset.unwrap_or(0),
+        query.limit,
+    );
     output.write_all(header[0])?;
     output.write_all(b"\t")?;
     output.write_all(header[1])?;

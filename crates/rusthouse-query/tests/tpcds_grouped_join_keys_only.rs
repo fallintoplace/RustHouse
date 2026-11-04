@@ -68,12 +68,20 @@ fn grouped_inner_join_chain_emits_distinct_keys_without_count() {
     assert!(query.grouped_keys_only);
     let mut output = Vec::new();
     execute_multi_join(&query, &paths, &mut output).unwrap();
-    assert_eq!(String::from_utf8(output).unwrap(), "region\tf.id\neast\t1\nwest\t2\neast\t3\n");
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "region\tf.id\neast\t1\nwest\t2\neast\t3\n"
+    );
 
-    let query = parse_join(&format!("{base} LIMIT 1 OFFSET 1")).unwrap().unwrap();
+    let query = parse_join(&format!("{base} LIMIT 1 OFFSET 1"))
+        .unwrap()
+        .unwrap();
     let mut output = Vec::new();
     execute_multi_join(&query, &paths, &mut output).unwrap();
-    assert_eq!(String::from_utf8(output).unwrap(), "region\tf.id\nwest\t2\n");
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "region\tf.id\nwest\t2\n"
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
