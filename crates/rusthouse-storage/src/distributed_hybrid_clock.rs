@@ -12,6 +12,10 @@ pub struct HybridClock {
     current: HybridTimestamp,
 }
 
+fn next_logical(value: u32) -> Result<u32, &'static str> {
+    value.checked_add(1).ok_or("hybrid clock logical overflow")
+}
+
 impl HybridClock {
     pub fn new(node: u16, now_ms: u64) -> Self {
         Self {
@@ -55,11 +59,7 @@ impl HybridClock {
         } else {
             HybridTimestamp {
                 physical_ms: self.current.physical_ms,
-                logical: self
-                    .current
-                    .logical
-                    .checked_add(1)
-                    .ok_or("hybrid clock logical overflow")?,
+                logical: next_logical(self.current.logical)?,
                 node: self.current.node,
             }
         };
@@ -80,21 +80,11 @@ impl HybridClock {
         }
         let physical = self.current.physical_ms.max(remote.physical_ms).max(now_ms);
         let logical = if physical == self.current.physical_ms && physical == remote.physical_ms {
-            self.current
-                .logical
-                .max(remote.logical)
-                .checked_add(1)
-                .ok_or("hybrid clock logical overflow")?
+            next_logical(self.current.logical.max(remote.logical))?
         } else if physical == self.current.physical_ms {
-            self.current
-                .logical
-                .checked_add(1)
-                .ok_or("hybrid clock logical overflow")?
+            next_logical(self.current.logical)?
         } else if physical == remote.physical_ms {
-            remote
-                .logical
-                .checked_add(1)
-                .ok_or("hybrid clock logical overflow")?
+            next_logical(remote.logical)?
         } else {
             0
         };
