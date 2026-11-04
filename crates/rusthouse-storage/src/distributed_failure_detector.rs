@@ -112,9 +112,9 @@ impl HeartbeatDetector {
         threshold: f64,
     ) -> Result<Option<f64>, &'static str> {
         validate_suspicion_threshold(threshold)?;
-        Ok(self.sampled_elapsed_ms(now_ms)?.map(|(mean_ms, elapsed)| {
-            (threshold * mean_ms * LN_10 - elapsed).max(0.0)
-        }))
+        Ok(self
+            .sampled_elapsed_ms(now_ms)?
+            .map(|(mean_ms, elapsed)| (threshold * mean_ms * LN_10 - elapsed).max(0.0)))
     }
 
     /// Clear observations after an explicit node restart or epoch change.
