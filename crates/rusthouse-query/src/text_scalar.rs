@@ -1096,18 +1096,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "regexp_substr requires a pattern")?;
             let pattern = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "regexp_substr requires two arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "regexp_substr requires two arguments",
+            )?;
             match (input, pattern) {
                 (Some(input), Some(pattern)) => {
                     if pattern.len() > 4096 {
-                        return Err(ParseError("regexp_substr pattern exceeds 4096 bytes".into()));
+                        return Err(ParseError(
+                            "regexp_substr pattern exceeds 4096 bytes".into(),
+                        ));
                     }
                     let regex = regex::RegexBuilder::new(&pattern)
                         .dot_matches_new_line(false)
                         .case_insensitive(false)
                         .size_limit(2 * 1024 * 1024)
                         .build()
-                        .map_err(|error| ParseError(format!("invalid regexp_substr regex: {error}")))?;
+                        .map_err(|error| {
+                            ParseError(format!("invalid regexp_substr regex: {error}"))
+                        })?;
                     regex.find(&input).map_or(ConstantValue::Null, |found| {
                         ConstantValue::Text(found.as_str().to_owned())
                     })
