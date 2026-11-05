@@ -4357,8 +4357,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     };
                     let mut magnitude = 0_u64;
                     for character in digits.chars() {
-                        let digit = character.to_digit(radix as u32)
-                            .ok_or_else(|| ParseError("from_base contains an invalid digit".into()))?;
+                        let digit = character.to_digit(radix as u32).ok_or_else(|| {
+                            ParseError("from_base contains an invalid digit".into())
+                        })?;
                         magnitude = magnitude
                             .checked_mul(radix as u64)
                             .and_then(|number| number.checked_add(u64::from(digit)))
