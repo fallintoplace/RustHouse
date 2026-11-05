@@ -75,10 +75,14 @@ impl BoundExists {
 pub(super) fn passes_expression(
     expression: &[Vec<usize>],
     filters: &[BoundExists],
+    prechecked: &[usize],
     row: &[typed::Cell],
 ) -> Result<bool, ExecutionError> {
     if expression.is_empty() {
-        for filter in filters {
+        for (index, filter) in filters.iter().enumerate() {
+            if prechecked.contains(&index) {
+                continue;
+            }
             if !filter.passes(row)? {
                 return Ok(false);
             }
@@ -91,6 +95,9 @@ pub(super) fn passes_expression(
             let filter = filters
                 .get(index)
                 .ok_or_else(|| invalid("JOIN EXISTS expression has an unknown filter"))?;
+            if prechecked.contains(&index) {
+                continue;
+            }
             if !filter.passes(row)? {
                 passes = false;
                 break;
@@ -101,6 +108,32 @@ pub(super) fn passes_expression(
         }
     }
     Ok(false)
+}
+
+pub(super) fn fact_prefilters(
+    filters: &[BoundExists],
+    expression: &[Vec<usize>],
+    fact_width: usize,
+) -> Result<Vec<usize>, ExecutionError> {
+    if expression
+        .iter()
+        .flatten()
+        .any(|&index| index >= filters.len())
+    {
+        return Err(invalid("JOIN EXISTS expression has an unknown filter"));
+    }
+    Ok(filters
+        .iter()
+        .enumerate()
+        .filter_map(|(index, filter)| {
+            // A filter can move before the joins only if every OR branch requires it.
+            let mandatory =
+                expression.is_empty() || expression.iter().all(|group| group.contains(&index));
+            let fact_keys = filter.equality < fact_width
+                && filter.inequality.is_none_or(|key| key < fact_width);
+            (mandatory && fact_keys).then_some(index)
+        })
+        .collect())
 }
 
 pub(super) fn bind(
@@ -321,6 +354,41 @@ pub(super) fn bind(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn column(relation: &str, name: &str) -> JoinColumn {
+        JoinColumn {
+            relation: relation.into(),
+            name: name.into(),
+        }
+    }
+
+    fn exists_filter(alias: &str, negated: bool, require_late: bool) -> JoinExistsFilter {
+        JoinExistsFilter {
+            table: "lineitem".into(),
+            alias: alias.into(),
+            negated,
+            equality: (column(alias, "order_id"), column("outer", "order_id")),
+            inequality: Some((column(alias, "supp_id"), column("outer", "supp_id"))),
+            inner_comparisons: if require_late {
+                vec![(
+                    column(alias, "receipt"),
+                    crate::Operator::Gt,
+                    column(alias, "commit"),
+                )]
+            } else {
+                Vec::new()
+            },
+            date_filter: None,
+        }
+    }
+
+    fn outer_row(order: u64, supplier: u64) -> [typed::Cell; 2] {
+        [
+            typed::Cell::Numeric(super::super::super::Number::Unsigned(order.into())),
+            typed::Cell::Numeric(super::super::super::Number::Unsigned(supplier.into())),
+        ]
+    }
+
     #[test]
     fn null_outer_keys_do_not_match_exists_but_do_match_not_exists() {
         let mut lookup = JoinExistsLookup::new(true);
@@ -342,5 +410,167 @@ mod tests {
         filter.negated = true;
         assert!(filter.passes(&[typed::Cell::Null, one.clone()]).unwrap());
         assert!(filter.passes(&[one, typed::Cell::Null]).unwrap());
+    }
+
+    #[test]
+    fn filters_on_one_source_keep_independent_predicates() {
+        use rusthouse_storage::{Column, write_wide_part};
+        use std::fs;
+
+        let part = std::env::temp_dir().join(format!(
+            "rusthouse-correlated-exists-{}-{}",
+            std::process::id(),
+            line!(),
+        ));
+        let _ = fs::remove_dir_all(&part);
+        let columns = [
+            Column {
+                name: "order_id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "supp_id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "receipt".into(),
+                data_type: "Int64".into(),
+            },
+            Column {
+                name: "commit".into(),
+                data_type: "Int64".into(),
+            },
+            Column {
+                name: "date_id".into(),
+                data_type: "UInt64".into(),
+            },
+        ];
+        let rows = [
+            vec![
+                Some("1".into()),
+                Some("10".into()),
+                Some("5".into()),
+                Some("1".into()),
+                Some("2020".into()),
+            ],
+            vec![
+                Some("1".into()),
+                Some("20".into()),
+                Some("2".into()),
+                Some("3".into()),
+                Some("2021".into()),
+            ],
+            vec![
+                Some("2".into()),
+                Some("10".into()),
+                Some("5".into()),
+                Some("1".into()),
+                Some("2020".into()),
+            ],
+        ];
+        write_wide_part(&part, &columns, &rows).unwrap();
+        let calendar = part.with_file_name(format!(
+            "rusthouse-correlated-exists-calendar-{}-{}",
+            std::process::id(),
+            line!(),
+        ));
+        let _ = fs::remove_dir_all(&calendar);
+        let calendar_columns = [
+            Column {
+                name: "date_id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "fiscal_year".into(),
+                data_type: "UInt64".into(),
+            },
+        ];
+        let calendar_rows = [
+            vec![Some("2020".into()), Some("1".into())],
+            vec![Some("2021".into()), Some("2".into())],
+        ];
+        write_wide_part(&calendar, &calendar_columns, &calendar_rows).unwrap();
+        let outer = [Relation {
+            alias: "outer".into(),
+            names: vec!["order_id".into(), "supp_id".into()],
+            types: vec!["UInt64".into(), "UInt64".into()],
+            physical_columns: 2,
+            virtual_columns: Vec::new(),
+            start: 0,
+            rows: 0,
+        }];
+        let mut filters = [
+            exists_filter("all_lines", false, false),
+            exists_filter("late_lines", true, true),
+        ];
+        filters[0].date_filter = Some(crate::JoinExistsDateFilter {
+            table: "calendar".into(),
+            alias: "dates".into(),
+            keys: (column("all_lines", "date_id"), column("dates", "date_id")),
+            select: Box::new(
+                crate::parse_select("SELECT date_id FROM calendar WHERE fiscal_year = 1").unwrap(),
+            ),
+        });
+        let paths = [part.clone(), calendar.clone(), part.clone()];
+        let bound = bind(&filters, &paths, &outer).unwrap();
+
+        let order_one_supplier_ten = outer_row(1, 10);
+        assert!(!bound[0].passes(&order_one_supplier_ten).unwrap());
+        assert!(bound[1].passes(&order_one_supplier_ten).unwrap());
+
+        let order_one_supplier_twenty = outer_row(1, 20);
+        assert!(bound[0].passes(&order_one_supplier_twenty).unwrap());
+        assert!(!bound[1].passes(&order_one_supplier_twenty).unwrap());
+
+        let order_two_supplier_ten = outer_row(2, 10);
+        assert!(!bound[0].passes(&order_two_supplier_ten).unwrap());
+        assert!(bound[1].passes(&order_two_supplier_ten).unwrap());
+        fs::remove_dir_all(calendar).unwrap();
+        fs::remove_dir_all(part).unwrap();
+    }
+
+    #[test]
+    fn fact_prefilters_only_mandatory_filters_with_fact_keys() {
+        let filters = [
+            BoundExists {
+                equality: 0,
+                inequality: Some(1),
+                negated: false,
+                lookup: JoinExistsLookup::new(true),
+            },
+            BoundExists {
+                equality: 0,
+                inequality: None,
+                negated: false,
+                lookup: JoinExistsLookup::new(false),
+            },
+            BoundExists {
+                equality: 2,
+                inequality: None,
+                negated: false,
+                lookup: JoinExistsLookup::new(false),
+            },
+        ];
+        assert_eq!(
+            fact_prefilters(&filters, &[vec![0, 1], vec![0, 2]], 2).unwrap(),
+            vec![0]
+        );
+        assert_eq!(fact_prefilters(&filters, &[], 2).unwrap(), vec![0, 1]);
+        assert!(fact_prefilters(&filters, &[vec![3]], 2).is_err());
+    }
+
+    #[test]
+    fn passes_expression_skips_only_prechecked_mandatory_filters() {
+        let filters = [BoundExists {
+            equality: 0,
+            inequality: None,
+            negated: false,
+            lookup: JoinExistsLookup::new(false),
+        }];
+        let row = [typed::Cell::Numeric(super::super::super::Number::Unsigned(
+            1,
+        ))];
+        assert!(!passes_expression(&[vec![0]], &filters, &[], &row).unwrap());
+        assert!(passes_expression(&[vec![0]], &filters, &[0], &row).unwrap());
     }
 }

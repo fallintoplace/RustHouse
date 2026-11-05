@@ -405,6 +405,7 @@ struct OutputSpec<'a> {
     row_filters: Option<&'a super::row_filters::RowFilters>,
     exists: &'a [super::exists::BoundExists],
     exists_expression: &'a [Vec<usize>],
+    fact_prefiltered_exists: Vec<usize>,
     avg: Option<&'a super::correlated_avg::BoundAvg>,
     correlated_sum: Option<&'a super::correlated_sum::BoundSum>,
     offset: usize,
@@ -688,7 +689,12 @@ fn visit<W: Write>(
                 return Ok(());
             }
         }
-        if !super::exists::passes_expression(spec.exists_expression, spec.exists, row)? {
+        if !super::exists::passes_expression(
+            spec.exists_expression,
+            spec.exists,
+            &spec.fact_prefiltered_exists,
+            row,
+        )? {
             return Ok(());
         }
         if let Some(avg) = spec.avg {
@@ -1426,6 +1432,8 @@ pub(super) fn execute<W: Write>(
             })
             .collect::<Result<Vec<_>, _>>()?
     };
+    let fact_prefiltered_exists =
+        super::exists::fact_prefilters(exists, exists_expression, relations[0].names.len())?;
     let spec = OutputSpec {
         selected: &selected,
         scalar_projections,
@@ -1458,6 +1466,7 @@ pub(super) fn execute<W: Write>(
         row_filters,
         exists,
         exists_expression,
+        fact_prefiltered_exists,
         avg,
         correlated_sum,
         group_year: query.grouped_year.as_ref().map(|(position, _)| *position),
@@ -1808,6 +1817,17 @@ pub(super) fn execute<W: Write>(
                 .as_ref()
                 .is_some_and(|(filters, conditions)| !filters.passes_relation(&row, 0, conditions))
             {
+                continue;
+            }
+            // Reject fact rows before probing dimension hashes or expanding matches.
+            let mut passes_fact_exists = true;
+            for &filter in &spec.fact_prefiltered_exists {
+                if !spec.exists[filter].passes(&row)? {
+                    passes_fact_exists = false;
+                    break;
+                }
+            }
+            if !passes_fact_exists {
                 continue;
             }
             visit(

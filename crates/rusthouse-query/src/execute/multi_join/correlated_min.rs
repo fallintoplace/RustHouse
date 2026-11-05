@@ -26,6 +26,10 @@ pub(super) struct BoundMin {
     values: HashMap<JoinExistsKey, typed::Cell>,
 }
 impl BoundMin {
+    pub(super) fn required_row_width(&self) -> usize {
+        self.outer_key.max(self.outer_value) + 1
+    }
+
     pub(super) fn passes(&self, row: &[typed::Cell]) -> Result<bool, ExecutionError> {
         let Some(key) = super::exists::key(&row[self.outer_key])? else {
             return Ok(false);
