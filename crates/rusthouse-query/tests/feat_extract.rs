@@ -10,9 +10,18 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn extract_handles_constant_inputs() {
     for (sql, expected) in [
-        ("SELECT extract('abc-123','([0-9]+)')", ConstantValue::Text("123".into())),
-        ("SELECT extract('abc123','[0-9]+')", ConstantValue::Text("123".into())),
-        ("SELECT extract('abc','[0-9]+')", ConstantValue::Text("".into())),
+        (
+            "SELECT extract('abc-123','([0-9]+)')",
+            ConstantValue::Text("123".into()),
+        ),
+        (
+            "SELECT extract('abc123','[0-9]+')",
+            ConstantValue::Text("123".into()),
+        ),
+        (
+            "SELECT extract('abc','[0-9]+')",
+            ConstantValue::Text("".into()),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
