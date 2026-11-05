@@ -1,5 +1,7 @@
 use super::*;
 
+type RowPredicate<'a> = dyn FnMut(&[typed::Cell]) -> bool + 'a;
+
 pub(in crate::execute) fn read_rows(
     path: &Path,
     names: &[String],
@@ -156,6 +158,30 @@ pub(in crate::execute) fn read_filtered_projected_build_rows(
         byte_limit,
         None,
         Some(filter),
+        None,
+    )
+}
+
+/// Filter a projected build row before retaining its decoded values.
+pub(in crate::execute) fn read_projected_build_rows_matching(
+    path: &Path,
+    names: &[String],
+    indices: &[usize],
+    expected_rows: u64,
+    row_limit: u64,
+    byte_limit: usize,
+    predicate: &mut RowPredicate<'_>,
+) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
+    read_projected_build_rows_filtered(
+        path,
+        names,
+        indices,
+        expected_rows,
+        row_limit,
+        byte_limit,
+        None,
+        None,
+        Some(predicate),
     )
 }
 
@@ -177,6 +203,7 @@ pub(in crate::execute) fn read_projected_build_rows_using_metadata(
         byte_limit,
         metadata,
         None,
+        None,
     )
 }
 
@@ -192,8 +219,9 @@ fn read_projected_build_rows_filtered(
     byte_limit: usize,
     metadata: Option<&PartMetadata>,
     filter: Option<(usize, crate::Operator, &typed::Cell)>,
+    mut row_filter: Option<&mut RowPredicate<'_>>,
 ) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
-    if filter.is_none() && expected_rows > row_limit {
+    if filter.is_none() && row_filter.is_none() && expected_rows > row_limit {
         return Err(invalid(format!(
             "JOIN supports at most {row_limit} input rows per table"
         )));
@@ -234,12 +262,17 @@ fn read_projected_build_rows_filtered(
                     continue;
                 }
             }
-            if rows.len() >= row_limit as usize {
-                return Err(invalid("JOIN input row limit exceeded"));
-            }
             let mut cells = vec![typed::Cell::Null; names.len()];
             for (column, &full_index) in indices.iter().enumerate() {
                 cells[full_index] = typed::cell(&batch[column], row_index);
+            }
+            if let Some(predicate) = row_filter.as_mut() {
+                if !(**predicate)(&cells) {
+                    continue;
+                }
+            }
+            if rows.len() >= row_limit as usize {
+                return Err(invalid("JOIN input row limit exceeded"));
             }
             let bytes = cells
                 .len()
@@ -291,4 +324,79 @@ pub(in crate::execute) fn count_build_columns(
         columns.push(0);
     }
     columns
+}
+
+#[cfg(test)]
+mod row_filter_limit_tests {
+    use super::*;
+    use rusthouse_storage::{Column, write_wide_part};
+    use std::fs;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    static NEXT_PART: AtomicUsize = AtomicUsize::new(0);
+
+    fn write_rows(values: &[&str]) -> std::path::PathBuf {
+        let part = std::env::temp_dir().join(format!(
+            "rusthouse-join-row-filter-limit-{}-{}",
+            std::process::id(),
+            NEXT_PART.fetch_add(1, Ordering::Relaxed),
+        ));
+        let _ = fs::remove_dir_all(&part);
+        let rows = values
+            .iter()
+            .map(|value| vec![Some((*value).to_owned())])
+            .collect::<Vec<_>>();
+        write_wide_part(
+            &part,
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt8".into(),
+            }],
+            &rows,
+        )
+        .unwrap();
+        part
+    }
+
+    fn matches_one(row: &[typed::Cell]) -> bool {
+        matches!(row.first(), Some(typed::Cell::Numeric(Number::Unsigned(1))))
+    }
+
+    #[test]
+    fn rejected_rows_do_not_exhaust_the_retained_row_limit() {
+        let part = write_rows(&["1", "0", "0"]);
+        let rows = read_projected_build_rows_matching(
+            &part,
+            &["id".into()],
+            &[0],
+            3,
+            1,
+            1024,
+            &mut matches_one,
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(matches_one(&rows[0]));
+        fs::remove_dir_all(part).unwrap();
+    }
+
+    #[test]
+    fn matching_rows_still_enforce_the_retained_row_limit() {
+        let part = write_rows(&["1", "1"]);
+        let result = read_projected_build_rows_matching(
+            &part,
+            &["id".into()],
+            &[0],
+            2,
+            1,
+            1024,
+            &mut matches_one,
+        );
+        let error = match result {
+            Ok(_) => panic!("matching rows should exceed the retained row limit"),
+            Err(error) => error,
+        };
+        assert!(error.to_string().contains("JOIN input row limit exceeded"));
+        fs::remove_dir_all(part).unwrap();
+    }
 }

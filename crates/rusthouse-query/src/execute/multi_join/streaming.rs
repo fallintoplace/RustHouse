@@ -5,7 +5,10 @@ use super::*;
 use rusthouse_storage::TypedQueryReader;
 use std::collections::HashSet;
 
-use super::super::join::{read_filtered_projected_build_rows, read_projected_build_rows};
+use super::super::join::{
+    read_filtered_projected_build_rows, read_projected_build_rows,
+    read_projected_build_rows_matching,
+};
 
 const MAX_STREAM_GROUPS: usize = 100_000;
 const MAX_STREAM_GROUP_BYTES: usize = 64 * 1024 * 1024;
@@ -159,6 +162,26 @@ fn passes_substring(
         crate::Operator::Ge => ordering.is_ge(),
         _ => false,
     }
+}
+
+fn fact_side_comparisons(
+    comparisons: &[(usize, crate::Operator, typed::Cell)],
+    fact_width: usize,
+) -> Vec<(usize, crate::Operator, typed::Cell)> {
+    comparisons
+        .iter()
+        .filter(|(index, _, _)| *index < fact_width)
+        .cloned()
+        .collect()
+}
+
+fn passes_fact_comparisons(
+    row: &[typed::Cell],
+    comparisons: &[(usize, crate::Operator, typed::Cell)],
+) -> bool {
+    comparisons.iter().all(|(index, operator, literal)| {
+        typed::matches_comparison(&row[*index], literal, *operator)
+    })
 }
 
 fn group_value(row: &[typed::Cell], index: usize, year: bool) -> typed::Cell {
@@ -691,14 +714,15 @@ pub(super) fn execute<W: Write>(
         let (left_keys, right_keys) =
             step_keys(step, &relations[..=step_index + 1], relation.start)?;
         let available = MAX_CHAIN_BYTES.saturating_sub(retained);
-        // For all-INNER chains, a conjunctive filter on this dimension
-        // can be applied while scanning its rows, before hash retention.
-        // The same predicate remains in the final visitor for correctness.
+        // Safe relation-local predicates can reject build rows before hash
+        // retention. The full filter still runs in the final visitor.
         let dimension_filter = comparisons.iter().find(|(index, _, _)| {
             index
                 .checked_sub(relation.start)
                 .is_some_and(|local| local < relation.names.len())
         });
+        let row_filter = row_filters
+            .filter(|filters| filters.can_prefilter_relation(relation.start, relation.names.len()));
         let right_rows = if let Some((index, operator, value)) = dimension_filter {
             read_filtered_projected_build_rows(
                 &paths[step_index + 1],
@@ -708,6 +732,17 @@ pub(super) fn execute<W: Write>(
                 crate::join::MAX_STREAM_JOIN_BUILD_ROWS,
                 available.min(MAX_STREAM_BUILD_BYTES),
                 (*index - relation.start, *operator, value),
+            )?
+        } else if let Some(filters) = row_filter {
+            let mut predicate = |row: &[typed::Cell]| filters.passes_relation(row, relation.start);
+            read_projected_build_rows_matching(
+                &paths[step_index + 1],
+                &relation.names,
+                &projections[step_index + 1],
+                relation.rows,
+                crate::join::MAX_STREAM_JOIN_BUILD_ROWS,
+                available.min(MAX_STREAM_BUILD_BYTES),
+                &mut predicate,
             )?
         } else {
             read_projected_build_rows(
@@ -778,6 +813,9 @@ pub(super) fn execute<W: Write>(
         .collect::<Vec<Vec<typed::Key>>>();
     // Reuse the same dependency projection for the fact scan.
     let fact_width = relations[0].names.len();
+    let fact_comparisons = fact_side_comparisons(comparisons, fact_width);
+    let fact_row_filter =
+        row_filters.filter(|filters| filters.can_prefilter_relation(0, fact_width));
     let projected = &projections[0];
     let projected_names = projected
         .iter()
@@ -799,6 +837,14 @@ pub(super) fn execute<W: Write>(
                 .ok_or_else(|| invalid("JOIN input row count overflow"))?;
             for (position, &column) in projected.iter().enumerate() {
                 row[column] = typed::cell(&batch[position], index);
+            }
+            if !passes_fact_comparisons(&row, &fact_comparisons) {
+                continue;
+            }
+            // Common OR-branch predicates can reject fact rows before any
+            // hash probes. The final visitor checks the full WHERE filter.
+            if fact_row_filter.is_some_and(|filters| !filters.passes_relation(&row, 0)) {
+                continue;
             }
             visit(
                 0,
@@ -1035,3 +1081,7 @@ mod stream_output_limit_tests;
 #[cfg(test)]
 #[path = "streaming/streaming_hash_budget_tests.rs"]
 mod streaming_hash_budget_tests;
+
+#[cfg(test)]
+#[path = "streaming/fact_comparison_tests.rs"]
+mod fact_comparison_tests;
