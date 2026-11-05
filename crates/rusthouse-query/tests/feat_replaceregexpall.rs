@@ -10,7 +10,10 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn replaceregexpall_replaces_matches() {
     for (sql, expected) in [
-        ("SELECT replaceRegexpAll('abc123def456', '[0-9]+', 'X')", ConstantValue::Text("abcXdefX".into())),
+        (
+            "SELECT replaceRegexpAll('abc123def456', '[0-9]+', 'X')",
+            ConstantValue::Text("abcXdefX".into()),
+        ),
         ("SELECT replaceRegexpAll('hello', 'z', 'X')", ConstantValue::Text("hello".into())),
         ("SELECT replaceRegexpAll('aaaa', 'a', 'z')", ConstantValue::Text("zzzz".into())),
     ] {
