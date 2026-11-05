@@ -10,13 +10,25 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn regexpextract_handles_constant_inputs() {
     for (sql, expected) in [
-        ("SELECT regexpExtract('abc-123','([0-9]+)')", ConstantValue::Text("123".into())),
-        ("SELECT regexpExtract('abc-123','([a-z]+)-([0-9]+)', 2)", ConstantValue::Text("123".into())),
-        ("SELECT regexpExtract('abc','[0-9]+')", ConstantValue::Text("".into())),
+        (
+            "SELECT regexpExtract('abc-123','([0-9]+)')",
+            ConstantValue::Text("123".into()),
+        ),
+        (
+            "SELECT regexpExtract('abc-123','([a-z]+)-([0-9]+)', 2)",
+            ConstantValue::Text("123".into()),
+        ),
+        (
+            "SELECT regexpExtract('abc','[0-9]+')",
+            ConstantValue::Text("".into()),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
-    assert_eq!(value("SELECT regexpextract(NULL, NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT regexpextract(NULL, NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]
