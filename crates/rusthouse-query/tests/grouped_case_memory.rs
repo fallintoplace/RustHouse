@@ -76,11 +76,11 @@ fn compact_case_keys_preserve_escaped_text_and_exact_integer_output() {
         },
         Column {
             name: "referer".into(),
-            data_type: "String".into(),
+            data_type: "Nullable(String)".into(),
         },
         Column {
             name: "url".into(),
-            data_type: "String".into(),
+            data_type: "Nullable(String)".into(),
         },
     ];
     let escaped_source = "src\tline\nslash\\zero\0control\u{1}";
@@ -114,6 +114,27 @@ fn compact_case_keys_preserve_escaped_text_and_exact_integer_output() {
             Some("unused".into()),
             Some("url-c".into()),
         ],
+        vec![
+            Some("3".into()),
+            Some("1".into()),
+            Some("1".into()),
+            Some("unused".into()),
+            None,
+        ],
+        vec![
+            Some("4".into()),
+            Some("0".into()),
+            Some("0".into()),
+            Some("\\N".into()),
+            Some("url-marker".into()),
+        ],
+        vec![
+            Some("5".into()),
+            Some("0".into()),
+            Some("0".into()),
+            None,
+            Some("url-null-source".into()),
+        ],
     ];
     write_wide_part(&part, &columns, &rows).unwrap();
 
@@ -122,7 +143,7 @@ fn compact_case_keys_preserve_escaped_text_and_exact_integer_output() {
     execute(&parse_select(sql).unwrap(), Some(&part), &mut output).unwrap();
     assert_eq!(
         output,
-        b"traffic\tsearch\tadv\tSrc\tDst\tPageViews\n-2\t0\t0\tsrc\\tline\\nslash\\\\zero\\0control\\x01\turl\\tline\\n\t2\n2\t1\t0\t\turl-b\t1\n10\t0\t1\t\turl-c\t1\n"
+        b"traffic\tsearch\tadv\tSrc\tDst\tPageViews\n-2\t0\t0\tsrc\\tline\\nslash\\\\zero\\0control\\x01\turl\\tline\\n\t2\n10\t0\t1\t\turl-c\t1\n2\t1\t0\t\turl-b\t1\n3\t1\t1\t\t\\N\t1\n4\t0\t0\t\\\\N\turl-marker\t1\n5\t0\t0\t\\N\turl-null-source\t1\n"
     );
     fs::remove_dir_all(part).unwrap();
 }

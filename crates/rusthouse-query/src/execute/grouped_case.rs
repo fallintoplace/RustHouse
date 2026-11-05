@@ -5,9 +5,12 @@ const MAX_GROUPS: usize = 200_000;
 const MAX_GROUP_BYTES: usize = 64 * 1024 * 1024;
 const GROUP_MEMORY_OVERHEAD: usize = 192;
 
-fn charge_group_bytes(retained: &mut usize, encoded_capacity: usize) -> Result<(), ExecutionError> {
+fn charge_group_bytes(
+    retained: &mut usize,
+    group_key_capacity: usize,
+) -> Result<(), ExecutionError> {
     let bytes = GROUP_MEMORY_OVERHEAD
-        .checked_add(encoded_capacity)
+        .checked_add(group_key_capacity)
         .ok_or_else(|| ExecutionError::Invalid("CASE group memory overflow".into()))?;
     *retained = retained
         .checked_add(bytes)
@@ -18,9 +21,9 @@ fn charge_group_bytes(retained: &mut usize, encoded_capacity: usize) -> Result<(
 
 fn charge_group_memory(
     retained: &mut usize,
-    encoded_capacity: usize,
+    group_key_capacity: usize,
 ) -> Result<(), ExecutionError> {
-    charge_group_bytes(retained, encoded_capacity)
+    charge_group_bytes(retained, group_key_capacity)
 }
 
 fn integer_zero(column: &TypedColumn, row: usize) -> bool {
@@ -36,160 +39,73 @@ fn integer_zero(column: &TypedColumn, row: usize) -> bool {
     )
 }
 
-fn append_case_integer_component(column: &TypedColumn, row: usize, buffer: &mut Vec<u8>) {
-    let (values, is_null) = match column {
-        TypedColumn::Numeric(values) => (values, false),
-        TypedColumn::NullableNumeric { values, nulls } => (values, nulls[row] != 0),
-        _ => unreachable!("CASE integer key was validated before scanning"),
-    };
-    buffer.push(u8::from(!is_null));
-    match values {
-        rusthouse_storage::NumericColumn::UInt8(values) => {
-            buffer.push(if is_null { 0 } else { values[row] });
-        }
-        rusthouse_storage::NumericColumn::Int8(values) => {
-            buffer.push(if is_null { 0 } else { values[row] as u8 });
-        }
-        rusthouse_storage::NumericColumn::UInt16(values) => {
-            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
-        }
-        rusthouse_storage::NumericColumn::Int16(values) => {
-            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
-        }
-        rusthouse_storage::NumericColumn::UInt32(values) => {
-            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
-        }
-        rusthouse_storage::NumericColumn::Int32(values) => {
-            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
-        }
-        rusthouse_storage::NumericColumn::UInt64(values) => {
-            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
-        }
-        rusthouse_storage::NumericColumn::Int64(values) => {
-            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
-        }
-        rusthouse_storage::NumericColumn::UInt128(values) => {
-            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
-        }
-        rusthouse_storage::NumericColumn::Int128(values) => {
-            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
-        }
-        rusthouse_storage::NumericColumn::Float32(_)
-        | rusthouse_storage::NumericColumn::Float64(_) => {
-            unreachable!("CASE integer key was validated before scanning")
-        }
-    }
-}
-
-fn take_case_key_bytes<const N: usize>(key: &mut &[u8]) -> Result<[u8; N], ExecutionError> {
-    let bytes = key
-        .get(..N)
-        .ok_or_else(|| ExecutionError::Invalid("invalid CASE group key".into()))?;
-    let bytes = bytes
-        .try_into()
-        .map_err(|_| ExecutionError::Invalid("invalid CASE group key".into()))?;
-    *key = &key[N..];
-    Ok(bytes)
-}
-
-fn write_case_integer_key<W: Write>(
-    key: &mut &[u8],
-    data_type: &str,
+fn append_case_integer_component<W: Write>(
+    column: &TypedColumn,
+    row: usize,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
-    let present = match key.split_first() {
-        Some((&0, rest)) => {
-            *key = rest;
-            false
+    let values = match column {
+        TypedColumn::Numeric(values) => values,
+        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => values,
+        TypedColumn::NullableNumeric { .. } => {
+            output.write_all(b"\\N")?;
+            return Ok(());
         }
-        Some((&1, rest)) => {
-            *key = rest;
-            true
-        }
-        _ => return Err(ExecutionError::Invalid("invalid CASE group key".into())),
-    };
-
-    macro_rules! write_integer {
-        ($type:ty, $width:literal) => {{
-            let value = <$type>::from_le_bytes(take_case_key_bytes::<$width>(key)?);
-            if present {
-                write!(output, "{value}")?;
-            } else {
-                output.write_all(b"\\N")?;
-            }
-        }};
-    }
-
-    match typed::base_type(data_type) {
-        "UInt8" => write_integer!(u8, 1),
-        "Int8" => write_integer!(i8, 1),
-        "UInt16" => write_integer!(u16, 2),
-        "Int16" => write_integer!(i16, 2),
-        "UInt32" => write_integer!(u32, 4),
-        "Int32" => write_integer!(i32, 4),
-        "UInt64" => write_integer!(u64, 8),
-        "Int64" => write_integer!(i64, 8),
-        "UInt128" => write_integer!(u128, 16),
-        "Int128" => write_integer!(i128, 16),
         _ => {
             return Err(ExecutionError::Invalid(
-                "invalid CASE integer key type".into(),
+                "CASE grouping requires integer keys".into(),
+            ));
+        }
+    };
+    write!(output, "{}", super::number_at(values, row))?;
+    Ok(())
+}
+
+fn append_case_text_component<W: Write>(
+    column: &TypedColumn,
+    row: usize,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    match column {
+        TypedColumn::Text(values) => {
+            typed::write_text_bytes(output, values.get(row).expect("validated typed batch row"))?;
+        }
+        TypedColumn::NullableText { values, nulls } if nulls[row] == 0 => {
+            typed::write_text_bytes(output, values.get(row).expect("validated typed batch row"))?;
+        }
+        TypedColumn::NullableText { .. } => output.write_all(b"\\N")?,
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "CASE grouping requires String keys".into(),
             ));
         }
     }
     Ok(())
 }
 
-fn write_case_text_key<W: Write>(key: &mut &[u8], output: &mut W) -> Result<(), ExecutionError> {
-    let tag = match key.split_first() {
-        Some((&tag, rest)) => {
-            *key = rest;
-            tag
-        }
-        None => return Err(ExecutionError::Invalid("invalid CASE group key".into())),
-    };
-    match tag {
-        0 => output.write_all(b"\\N")?,
-        1 => {
-            let length = u64::from_le_bytes(take_case_key_bytes::<8>(key)?);
-            let length = usize::try_from(length)
-                .map_err(|_| ExecutionError::Invalid("invalid CASE group key length".into()))?;
-            let bytes = key
-                .get(..length)
-                .ok_or_else(|| ExecutionError::Invalid("invalid CASE group key".into()))?;
-            typed::write_text_bytes(output, bytes)?;
-            *key = &key[length..];
-        }
-        _ => return Err(ExecutionError::Invalid("invalid CASE group key".into())),
-    }
-    Ok(())
-}
-
-fn write_case_group_key<W: Write>(
-    key: &[u8],
-    integer_types: &[String],
-    output: &mut W,
+// Escaped text cannot contain a literal tab, so this joined key keeps the
+// previous field-by-field tie ordering while storing only one output buffer.
+fn append_case_group_key(
+    batch: &[TypedColumn],
+    group_indices: &[usize],
+    row: usize,
+    use_source: bool,
+    key: &mut Vec<u8>,
 ) -> Result<(), ExecutionError> {
-    let mut key = key;
-    for (index, data_type) in integer_types.iter().enumerate() {
+    key.clear();
+    for (index, &column) in group_indices[..3].iter().enumerate() {
         if index > 0 {
-            output.write_all(b"\t")?;
+            key.push(b'\t');
         }
-        write_case_integer_key(&mut key, data_type, output)?;
+        append_case_integer_component(&batch[column], row, key)?;
     }
-    output.write_all(b"\t")?;
-    write_case_text_key(&mut key, output)?;
-    output.write_all(b"\t")?;
-    write_case_text_key(&mut key, output)?;
-    if !key.is_empty() {
-        return Err(ExecutionError::Invalid("invalid CASE group key".into()));
+    key.push(b'\t');
+    if use_source {
+        append_case_text_component(&batch[group_indices[3]], row, key)?;
     }
+    key.push(b'\t');
+    append_case_text_component(&batch[group_indices[4]], row, key)?;
     Ok(())
-}
-
-fn append_empty_text_component(buffer: &mut Vec<u8>) {
-    buffer.push(1);
-    buffer.extend_from_slice(&0u64.to_le_bytes());
 }
 
 fn integer(kind: &str) -> bool {
@@ -287,7 +203,6 @@ pub(super) fn execute<W: Write>(
             "CASE grouping requires five keys".into(),
         ));
     }
-    let mut integer_types = Vec::with_capacity(3);
     for (index, name) in keys.iter().enumerate() {
         let kind = metadata
             .columns
@@ -298,9 +213,6 @@ pub(super) fn execute<W: Write>(
             return Err(ExecutionError::Invalid(
                 "CASE grouping requires integer keys".into(),
             ));
-        }
-        if index < 3 {
-            integer_types.push(kind.data_type.clone());
         }
         if index >= 3 && typed::base_type(&kind.data_type) != "String" {
             return Err(ExecutionError::Invalid(
@@ -343,8 +255,8 @@ pub(super) fn execute<W: Write>(
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut reader = TypedQueryReader::open_with_metadata(path, &names, &metadata)?;
-    let mut encoded_groups = HashMap::<Vec<u8>, u64>::new();
-    let mut encoded_probe = Vec::with_capacity(128);
+    let mut groups = HashMap::<Vec<u8>, u64>::new();
+    let mut group_key_probe = Vec::with_capacity(128);
     let mut retained = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -354,42 +266,31 @@ pub(super) fn execute<W: Write>(
             // Collapse the unused referer before retaining a group key.
             let use_source = integer_zero(&batch[group_indices[1]], row)
                 && integer_zero(&batch[group_indices[2]], row);
-            encoded_probe.clear();
-            for &index in &group_indices[..3] {
-                append_case_integer_component(&batch[index], row, &mut encoded_probe);
-            }
-            if use_source {
-                super::grouped_numeric_keys::append_group_component(
-                    &batch[group_indices[3]],
-                    row,
-                    &mut encoded_probe,
-                );
-            } else {
-                append_empty_text_component(&mut encoded_probe);
-            }
-            super::grouped_numeric_keys::append_group_component(
-                &batch[group_indices[4]],
+            append_case_group_key(
+                &batch,
+                &group_indices,
                 row,
-                &mut encoded_probe,
-            );
+                use_source,
+                &mut group_key_probe,
+            )?;
 
-            if let Some(count) = encoded_groups.get_mut(encoded_probe.as_slice()) {
+            if let Some(count) = groups.get_mut(group_key_probe.as_slice()) {
                 *count = count.checked_add(1).ok_or_else(|| {
                     ExecutionError::Invalid("CASE grouping count overflow".into())
                 })?;
                 continue;
             }
-            if encoded_groups.len() >= MAX_GROUPS {
+            if groups.len() >= MAX_GROUPS {
                 return Err(ExecutionError::Invalid(
                     "CASE grouping exceeds 200000 groups".into(),
                 ));
             }
-            let encoded_key = encoded_probe.clone();
-            charge_group_memory(&mut retained, encoded_key.capacity())?;
-            encoded_groups.insert(encoded_key, 1);
+            let group_key = group_key_probe.clone();
+            charge_group_memory(&mut retained, group_key.capacity())?;
+            groups.insert(group_key, 1);
         }
     }
-    let mut rows = encoded_groups.into_iter().collect::<Vec<_>>();
+    let mut rows = groups.into_iter().collect::<Vec<_>>();
     let descending = query
         .order_by
         .as_ref()
@@ -406,7 +307,7 @@ pub(super) fn execute<W: Write>(
         .skip(query.offset.unwrap_or(0))
         .take(query.limit.unwrap_or(usize::MAX))
     {
-        write_case_group_key(&key, &integer_types, output)?;
+        output.write_all(&key)?;
         writeln!(output, "\t{count}")?;
     }
     Ok(())
@@ -513,85 +414,102 @@ mod case_memory_tests {
     }
 
     #[test]
-    fn compact_integer_components_preserve_null_and_signed_values() {
+    fn integer_group_keys_format_all_widths_and_preserve_large_values() {
         use rusthouse_storage::NumericColumn;
 
-        let values = TypedColumn::NullableNumeric {
-            values: NumericColumn::Int16(vec![0, i16::MIN, 0]),
-            nulls: vec![0, 0, 1],
+        let samples = [
+            (
+                "UInt8",
+                TypedColumn::Numeric(NumericColumn::UInt8(vec![u8::MAX])),
+                "255",
+            ),
+            (
+                "Int8",
+                TypedColumn::Numeric(NumericColumn::Int8(vec![i8::MIN])),
+                "-128",
+            ),
+            (
+                "UInt16",
+                TypedColumn::Numeric(NumericColumn::UInt16(vec![u16::MAX])),
+                "65535",
+            ),
+            (
+                "Int16",
+                TypedColumn::Numeric(NumericColumn::Int16(vec![i16::MIN])),
+                "-32768",
+            ),
+            (
+                "UInt32",
+                TypedColumn::Numeric(NumericColumn::UInt32(vec![u32::MAX])),
+                "4294967295",
+            ),
+            (
+                "Int32",
+                TypedColumn::Numeric(NumericColumn::Int32(vec![i32::MIN])),
+                "-2147483648",
+            ),
+            (
+                "UInt64",
+                TypedColumn::Numeric(NumericColumn::UInt64(vec![9_007_199_254_740_993])),
+                "9007199254740993",
+            ),
+            (
+                "Int64",
+                TypedColumn::Numeric(NumericColumn::Int64(vec![i64::MIN])),
+                "-9223372036854775808",
+            ),
+            (
+                "UInt128",
+                TypedColumn::Numeric(NumericColumn::UInt128(vec![u128::MAX])),
+                "340282366920938463463374607431768211455",
+            ),
+            (
+                "Int128",
+                TypedColumn::Numeric(NumericColumn::Int128(vec![i128::MIN])),
+                "-170141183460469231731687303715884105728",
+            ),
+            (
+                "Nullable(Int16)",
+                TypedColumn::NullableNumeric {
+                    values: NumericColumn::Int16(vec![0]),
+                    nulls: vec![1],
+                },
+                "\\N",
+            ),
+        ];
+
+        for (data_type, column, expected) in samples {
+            let mut actual = Vec::new();
+            append_case_integer_component(&column, 0, &mut actual).unwrap();
+            assert_eq!(actual, expected.as_bytes(), "{data_type}");
+        }
+    }
+
+    #[test]
+    fn joined_key_order_matches_field_by_field_order_for_escaped_values() {
+        let groups = [
+            [b"1".as_slice(), b"0".as_slice(), b"0", b"a", b"x"],
+            [b"1", b"0", b"0", br"a\tb", b"x"],
+            [b"1", b"0", b"0", b"ab", b"x"],
+            [b"1", b"0", b"0", b"\\N", b"x"],
+            [b"1", b"0", b"0", b"", b"x"],
+            [b"10", b"0", b"0", b"a", b"x"],
+        ];
+        let joined = |fields: &[&[u8]; 5]| {
+            let mut key = Vec::new();
+            for (index, field) in fields.iter().enumerate() {
+                if index > 0 {
+                    key.push(b'\t');
+                }
+                key.extend_from_slice(field);
+            }
+            key
         };
-        let mut zero = Vec::new();
-        append_case_integer_component(&values, 0, &mut zero);
-        let mut minimum = Vec::new();
-        append_case_integer_component(&values, 1, &mut minimum);
-        let mut null = Vec::new();
-        append_case_integer_component(&values, 2, &mut null);
-
-        assert_eq!(zero.len(), 3);
-        assert_eq!(minimum.len(), 3);
-        assert_eq!(null.len(), 3);
-        assert_ne!(zero, minimum);
-        assert_ne!(zero, null);
-        assert_eq!(minimum, [vec![1], i16::MIN.to_le_bytes().to_vec()].concat());
-        assert_eq!(null, [vec![0], vec![0, 0]].concat());
-    }
-
-    #[test]
-    fn compact_integer_components_keep_fixed_width_for_wide_unsigned_values() {
-        use rusthouse_storage::NumericColumn;
-
-        let values = TypedColumn::Numeric(NumericColumn::UInt128(vec![0, u128::MAX]));
-        let mut zero = Vec::new();
-        append_case_integer_component(&values, 0, &mut zero);
-        let mut maximum = Vec::new();
-        append_case_integer_component(&values, 1, &mut maximum);
-
-        assert_eq!(zero.len(), 17);
-        assert_eq!(maximum.len(), 17);
-        assert_ne!(zero, maximum);
-        assert_eq!(
-            maximum,
-            [vec![1], u128::MAX.to_le_bytes().to_vec()].concat()
-        );
-    }
-
-    #[test]
-    fn empty_case_component_matches_an_empty_string_key() {
-        let mut actual = Vec::new();
-        append_empty_text_component(&mut actual);
-        assert_eq!(actual, [vec![1], vec![0; 8]].concat());
-    }
-
-    #[test]
-    fn grouped_case_key_round_trips_wide_numbers_nulls_and_escaped_text() {
-        use rusthouse_storage::NumericColumn;
-
-        let first = TypedColumn::Numeric(NumericColumn::Int16(vec![-17]));
-        let second = TypedColumn::Numeric(NumericColumn::UInt64(vec![9_007_199_254_740_993]));
-        let third = TypedColumn::NullableNumeric {
-            values: NumericColumn::Int8(vec![0]),
-            nulls: vec![1],
-        };
-        let mut key = Vec::new();
-        append_case_integer_component(&first, 0, &mut key);
-        append_case_integer_component(&second, 0, &mut key);
-        append_case_integer_component(&third, 0, &mut key);
-        key.push(1);
-        key.extend_from_slice(&6u64.to_le_bytes());
-        key.extend_from_slice(b"a\t\n\\\0\x01");
-        key.push(0);
-
-        let types = ["Int16", "UInt64", "Nullable(Int8)"].map(str::to_owned);
-        let mut output = Vec::new();
-        write_case_group_key(&key, &types, &mut output).unwrap();
-        let expected = [
-            b"-17\t9007199254740993\t\\N\ta".as_slice(),
-            br"\t\n\\\0\x01",
-            b"\t\\N",
-        ]
-        .concat();
-        assert_eq!(output, expected);
-
-        assert!(write_case_group_key(&key[..key.len() - 1], &types, &mut Vec::new()).is_err());
+        let mut field_order = groups.to_vec();
+        field_order.sort_unstable();
+        let mut joined_order = groups.iter().map(joined).collect::<Vec<_>>();
+        joined_order.sort_unstable();
+        let expected = field_order.iter().map(joined).collect::<Vec<_>>();
+        assert_eq!(joined_order, expected);
     }
 }
