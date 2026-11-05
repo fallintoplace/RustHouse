@@ -1460,24 +1460,41 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "COUNTMATCHESCASEINSENSITIVE" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "countmatchescaseinsensitive requires a pattern")?;
+            require(
+                parser,
+                Token::Comma,
+                "countmatchescaseinsensitive requires a pattern",
+            )?;
             let pattern = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "countmatchescaseinsensitive requires two arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "countmatchescaseinsensitive requires two arguments",
+            )?;
             match (input, pattern) {
                 (Some(input), Some(pattern)) => {
                     if pattern.len() > 4096 {
-                        return Err(ParseError("countmatchescaseinsensitive pattern exceeds 4096 bytes".into()));
+                        return Err(ParseError(
+                            "countmatchescaseinsensitive pattern exceeds 4096 bytes".into(),
+                        ));
                     }
                     let regex = regex::RegexBuilder::new(&pattern)
                         .dot_matches_new_line(true)
                         .case_insensitive(true)
                         .size_limit(2 * 1024 * 1024)
                         .build()
-                        .map_err(|error| ParseError(format!("invalid countmatchescaseinsensitive regex: {error}")))?;
-                    ConstantValue::Integer(
-                        i64::try_from(regex.find_iter(&input).count())
-                            .map_err(|_| ParseError("countmatchescaseinsensitive match count exceeds Int64".into()))?,
-                    )
+                        .map_err(|error| {
+                            ParseError(format!(
+                                "invalid countmatchescaseinsensitive regex: {error}"
+                            ))
+                        })?;
+                    ConstantValue::Integer(i64::try_from(regex.find_iter(&input).count()).map_err(
+                        |_| {
+                            ParseError(
+                                "countmatchescaseinsensitive match count exceeds Int64".into(),
+                            )
+                        },
+                    )?)
                 }
                 _ => ConstantValue::Null,
             }
