@@ -20,6 +20,17 @@ fn inline_numeric_keys_use_a_smaller_retained_memory_estimate() {
 }
 
 #[test]
+fn inline_composite_keys_use_a_smaller_retained_memory_estimate() {
+    let key = [
+        typed::Key::Numeric(super::super::super::NumberKey::Unsigned(7)),
+        typed::Key::Numeric(super::super::super::NumberKey::Unsigned(9)),
+    ];
+    let vector_key_estimate =
+        std::mem::size_of::<Vec<typed::Key>>() + 96 + key.len() * std::mem::size_of::<typed::Key>();
+    assert!(hash_key_bytes(&key, false).unwrap() < vector_key_estimate);
+}
+
+#[test]
 fn hash_accounting_rejects_overflow_before_allocation() {
     let mut used = 0usize;
     assert!(charge_hash_build(&mut used, usize::MAX).is_err());
