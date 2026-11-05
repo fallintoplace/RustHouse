@@ -938,13 +938,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .case_insensitive(false)
                         .size_limit(2 * 1024 * 1024)
                         .build()
-                        .map_err(|error| ParseError(format!("invalid regexp_instr regex: {error}")))?;
+                        .map_err(|error| {
+                            ParseError(format!("invalid regexp_instr regex: {error}"))
+                        })?;
                     let position = regex
                         .find(&input)
                         .map_or(0, |found| input[..found.start()].chars().count() + 1);
                     ConstantValue::Integer(
-                        i64::try_from(position)
-                            .map_err(|_| ParseError("regexp_instr position exceeds Int64".into()))?,
+                        i64::try_from(position).map_err(|_| {
+                            ParseError("regexp_instr position exceeds Int64".into())
+                        })?,
                     )
                 }
                 _ => ConstantValue::Null,
