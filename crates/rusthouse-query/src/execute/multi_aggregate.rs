@@ -3,9 +3,14 @@ mod arithmetic;
 use self::arithmetic::*;
 
 use super::typed::{self, Cell};
-use super::{AggregateState, BitmapDistinct32, ExecutionError, Number, NumberKey, number_at};
+use super::{
+    AggregateState, BitmapDistinct32, ExecutionError, Number, NumberKey, checked_aggregate_sum,
+    number_at,
+};
 use crate::{AggregateItem, ScalarExpr, Select};
-use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
+use rusthouse_storage::{
+    NumericColumn, PartMetadata, TypedColumn, TypedQueryReader, inspect_query_source,
+};
 use std::collections::{HashMap, HashSet};
 use std::io::Write;
 use std::path::Path;
@@ -171,6 +176,156 @@ pub(super) enum BoundExpr {
         branches: Vec<(Self, Self)>,
         else_expr: Option<Box<Self>>,
     },
+}
+
+fn affine_sum_plan(
+    items: &[AggregateItem],
+    arguments: &[Option<BoundExpr>],
+) -> Option<(usize, Vec<i64>)> {
+    if items.is_empty() || items.len() != arguments.len() {
+        return None;
+    }
+    let mut source = None;
+    let mut constants = Vec::with_capacity(items.len());
+    for (item, argument) in items.iter().zip(arguments) {
+        if item.function != Some(crate::AggregateFunction::Sum) || item.distinct {
+            return None;
+        }
+        let (index, constant) = match argument.as_ref()? {
+            BoundExpr::Column(index) => (*index, 0),
+            BoundExpr::AffineColumn {
+                index,
+                constant,
+                subtract: false,
+            } if *constant >= 0 => (*index, *constant),
+            _ => return None,
+        };
+        if source.is_some_and(|source| source != index) {
+            return None;
+        }
+        source = Some(index);
+        constants.push(constant);
+    }
+    source.map(|source| (source, constants))
+}
+
+fn affine_sum_range_is_safe(data_type: &str, rows: u64, max_constant: i64) -> bool {
+    let max_abs_value = match typed::base_type(data_type) {
+        "UInt8" => u128::from(u8::MAX),
+        "UInt16" => u128::from(u16::MAX),
+        "UInt32" => u128::from(u32::MAX),
+        "Int8" => 1_u128 << 7,
+        "Int16" => 1_u128 << 15,
+        "Int32" => 1_u128 << 31,
+        _ => return false,
+    };
+    let max_result = max_abs_value.checked_add(max_constant as u128);
+    max_result
+        .and_then(|value| value.checked_mul(u128::from(rows)))
+        .is_some_and(|bound| bound <= i128::MAX as u128)
+}
+
+fn accumulate_affine_base(
+    column: &TypedColumn,
+    base_sum: &mut Option<Number>,
+    non_null_rows: &mut u64,
+) -> Result<(), ExecutionError> {
+    let (values, nulls) = match column {
+        TypedColumn::Numeric(values) => (values, None),
+        TypedColumn::NullableNumeric { values, nulls } => (values, Some(nulls.as_slice())),
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "aggregate expression requires numeric columns".into(),
+            ));
+        }
+    };
+    for row in 0..values.len() {
+        if nulls.is_some_and(|nulls| nulls[row] != 0) {
+            continue;
+        }
+        let next = number_at(values, row);
+        *base_sum = Some(match *base_sum {
+            Some(current) => checked_aggregate_sum(current, next)?,
+            None => next,
+        });
+        *non_null_rows = non_null_rows
+            .checked_add(1)
+            .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
+    }
+    Ok(())
+}
+
+fn affine_sum_values(
+    base_sum: Option<Number>,
+    non_null_rows: u64,
+    constants: &[i64],
+) -> Result<Vec<Option<Number>>, ExecutionError> {
+    constants
+        .iter()
+        .map(|&constant| {
+            let Some(base_sum) = base_sum else {
+                return Ok(None);
+            };
+            let adjustment = i128::from(constant)
+                .checked_mul(i128::from(non_null_rows))
+                .ok_or_else(|| ExecutionError::Invalid("aggregate expression overflow".into()))?;
+            checked_binary(base_sum, Number::Signed(adjustment), false).map(Some)
+        })
+        .collect()
+}
+
+fn affine_sum_states(
+    part: &Path,
+    metadata: &PartMetadata,
+    names: &[String],
+    types: &HashMap<String, String>,
+    items: &[AggregateItem],
+    arguments: &[Option<BoundExpr>],
+) -> Result<Option<Vec<State>>, ExecutionError> {
+    let Some((index, constants)) = affine_sum_plan(items, arguments) else {
+        return Ok(None);
+    };
+    let Some(column) = names.get(index) else {
+        return Ok(None);
+    };
+    let Some(data_type) = types.get(column) else {
+        return Ok(None);
+    };
+    let max_constant = constants.iter().copied().max().unwrap_or(0);
+    if !affine_sum_range_is_safe(data_type, metadata.rows, max_constant) {
+        return Ok(None);
+    }
+
+    let mut reader =
+        TypedQueryReader::open_with_metadata(part, std::slice::from_ref(column), metadata)?;
+    let mut base_sum = None;
+    let mut non_null_rows = 0u64;
+    let mut scanned_rows = 0u64;
+    while let Some(batch) = reader.next_batch()? {
+        let source = batch
+            .first()
+            .ok_or_else(|| ExecutionError::Invalid("aggregate source is empty".into()))?;
+        scanned_rows = scanned_rows
+            .checked_add(source.len() as u64)
+            .ok_or_else(|| ExecutionError::Invalid("aggregate row count overflow".into()))?;
+        accumulate_affine_base(source, &mut base_sum, &mut non_null_rows)?;
+    }
+    if scanned_rows != metadata.rows {
+        return Err(ExecutionError::Invalid(
+            "aggregate input row count changed during scan".into(),
+        ));
+    }
+    let values = affine_sum_values(base_sum, non_null_rows, &constants)?;
+    let mut states = items
+        .iter()
+        .map(|item| State::Numeric(AggregateState::new(item.function.expect("SUM plan"))))
+        .collect::<Vec<_>>();
+    for (state, value) in states.iter_mut().zip(values) {
+        if let (State::Numeric(state), Some(value)) = (state, value) {
+            state.update_sum(value)?;
+        }
+    }
+    Ok(Some(states))
 }
 
 impl BoundExpr {
@@ -1163,7 +1318,16 @@ pub(super) fn execute<W: Write>(
                 _ => false,
             },
         );
-    let parallel = if parallel_safe {
+    // Several affine SUMs over one narrow integer column share one scan and
+    // differ only by a constant multiplied by the non-NULL row count.
+    let affine = if no_filters {
+        affine_sum_states(part, &metadata, &names, &types, items, &arguments)?
+    } else {
+        None
+    };
+    let parallel = if affine.is_some() {
+        affine
+    } else if parallel_safe {
         parallel_exact_multi_aggregates(part, &names, items, &arguments, &conditions, no_filters)?
     } else {
         None
@@ -1561,6 +1725,169 @@ mod direct_numeric_argument_tests {
             eval_number(&affine, &batch, 0).unwrap(),
             Some(Number::Unsigned(105)) | Some(Number::Signed(105))
         ));
+    }
+}
+
+#[cfg(test)]
+mod affine_sum_fast_path_tests {
+    use super::*;
+
+    fn sum_item(column: &str, constant: i64) -> AggregateItem {
+        AggregateItem {
+            function: Some(crate::AggregateFunction::Sum),
+            argument: Some(ScalarExpr::Add(
+                Box::new(ScalarExpr::Column(column.to_owned())),
+                Box::new(ScalarExpr::Integer(constant)),
+            )),
+            distinct: false,
+            alias: None,
+        }
+    }
+
+    fn affine(index: usize, constant: i64) -> Option<BoundExpr> {
+        Some(BoundExpr::AffineColumn {
+            index,
+            constant,
+            subtract: false,
+        })
+    }
+
+    fn same_number(left: Option<Number>, right: Option<Number>) -> bool {
+        match (left, right) {
+            (None, None) => true,
+            (Some(Number::Unsigned(left)), Some(Number::Unsigned(right))) => left == right,
+            (Some(Number::Signed(left)), Some(Number::Signed(right))) => left == right,
+            (Some(Number::Float(left)), Some(Number::Float(right))) => {
+                left.to_bits() == right.to_bits()
+            }
+            _ => false,
+        }
+    }
+
+    #[test]
+    fn affine_sum_formula_matches_row_updates_for_unsigned_columns() {
+        let batch = [TypedColumn::Numeric(NumericColumn::UInt16(vec![
+            0, 1, 17, 65_535,
+        ]))];
+        let mut base_sum = None;
+        let mut non_null_rows = 0;
+        accumulate_affine_base(&batch[0], &mut base_sum, &mut non_null_rows).unwrap();
+
+        for constant in [0, 1, 90] {
+            let expression = BoundExpr::AffineColumn {
+                index: 0,
+                constant,
+                subtract: false,
+            };
+            let mut expected = AggregateState::new(crate::AggregateFunction::Sum);
+            for row in 0..batch[0].len() {
+                expected
+                    .update_sum(eval_number(&expression, &batch, row).unwrap().unwrap())
+                    .unwrap();
+            }
+            let actual = affine_sum_values(base_sum, non_null_rows, &[constant]).unwrap()[0];
+            assert!(same_number(actual, expected.value));
+        }
+    }
+
+    #[test]
+    fn affine_sum_formula_skips_nulls_and_preserves_all_null_sum() {
+        let nullable = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int16(vec![2, 99, -4]),
+            nulls: vec![0, 1, 0],
+        };
+        let mut base_sum = None;
+        let mut non_null_rows = 0;
+        accumulate_affine_base(&nullable, &mut base_sum, &mut non_null_rows).unwrap();
+        assert!(matches!(
+            affine_sum_values(base_sum, non_null_rows, &[0, 5])
+                .unwrap()
+                .as_slice(),
+            [Some(Number::Signed(-2)), Some(Number::Signed(8))]
+        ));
+
+        let all_null = TypedColumn::NullableNumeric {
+            values: NumericColumn::UInt16(vec![1, 2]),
+            nulls: vec![1, 1],
+        };
+        let mut base_sum = None;
+        let mut non_null_rows = 0;
+        accumulate_affine_base(&all_null, &mut base_sum, &mut non_null_rows).unwrap();
+        assert!(
+            affine_sum_values(base_sum, non_null_rows, &[1, 90])
+                .unwrap()
+                .iter()
+                .all(Option::is_none)
+        );
+    }
+
+    #[test]
+    fn affine_sum_formula_keeps_checked_overflow_behavior() {
+        assert!(affine_sum_values(Some(Number::Unsigned(u128::MAX)), 1, &[1]).is_err());
+        assert!(affine_sum_values(Some(Number::Signed(i128::MAX)), 1, &[1]).is_err());
+    }
+
+    #[test]
+    fn affine_sum_plan_requires_one_nonnegative_additive_integer_column() {
+        assert_eq!(
+            affine_sum_plan(
+                &[sum_item("width", 1), sum_item("width", 2)],
+                &[affine(0, 1), affine(0, 2)],
+            ),
+            Some((0, vec![1, 2]))
+        );
+        assert_eq!(
+            affine_sum_plan(
+                &[
+                    AggregateItem {
+                        function: Some(crate::AggregateFunction::Sum),
+                        argument: Some(ScalarExpr::Column("width".into())),
+                        distinct: false,
+                        alias: None,
+                    },
+                    sum_item("width", 2),
+                ],
+                &[Some(BoundExpr::Column(0)), affine(0, 2)],
+            ),
+            Some((0, vec![0, 2]))
+        );
+        assert!(
+            affine_sum_plan(
+                &[sum_item("width", 1), sum_item("height", 2)],
+                &[affine(0, 1), affine(1, 2)],
+            )
+            .is_none()
+        );
+        assert!(affine_sum_plan(&[sum_item("width", -1)], &[affine(0, -1)]).is_none());
+        assert!(
+            affine_sum_plan(
+                &[AggregateItem {
+                    function: Some(crate::AggregateFunction::Avg),
+                    ..sum_item("width", 1)
+                }],
+                &[affine(0, 1)],
+            )
+            .is_none()
+        );
+        assert!(
+            affine_sum_plan(
+                &[sum_item("width", 1)],
+                &[Some(BoundExpr::AffineColumn {
+                    index: 0,
+                    constant: 1,
+                    subtract: true,
+                })],
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn affine_sum_range_guard_accepts_nullable_narrow_types_and_rejects_wide_types() {
+        assert!(affine_sum_range_is_safe("Nullable(UInt16)", 1_000_000, 90));
+        assert!(affine_sum_range_is_safe("Int32", 1_000, 5));
+        assert!(!affine_sum_range_is_safe("UInt64", 1_000_000, 90));
+        assert!(!affine_sum_range_is_safe("UInt16", u64::MAX, i64::MAX));
     }
 }
 
