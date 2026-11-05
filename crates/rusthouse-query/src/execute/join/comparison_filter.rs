@@ -187,12 +187,12 @@ fn fact_probe_columns(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn scan<W: Write>(
+fn scan<H: JoinLookup, W: Write>(
     left_path: &Path,
     left_names: &[String],
     left_keys: &[usize],
     right_rows: &[Vec<typed::Cell>],
-    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    hash: &H,
     filters: &[BoundFilter],
     selected: &[(usize, String, Option<usize>)],
     any: bool,
@@ -276,7 +276,7 @@ fn scan<W: Write>(
             if !batch_key_into(&batch, row_index, &key_columns, &mut key) {
                 continue;
             }
-            let Some(matches) = hash.get(key.as_slice()) else {
+            let Some(matches) = hash.lookup(key.as_slice()) else {
                 continue;
             };
             if emit {

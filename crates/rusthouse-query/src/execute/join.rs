@@ -10,11 +10,11 @@ pub(super) use self::build_rows::*;
 
 use self::keys::*;
 
-use super::{ExecutionError, Number, typed};
+use super::{ExecutionError, Number, NumberKey, typed};
 use crate::{JoinAggregate, JoinColumn, JoinSelect, JoinType};
 use rusthouse_storage::{PartMetadata, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::{BinaryHeap, HashMap, hash_map::Entry};
 use std::io::Write;
 use std::path::Path;
 use std::sync::Arc;
@@ -87,16 +87,18 @@ fn invalid(message: impl Into<String>) -> ExecutionError {
 }
 
 /// Avoid allocating a heap Vec for the common unique JOIN build key.
-/// Promote to a Vec only when the build side contains duplicate keys.
+/// Promote to a boxed Vec only when the build side contains duplicate keys.
+/// The extra box keeps the larger Vec header out of every unique-key slot.
+#[allow(clippy::box_collection)]
 enum Bucket {
     One(usize),
-    Many(Vec<usize>),
+    Many(Box<Vec<usize>>),
 }
 
 impl Bucket {
     fn push(&mut self, value: usize) {
         match self {
-            Self::One(first) => *self = Self::Many(vec![*first, value]),
+            Self::One(first) => *self = Self::Many(Box::new(vec![*first, value])),
             Self::Many(values) => values.push(value),
         }
     }
@@ -105,6 +107,181 @@ impl Bucket {
         match self {
             Self::One(value) => std::slice::from_ref(value).iter(),
             Self::Many(values) => values.iter(),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::One(_) => 1,
+            Self::Many(values) => values.len(),
+        }
+    }
+}
+
+/// Store single-column keys inline; keep the existing vector key for composites.
+enum JoinHash {
+    SingleNumeric(HashMap<NumberKey, Bucket>),
+    SingleOther(HashMap<typed::Key, Bucket>),
+    Composite(HashMap<Vec<typed::Key>, Bucket>),
+}
+
+impl JoinHash {
+    fn with_capacity(key_count: usize, capacity: usize, single_numeric: bool) -> Self {
+        if key_count == 1 {
+            if single_numeric {
+                Self::SingleNumeric(HashMap::with_capacity(capacity))
+            } else {
+                Self::SingleOther(HashMap::with_capacity(capacity))
+            }
+        } else {
+            Self::Composite(HashMap::with_capacity(capacity))
+        }
+    }
+
+    fn lookup(&self, key: &[typed::Key]) -> Option<&Bucket> {
+        match self {
+            Self::SingleNumeric(hash) if key.len() == 1 => match &key[0] {
+                typed::Key::Numeric(number) => hash.get(number),
+                _ => None,
+            },
+            Self::SingleNumeric(_) => None,
+            Self::SingleOther(hash) if key.len() == 1 => hash.get(&key[0]),
+            Self::SingleOther(_) => None,
+            Self::Composite(hash) => hash.get(key),
+        }
+    }
+
+    fn lookup_mut(&mut self, key: &[typed::Key]) -> Option<&mut Bucket> {
+        match self {
+            Self::SingleNumeric(hash) if key.len() == 1 => match &key[0] {
+                typed::Key::Numeric(number) => hash.get_mut(number),
+                _ => None,
+            },
+            Self::SingleNumeric(_) => None,
+            Self::SingleOther(hash) if key.len() == 1 => hash.get_mut(&key[0]),
+            Self::SingleOther(_) => None,
+            Self::Composite(hash) => hash.get_mut(key),
+        }
+    }
+
+    fn insert_new(&mut self, key: &[typed::Key], index: usize) {
+        match self {
+            Self::SingleNumeric(hash) => {
+                debug_assert_eq!(key.len(), 1);
+                let typed::Key::Numeric(number) = &key[0] else {
+                    unreachable!("numeric JOIN key changed type while building");
+                };
+                hash.insert(*number, Bucket::One(index));
+            }
+            Self::SingleOther(hash) => {
+                debug_assert_eq!(key.len(), 1);
+                hash.insert(key[0].clone(), Bucket::One(index));
+            }
+            Self::Composite(hash) => {
+                hash.insert(key.to_vec(), Bucket::One(index));
+            }
+        }
+    }
+
+    fn merge_from(&mut self, other: Self, any: bool) {
+        match (self, other) {
+            (Self::SingleNumeric(target), Self::SingleNumeric(source)) => {
+                merge_bucket_maps(target, source, any);
+            }
+            (Self::SingleOther(target), Self::SingleOther(source)) => {
+                merge_bucket_maps(target, source, any);
+            }
+            (Self::Composite(target), Self::Composite(source)) => {
+                merge_bucket_maps(target, source, any);
+            }
+            _ => unreachable!("join hash key arity changed while merging"),
+        }
+    }
+
+    fn len(&self) -> usize {
+        match self {
+            Self::SingleNumeric(hash) => hash.len(),
+            Self::SingleOther(hash) => hash.len(),
+            Self::Composite(hash) => hash.len(),
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.len() == 0
+    }
+
+    fn total_bucket_items(&self) -> usize {
+        match self {
+            Self::SingleNumeric(hash) => hash.values().map(Bucket::len).sum(),
+            Self::SingleOther(hash) => hash.values().map(Bucket::len).sum(),
+            Self::Composite(hash) => hash.values().map(Bucket::len).sum(),
+        }
+    }
+}
+
+fn single_numeric_join_key(rows: &[Vec<typed::Cell>], keys: &[usize]) -> bool {
+    if keys.len() != 1 {
+        return false;
+    }
+    // A typed column has one value type, so the first non-null key selects the map.
+    rows.iter()
+        .find_map(|row| match &row[keys[0]] {
+            typed::Cell::Numeric(_) => Some(true),
+            typed::Cell::Null => None,
+            _ => Some(false),
+        })
+        .unwrap_or(false)
+}
+
+trait JoinLookup {
+    fn lookup(&self, key: &[typed::Key]) -> Option<&Bucket>;
+    fn is_empty(&self) -> bool;
+    fn total_bucket_items(&self) -> usize;
+}
+
+impl JoinLookup for JoinHash {
+    fn lookup(&self, key: &[typed::Key]) -> Option<&Bucket> {
+        JoinHash::lookup(self, key)
+    }
+
+    fn is_empty(&self) -> bool {
+        JoinHash::is_empty(self)
+    }
+
+    fn total_bucket_items(&self) -> usize {
+        JoinHash::total_bucket_items(self)
+    }
+}
+
+impl JoinLookup for HashMap<Vec<typed::Key>, Bucket> {
+    fn lookup(&self, key: &[typed::Key]) -> Option<&Bucket> {
+        self.get(key)
+    }
+
+    fn is_empty(&self) -> bool {
+        HashMap::is_empty(self)
+    }
+
+    fn total_bucket_items(&self) -> usize {
+        self.values().map(Bucket::len).sum()
+    }
+}
+
+fn merge_bucket_maps<K>(target: &mut HashMap<K, Bucket>, source: HashMap<K, Bucket>, any: bool)
+where
+    K: Eq + std::hash::Hash,
+{
+    for (key, bucket) in source {
+        match target.entry(key) {
+            Entry::Vacant(entry) => {
+                entry.insert(bucket);
+            }
+            Entry::Occupied(mut entry) if !any => {
+                for &index in bucket.iter() {
+                    entry.get_mut().push(index);
+                }
+            }
+            Entry::Occupied(_) => {}
         }
     }
 }
@@ -131,7 +308,7 @@ fn insert_build_key(
 /// dimensions can have thousands of duplicate keys: only unique keys need
 /// an owned allocation retained in the table.
 fn insert_build_row(
-    hash: &mut HashMap<Vec<typed::Key>, Bucket>,
+    hash: &mut JoinHash,
     row: &[typed::Cell],
     indices: &[usize],
     scratch: &mut Vec<typed::Key>,
@@ -141,12 +318,12 @@ fn insert_build_row(
     if !row_key_into(row, indices, scratch) {
         return;
     }
-    if let Some(bucket) = hash.get_mut(scratch.as_slice()) {
+    if let Some(bucket) = hash.lookup_mut(scratch.as_slice()) {
         if !any {
             bucket.push(index);
         }
     } else {
-        hash.insert(scratch.clone(), Bucket::One(index));
+        hash.insert_new(scratch, index);
     }
 }
 
@@ -158,10 +335,15 @@ fn build_join_hash(
     keys: &[usize],
     any: bool,
     workers: usize,
-) -> Result<HashMap<Vec<typed::Key>, Bucket>, ExecutionError> {
+) -> Result<JoinHash, ExecutionError> {
     const MIN_PARALLEL_ROWS: usize = 16_384;
+    let single_numeric = single_numeric_join_key(rows, keys);
     if rows.len() < MIN_PARALLEL_ROWS || workers < 2 {
-        let mut hash = HashMap::with_capacity(initial_hash_capacity(rows.len()));
+        let mut hash = JoinHash::with_capacity(
+            keys.len(),
+            initial_hash_capacity(rows.len()),
+            single_numeric,
+        );
         let mut scratch = Vec::with_capacity(keys.len());
         for (index, row) in rows.iter().enumerate() {
             insert_build_row(&mut hash, row, keys, &mut scratch, index, any);
@@ -177,8 +359,11 @@ fn build_join_hash(
                 let start = chunk_index * chunk_size;
                 std::thread::Builder::new()
                     .spawn_scoped(scope, move || {
-                        let mut partial =
-                            HashMap::with_capacity(initial_hash_capacity(chunk.len()));
+                        let mut partial = JoinHash::with_capacity(
+                            keys.len(),
+                            initial_hash_capacity(chunk.len()),
+                            single_numeric,
+                        );
                         let mut scratch = Vec::with_capacity(keys.len());
                         for (local, row) in chunk.iter().enumerate() {
                             insert_build_row(
@@ -209,22 +394,11 @@ fn build_join_hash(
             .collect::<Result<Vec<_>, _>>()
     })?;
     let mut pieces = partials.into_iter();
-    let mut hash = pieces.next().unwrap_or_default();
+    let mut hash = pieces
+        .next()
+        .expect("a parallel JOIN build has at least one partition");
     for piece in pieces {
-        for (key, bucket) in piece {
-            match hash.entry(key) {
-                std::collections::hash_map::Entry::Vacant(entry) => {
-                    entry.insert(bucket);
-                }
-                std::collections::hash_map::Entry::Occupied(mut entry) => {
-                    if !any {
-                        for &index in bucket.iter() {
-                            entry.get_mut().push(index);
-                        }
-                    }
-                }
-            }
-        }
+        hash.merge_from(piece, any);
     }
     Ok(hash)
 }
@@ -239,16 +413,17 @@ struct ProbeOptions {
 
 /// Preserve the original whole-row probe API for paths that need every
 /// source column. Selective callers use probe_inner_projected instead.
-fn probe_inner<F>(
+fn probe_inner<H, F>(
     left_path: &Path,
     left_names: &[String],
     left_keys: &[usize],
     right_rows: &[Vec<typed::Cell>],
-    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    hash: &H,
     options: ProbeOptions,
     emit: F,
 ) -> Result<usize, ExecutionError>
 where
+    H: JoinLookup,
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
     probe_inner_projected(
@@ -275,20 +450,21 @@ fn reconstruct_join_projection(
 
 /// Scan the probe side without retaining its rows or joined result pairs.
 #[allow(clippy::too_many_arguments)]
-fn probe_inner_projected<F>(
+fn probe_inner_projected<H, F>(
     left_path: &Path,
     left_names: &[String],
     left_keys: &[usize],
     right_rows: &[Vec<typed::Cell>],
-    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    hash: &H,
     options: ProbeOptions,
     projected: Option<&[usize]>,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
+    H: JoinLookup,
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
-    if options.stop_after == Some(0) {
+    if options.stop_after == Some(0) || hash.is_empty() {
         return Ok(0);
     }
     // A COUNT or preflight probe needs join keys and filters only. Keep
@@ -335,7 +511,7 @@ where
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
             if batch_key_into(&batch, index, &key_indices, &mut probe_key) {
-                if let Some(right_indices) = hash.get(probe_key.as_slice()) {
+                if let Some(right_indices) = hash.lookup(probe_key.as_slice()) {
                     // Materialize only after a row survives the join filter.
                     let mut left_row: Option<Vec<typed::Cell>> = None;
                     for &right_index in
@@ -402,17 +578,18 @@ where
 /// Stream the right side of an unordered RIGHT OUTER JOIN, retaining only
 /// a bounded left hash build and the row currently being probed.
 #[allow(clippy::too_many_arguments)]
-fn probe_right_outer<F>(
+fn probe_right_outer<H, F>(
     right_path: &Path,
     right_names: &[String],
     right_keys: &[usize],
     left_rows: &[Vec<typed::Cell>],
     left_width: usize,
-    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    hash: &H,
     options: ProbeOptions,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
+    H: JoinLookup,
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
     if options.stop_after == Some(0) {
@@ -451,7 +628,7 @@ where
     'scan: while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
             let candidates = if batch_key_into(&batch, row, &key_indices, &mut probe_key) {
-                hash.get(probe_key.as_slice())
+                hash.lookup(probe_key.as_slice())
             } else {
                 None
             };
@@ -786,16 +963,17 @@ fn execute_streaming_inner<W: Write>(
 /// Stream the right input when it is too large to retain, hashing only the
 /// smaller left input. SELECT columns still follow their original left/right
 /// bindings; only the unordered probe traversal changes.
-fn probe_right<F>(
+fn probe_right<H, F>(
     right_path: &Path,
     right_names: &[String],
     right_keys: &[usize],
     left_rows: &[Vec<typed::Cell>],
-    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    hash: &H,
     options: ProbeOptions,
     mut emit: F,
 ) -> Result<usize, ExecutionError>
 where
+    H: JoinLookup,
     F: FnMut(&[typed::Cell], &[typed::Cell]) -> Result<(), ExecutionError>,
 {
     if options.stop_after == Some(0) {
@@ -832,16 +1010,12 @@ where
     let mut matches = 0usize;
     // Each retained left row can match only its first right row.
     let mut seen_left = options.any.then(|| vec![false; left_rows.len()]);
-    let mut remaining_left = seen_left.as_ref().map(|_| {
-        hash.values()
-            .map(|bucket| bucket.iter().count())
-            .sum::<usize>()
-    });
+    let mut remaining_left = seen_left.as_ref().map(|_| hash.total_bucket_items());
     let mut probe_key = Vec::with_capacity(right_keys.len());
     'scan: while let Some(batch) = reader.next_batch()? {
         for index in 0..batch[0].len() {
             if batch_key_into(&batch, index, &key_indices, &mut probe_key) {
-                if let Some(left_indices) = hash.get(probe_key.as_slice()) {
+                if let Some(left_indices) = hash.lookup(probe_key.as_slice()) {
                     // Most matches may be filtered or already claimed by ANY.
                     // Decode the full probe row only when a match survives.
                     let mut right_row: Option<Vec<typed::Cell>> = None;
@@ -929,14 +1103,14 @@ fn execute_streaming_right<W: Write>(
         MAX_STREAM_BUILD_BYTES,
         Some(&left_meta),
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> =
-        HashMap::with_capacity(initial_hash_capacity(left_rows.len()));
+    let mut hash = JoinHash::with_capacity(
+        left_keys.len(),
+        initial_hash_capacity(left_rows.len()),
+        single_numeric_join_key(&left_rows, left_keys),
+    );
+    let mut build_key = Vec::with_capacity(left_keys.len());
     for (index, row) in left_rows.iter().enumerate() {
-        if let Some(key) = row_key(row, left_keys) {
-            hash.entry(key)
-                .and_modify(|bucket| bucket.push(index))
-                .or_insert(Bucket::One(index));
-        }
+        insert_build_row(&mut hash, row, left_keys, &mut build_key, index, false);
     }
     if hash.is_empty() {
         let header = selected_header(selected);
@@ -1240,7 +1414,7 @@ fn parallel_probe_inner_count(
     left_names: &[String],
     left_keys: &[usize],
     right_rows: &[Vec<typed::Cell>],
-    hash: &HashMap<Vec<typed::Key>, Bucket>,
+    hash: &JoinHash,
     any: bool,
     null_filter: Option<(usize, bool)>,
 ) -> Result<Option<usize>, ExecutionError> {
@@ -1855,8 +2029,11 @@ pub fn execute_join<W: Write>(
         MAX_INPUT_ROWS,
         MAX_STREAM_BUILD_BYTES,
     )?;
-    let mut hash: HashMap<Vec<typed::Key>, Bucket> =
-        HashMap::with_capacity(initial_hash_capacity(right_rows.len()));
+    let mut hash = JoinHash::with_capacity(
+        right_keys.len(),
+        initial_hash_capacity(right_rows.len()),
+        single_numeric_join_key(&right_rows, &right_keys),
+    );
     let mut build_key = Vec::with_capacity(right_keys.len());
     for (index, row) in right_rows.iter().enumerate() {
         insert_build_row(
@@ -1885,7 +2062,7 @@ pub fn execute_join<W: Write>(
     for (left_index, row) in left_rows.iter().enumerate() {
         let mut matched = false;
         if row_key_into(row, &left_keys, &mut lookup_key) {
-            if let Some(matches) = hash.get(lookup_key.as_slice()) {
+            if let Some(matches) = hash.lookup(lookup_key.as_slice()) {
                 for &right_index in
                     matches
                         .iter()
@@ -2042,7 +2219,7 @@ mod tests {
         let mut hash = HashMap::new();
         hash.insert(
             vec![typed::Cell::Numeric(Number::Unsigned(1)).key()],
-            Bucket::Many(vec![0, 1]),
+            Bucket::Many(Box::new(vec![0, 1])),
         );
         let mut seen = Vec::new();
         let count = probe_right_outer(
@@ -2298,7 +2475,7 @@ mod reusable_join_build_key_tests {
 
     #[test]
     fn duplicate_text_keys_reuse_scratch_and_preserve_all_join_matches() {
-        let mut hash = HashMap::new();
+        let mut hash = JoinHash::with_capacity(1, 0, false);
         let mut scratch = Vec::new();
         let rows = [
             vec![typed::Cell::Text(b"repeat-key".to_vec())],
@@ -2313,7 +2490,7 @@ mod reusable_join_build_key_tests {
         assert_eq!(hash.len(), 2);
         let lookup = vec![typed::Key::Text(b"repeat-key".to_vec())];
         assert_eq!(
-            hash.get(lookup.as_slice())
+            hash.lookup(lookup.as_slice())
                 .unwrap()
                 .iter()
                 .copied()
@@ -2321,13 +2498,13 @@ mod reusable_join_build_key_tests {
             vec![0, 1, 4],
         );
 
-        let mut any_hash = HashMap::new();
+        let mut any_hash = JoinHash::with_capacity(1, 0, false);
         for (index, row) in rows.iter().enumerate() {
             insert_build_row(&mut any_hash, row, &[0], &mut scratch, index, true);
         }
         assert_eq!(
             any_hash
-                .get(lookup.as_slice())
+                .lookup(lookup.as_slice())
                 .unwrap()
                 .iter()
                 .copied()
@@ -2349,8 +2526,10 @@ mod parallel_join_build_tests {
         let serial = build_join_hash(&rows, &[0], false, 1).unwrap();
         let parallel = build_join_hash(&rows, &[0], false, 4).unwrap();
         assert_eq!(serial.len(), parallel.len());
-        for (key, expected) in &serial {
-            let actual = parallel.get(key).unwrap();
+        for value in 0..5 {
+            let key = [typed::Key::Numeric(NumberKey::Unsigned(value))];
+            let expected = serial.lookup(&key).unwrap();
+            let actual = parallel.lookup(&key).unwrap();
             assert_eq!(
                 actual.iter().copied().collect::<Vec<_>>(),
                 expected.iter().copied().collect::<Vec<_>>()
@@ -2358,11 +2537,14 @@ mod parallel_join_build_tests {
         }
         let any = build_join_hash(&rows, &[0], true, 4).unwrap();
         assert_eq!(any.len(), 5);
-        for (key, bucket) in &any {
-            assert_eq!(bucket.iter().next(), serial.get(key).unwrap().iter().next());
-        }
-        for bucket in any.values() {
-            assert_eq!(bucket.iter().len(), 1);
+        for value in 0..5 {
+            let key = [typed::Key::Numeric(NumberKey::Unsigned(value))];
+            let bucket = any.lookup(&key).unwrap();
+            assert_eq!(
+                bucket.iter().next(),
+                serial.lookup(&key).unwrap().iter().next()
+            );
+            assert_eq!(bucket.len(), 1);
         }
     }
 }
