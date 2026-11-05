@@ -10,7 +10,10 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn replaceregexpone_replaces_matches() {
     for (sql, expected) in [
-        ("SELECT replaceRegexpOne('abc123def456', '[0-9]+', 'X')", ConstantValue::Text("abcXdef456".into())),
+        (
+            "SELECT replaceRegexpOne('abc123def456', '[0-9]+', 'X')",
+            ConstantValue::Text("abcXdef456".into()),
+        ),
         ("SELECT replaceRegexpOne('hello', 'z', 'X')", ConstantValue::Text("hello".into())),
         ("SELECT replaceRegexpOne('aaaa', 'a', 'z')", ConstantValue::Text("zaaa".into())),
     ] {
