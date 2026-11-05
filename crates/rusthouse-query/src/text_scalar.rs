@@ -4968,7 +4968,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             } else {
                 None
             };
-            require(parser, Token::RParen, "JSONExtractFloat requires one or two arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "JSONExtractFloat requires one or two arguments",
+            )?;
             match (input, path) {
                 (None, _) | (_, Some(None)) => ConstantValue::Null,
                 (Some(input), path) => {
