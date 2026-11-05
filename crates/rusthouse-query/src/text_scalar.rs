@@ -3786,7 +3786,11 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "FIND_IN_SET" => {
             let needle = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "find_in_set requires a comma-separated string")?;
+            require(
+                parser,
+                Token::Comma,
+                "find_in_set requires a comma-separated string",
+            )?;
             let values = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "find_in_set requires two arguments")?;
             match (needle, values) {
@@ -3794,7 +3798,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     let position = if needle.contains(',') {
                         0
                     } else {
-                        values.split(',').position(|item| item == needle)
+                        values
+                            .split(',')
+                            .position(|item| item == needle)
                             .map_or(0, |index| index + 1)
                     };
                     ConstantValue::Integer(
