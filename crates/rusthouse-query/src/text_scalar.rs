@@ -60,6 +60,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "LOWER"
                 | "LCASE"
                 | "LOWERUTF8"
+                | "REGEXP_INSTR"
                 | "HEX_ENCODE"
                 | "DECODEXMLCOMPONENT"
                 | "ENCODEXMLCOMPONENT"
@@ -920,6 +921,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(address.is_multicast()))
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "REGEXP_INSTR" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "regexp_instr requires a pattern")?;
+            let pattern = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "regexp_instr requires two arguments")?;
+            match (input, pattern) {
+                (Some(input), Some(pattern)) => {
+                    if pattern.len() > 4096 {
+                        return Err(ParseError("regexp_instr pattern exceeds 4096 bytes".into()));
+                    }
+                    let regex = regex::RegexBuilder::new(&pattern)
+                        .dot_matches_new_line(false)
+                        .case_insensitive(false)
+                        .size_limit(2 * 1024 * 1024)
+                        .build()
+                        .map_err(|error| ParseError(format!("invalid regexp_instr regex: {error}")))?;
+                    let position = regex
+                        .find(&input)
+                        .map_or(0, |found| input[..found.start()].chars().count() + 1);
+                    ConstantValue::Integer(
+                        i64::try_from(position)
+                            .map_err(|_| ParseError("regexp_instr position exceeds Int64".into()))?,
+                    )
+                }
+                _ => ConstantValue::Null,
             }
         }
         "ISIPV4LOOPBACK" => {
