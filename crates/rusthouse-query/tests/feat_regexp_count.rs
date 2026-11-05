@@ -10,9 +10,18 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn regexp_count_supports_constant_patterns() {
     for (sql, expected) in [
-        ("SELECT regexp_count('abc123def456','[0-9]+')", ConstantValue::Integer(2)),
-        ("SELECT regexp_count('abc','[0-9]+')", ConstantValue::Integer(0)),
-        ("SELECT regexp_count('ababa','a')", ConstantValue::Integer(3)),
+        (
+            "SELECT regexp_count('abc123def456','[0-9]+')",
+            ConstantValue::Integer(2),
+        ),
+        (
+            "SELECT regexp_count('abc','[0-9]+')",
+            ConstantValue::Integer(0),
+        ),
+        (
+            "SELECT regexp_count('ababa','a')",
+            ConstantValue::Integer(3),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
