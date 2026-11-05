@@ -10,14 +10,26 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn regexp_substr_supports_constant_patterns() {
     for (sql, expected) in [
-        ("SELECT regexp_substr('abc123','[0-9]+')", ConstantValue::Text("123".into())),
+        (
+            "SELECT regexp_substr('abc123','[0-9]+')",
+            ConstantValue::Text("123".into()),
+        ),
         ("SELECT regexp_substr('abc','[0-9]+')", ConstantValue::Null),
-        ("SELECT regexp_substr('a-b-c','b')", ConstantValue::Text("b".into())),
+        (
+            "SELECT regexp_substr('a-b-c','b')",
+            ConstantValue::Text("b".into()),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
-    assert_eq!(value("SELECT regexp_substr(NULL, 'x')"), ConstantValue::Null);
-    assert_eq!(value("SELECT regexp_substr('x', NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT regexp_substr(NULL, 'x')"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT regexp_substr('x', NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]
