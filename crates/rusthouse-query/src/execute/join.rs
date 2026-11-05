@@ -88,6 +88,8 @@ fn invalid(message: impl Into<String>) -> ExecutionError {
 
 /// Avoid allocating a heap Vec for the common unique JOIN build key.
 /// Promote to a boxed Vec only when the build side contains duplicate keys.
+/// The extra box keeps the larger Vec header out of every unique-key slot.
+#[allow(clippy::box_collection)]
 enum Bucket {
     One(usize),
     Many(Box<Vec<usize>>),
@@ -2217,7 +2219,7 @@ mod tests {
         let mut hash = HashMap::new();
         hash.insert(
             vec![typed::Cell::Numeric(Number::Unsigned(1)).key()],
-            Bucket::Many(vec![0, 1]),
+            Bucket::Many(Box::new(vec![0, 1])),
         );
         let mut seen = Vec::new();
         let count = probe_right_outer(
@@ -2525,7 +2527,7 @@ mod parallel_join_build_tests {
         let parallel = build_join_hash(&rows, &[0], false, 4).unwrap();
         assert_eq!(serial.len(), parallel.len());
         for value in 0..5 {
-            let key = [join_key(&typed::Cell::Numeric(Number::Unsigned(value)))];
+            let key = [typed::Key::Numeric(NumberKey::Unsigned(value))];
             let expected = serial.lookup(&key).unwrap();
             let actual = parallel.lookup(&key).unwrap();
             assert_eq!(
@@ -2536,7 +2538,7 @@ mod parallel_join_build_tests {
         let any = build_join_hash(&rows, &[0], true, 4).unwrap();
         assert_eq!(any.len(), 5);
         for value in 0..5 {
-            let key = [join_key(&typed::Cell::Numeric(Number::Unsigned(value)))];
+            let key = [typed::Key::Numeric(NumberKey::Unsigned(value))];
             let bucket = any.lookup(&key).unwrap();
             assert_eq!(
                 bucket.iter().next(),
