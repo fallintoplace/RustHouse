@@ -90,27 +90,27 @@ fn invalid(message: impl Into<String>) -> ExecutionError {
 /// Promote to a boxed Vec only when the build side contains duplicate keys.
 /// The extra box keeps the larger Vec header out of every unique-key slot.
 #[allow(clippy::box_collection)]
-enum Bucket {
+pub(super) enum Bucket {
     One(usize),
     Many(Box<Vec<usize>>),
 }
 
 impl Bucket {
-    fn push(&mut self, value: usize) {
+    pub(super) fn push(&mut self, value: usize) {
         match self {
             Self::One(first) => *self = Self::Many(Box::new(vec![*first, value])),
             Self::Many(values) => values.push(value),
         }
     }
 
-    fn iter(&self) -> std::slice::Iter<'_, usize> {
+    pub(super) fn iter(&self) -> std::slice::Iter<'_, usize> {
         match self {
             Self::One(value) => std::slice::from_ref(value).iter(),
             Self::Many(values) => values.iter(),
         }
     }
 
-    fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         match self {
             Self::One(_) => 1,
             Self::Many(values) => values.len(),
@@ -119,14 +119,14 @@ impl Bucket {
 }
 
 /// Store single-column keys inline; keep the existing vector key for composites.
-enum JoinHash {
+pub(super) enum JoinHash {
     SingleNumeric(HashMap<NumberKey, Bucket>),
     SingleOther(HashMap<typed::Key, Bucket>),
     Composite(HashMap<Vec<typed::Key>, Bucket>),
 }
 
 impl JoinHash {
-    fn with_capacity(key_count: usize, capacity: usize, single_numeric: bool) -> Self {
+    pub(super) fn with_capacity(key_count: usize, capacity: usize, single_numeric: bool) -> Self {
         if key_count == 1 {
             if single_numeric {
                 Self::SingleNumeric(HashMap::with_capacity(capacity))
@@ -138,7 +138,7 @@ impl JoinHash {
         }
     }
 
-    fn lookup(&self, key: &[typed::Key]) -> Option<&Bucket> {
+    pub(super) fn lookup(&self, key: &[typed::Key]) -> Option<&Bucket> {
         match self {
             Self::SingleNumeric(hash) if key.len() == 1 => match &key[0] {
                 typed::Key::Numeric(number) => hash.get(number),
@@ -151,7 +151,7 @@ impl JoinHash {
         }
     }
 
-    fn lookup_mut(&mut self, key: &[typed::Key]) -> Option<&mut Bucket> {
+    pub(super) fn lookup_mut(&mut self, key: &[typed::Key]) -> Option<&mut Bucket> {
         match self {
             Self::SingleNumeric(hash) if key.len() == 1 => match &key[0] {
                 typed::Key::Numeric(number) => hash.get_mut(number),
@@ -164,7 +164,7 @@ impl JoinHash {
         }
     }
 
-    fn insert_new(&mut self, key: &[typed::Key], index: usize) {
+    pub(super) fn insert_new(&mut self, key: &[typed::Key], index: usize) {
         match self {
             Self::SingleNumeric(hash) => {
                 debug_assert_eq!(key.len(), 1);
@@ -198,7 +198,7 @@ impl JoinHash {
         }
     }
 
-    fn len(&self) -> usize {
+    pub(super) fn len(&self) -> usize {
         match self {
             Self::SingleNumeric(hash) => hash.len(),
             Self::SingleOther(hash) => hash.len(),
@@ -206,7 +206,7 @@ impl JoinHash {
         }
     }
 
-    fn is_empty(&self) -> bool {
+    pub(super) fn is_empty(&self) -> bool {
         self.len() == 0
     }
 
@@ -219,7 +219,7 @@ impl JoinHash {
     }
 }
 
-fn single_numeric_join_key(rows: &[Vec<typed::Cell>], keys: &[usize]) -> bool {
+pub(super) fn single_numeric_join_key(rows: &[Vec<typed::Cell>], keys: &[usize]) -> bool {
     if keys.len() != 1 {
         return false;
     }
@@ -2510,6 +2510,38 @@ mod reusable_join_build_key_tests {
                 .copied()
                 .collect::<Vec<_>>(),
             vec![0],
+        );
+    }
+
+    #[test]
+    fn numeric_keys_preserve_cross_signedness_matches_and_skip_nulls() {
+        let rows = [
+            vec![typed::Cell::Numeric(Number::Signed(7))],
+            vec![typed::Cell::Numeric(Number::Unsigned(7))],
+            vec![typed::Cell::Null],
+            vec![typed::Cell::Numeric(Number::Signed(-7))],
+            vec![typed::Cell::Numeric(Number::Unsigned(9))],
+        ];
+        let hash = build_join_hash(&rows, &[0], false, 1).unwrap();
+        assert_eq!(hash.len(), 3);
+
+        let positive = [typed::Key::Numeric(NumberKey::Unsigned(7))];
+        assert_eq!(
+            hash.lookup(&positive)
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![0, 1],
+        );
+        let negative = [typed::Key::Numeric(NumberKey::Signed(-7))];
+        assert_eq!(
+            hash.lookup(&negative)
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![3]
         );
     }
 }
