@@ -3413,7 +3413,8 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "instr requires two arguments")?;
             match (haystack, needle) {
                 (Some(haystack), Some(needle)) => {
-                    let position = haystack.find(&needle)
+                    let position = haystack
+                        .find(&needle)
                         .map_or(0, |index| haystack[..index].chars().count() + 1);
                     ConstantValue::Integer(
                         i64::try_from(position)
