@@ -5,6 +5,7 @@ use super::{AggregateState, ExecutionError, Number};
 use crate::{AggregateFunction, Select};
 use rusthouse_storage::{NumericColumn, TypedColumn, TypedQueryReader, inspect_query_source};
 use std::collections::{HashMap, HashSet, hash_map::Entry};
+use std::hash::BuildHasher;
 use std::io::Write;
 use std::path::Path;
 
@@ -37,6 +38,35 @@ impl std::ops::Deref for MetricState {
 impl std::ops::DerefMut for MetricState {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.numeric
+    }
+}
+
+enum TextGroupBucket {
+    One(usize),
+    Multiple(Vec<usize>),
+}
+
+fn find_text_group(
+    groups: &[(Cell, Vec<MetricState>)],
+    bucket: &TextGroupBucket,
+    key: &[u8],
+) -> Option<usize> {
+    let matches = |index: usize| matches!(&groups[index].0, Cell::Text(existing) if existing.as_slice() == key);
+    match bucket {
+        TextGroupBucket::One(index) => matches(*index).then_some(*index),
+        TextGroupBucket::Multiple(indices) => {
+            indices.iter().find(|&&index| matches(index)).copied()
+        }
+    }
+}
+
+fn insert_text_group(bucket: &mut TextGroupBucket, index: usize) {
+    match bucket {
+        TextGroupBucket::One(first) => {
+            let first = *first;
+            *bucket = TextGroupBucket::Multiple(vec![first, index]);
+        }
+        TextGroupBucket::Multiple(indices) => indices.push(index),
     }
 }
 
@@ -147,6 +177,7 @@ fn reserve_group(
     retained: &mut usize,
     metric_count: usize,
     variable_bytes: usize,
+    collision_bytes: usize,
 ) -> Result<(), ExecutionError> {
     let fixed = std::mem::size_of::<(Cell, Vec<MetricState>)>()
         .checked_add(std::mem::size_of::<typed::Key>())
@@ -157,7 +188,7 @@ fn reserve_group(
         })
         .ok_or_else(|| ExecutionError::Invalid("group memory estimate overflow".into()))?;
     let next = variable_bytes
-        .checked_mul(2)
+        .checked_add(collision_bytes)
         .and_then(|variable| fixed.checked_add(variable))
         .and_then(|additional| retained.checked_add(additional))
         .ok_or_else(|| ExecutionError::Invalid("group memory estimate overflow".into()))?;
@@ -447,7 +478,8 @@ pub(super) fn execute<W: Write>(
     // Small groups keep an inexpensive map until direct indexing pays off.
     let mut dense_slots = GroupSlots::for_type(group_type);
     let mut by_key = HashMap::<typed::Key, usize>::new();
-    let mut by_text = HashMap::<Vec<u8>, usize>::new();
+    let mut by_text = HashMap::<u64, TextGroupBucket>::new();
+    let text_hasher = std::collections::hash_map::RandomState::new();
     let mut by_uuid = HashMap::<[u8; 16], usize>::new();
     let mut reader = TypedQueryReader::open_with_metadata(part, &names, &metadata)?;
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
@@ -465,7 +497,7 @@ pub(super) fn execute<W: Write>(
                 if let Some(index) = slots.get(key) {
                     index
                 } else {
-                    reserve_group(&mut retained_group_bytes, items.len(), 0)?;
+                    reserve_group(&mut retained_group_bytes, items.len(), 0, 0)?;
                     let index = groups.len();
                     groups.push((
                         typed::cell(&batch[group_index], row),
@@ -496,7 +528,7 @@ pub(super) fn execute<W: Write>(
                         if groups.len() >= MAX_GROUPS {
                             return Err(group_limit_error());
                         }
-                        reserve_group(&mut retained_group_bytes, items.len(), 0)?;
+                        reserve_group(&mut retained_group_bytes, items.len(), 0, 0)?;
                         let group = groups.len();
                         by_uuid.insert(key, group);
                         groups.push((
@@ -509,23 +541,49 @@ pub(super) fn execute<W: Write>(
                         group
                     }
                 } else if let Some(key) = borrowed_text {
-                    if let Some(&group) = by_text.get(key) {
-                        group
-                    } else {
-                        if groups.len() >= MAX_GROUPS {
-                            return Err(group_limit_error());
+                    let hash = text_hasher.hash_one(key);
+                    match by_text.entry(hash) {
+                        Entry::Vacant(entry) => {
+                            if groups.len() >= MAX_GROUPS {
+                                return Err(group_limit_error());
+                            }
+                            reserve_group(&mut retained_group_bytes, items.len(), key.len(), 0)?;
+                            let group = groups.len();
+                            entry.insert(TextGroupBucket::One(group));
+                            groups.push((
+                                Cell::Text(key.to_vec()),
+                                items
+                                    .iter()
+                                    .map(|(function, _)| MetricState::new(*function))
+                                    .collect(),
+                            ));
+                            group
                         }
-                        reserve_group(&mut retained_group_bytes, items.len(), key.len())?;
-                        let group = groups.len();
-                        by_text.insert(key.to_vec(), group);
-                        groups.push((
-                            Cell::Text(key.to_vec()),
-                            items
-                                .iter()
-                                .map(|(function, _)| MetricState::new(*function))
-                                .collect(),
-                        ));
-                        group
+                        Entry::Occupied(mut entry) => {
+                            if let Some(group) = find_text_group(&groups, entry.get(), key) {
+                                group
+                            } else {
+                                if groups.len() >= MAX_GROUPS {
+                                    return Err(group_limit_error());
+                                }
+                                reserve_group(
+                                    &mut retained_group_bytes,
+                                    items.len(),
+                                    key.len(),
+                                    2 * std::mem::size_of::<usize>(),
+                                )?;
+                                let group = groups.len();
+                                insert_text_group(entry.get_mut(), group);
+                                groups.push((
+                                    Cell::Text(key.to_vec()),
+                                    items
+                                        .iter()
+                                        .map(|(function, _)| MetricState::new(*function))
+                                        .collect(),
+                                ));
+                                group
+                            }
+                        }
                     }
                 } else {
                     let key = typed::cell(&batch[group_index], row);
@@ -535,7 +593,7 @@ pub(super) fn execute<W: Write>(
                             if groups.len() >= MAX_GROUPS {
                                 return Err(group_limit_error());
                             }
-                            reserve_group(&mut retained_group_bytes, items.len(), 0)?;
+                            reserve_group(&mut retained_group_bytes, items.len(), 0, 0)?;
                             entry.insert(groups.len());
                             groups.push((
                                 key,
@@ -842,13 +900,47 @@ mod group_state_budget_tests {
     #[test]
     fn bounded_multi_metric_group_memory_cannot_wrap_or_overrun() {
         let mut used = 0usize;
-        reserve_group(&mut used, 4, 128).unwrap();
+        reserve_group(&mut used, 4, 128, 0).unwrap();
         let first = used;
-        reserve_group(&mut used, 4, 128).unwrap();
+        reserve_group(&mut used, 4, 128, 0).unwrap();
         assert_eq!(used, first * 2);
-        assert!(reserve_group(&mut used, usize::MAX, 0).is_err());
+        assert!(reserve_group(&mut used, usize::MAX, 0, 0).is_err());
         assert_eq!(used, first * 2);
-        assert!(reserve_group(&mut used, 1, MAX_GROUP_STATE_BYTES).is_err());
+        assert!(reserve_group(&mut used, 1, MAX_GROUP_STATE_BYTES, 0).is_err());
+    }
+
+    #[test]
+    fn text_group_memory_counts_one_key_copy_and_collision_slots() {
+        let mut fixed = 0;
+        reserve_group(&mut fixed, 1, 0, 0).unwrap();
+
+        let key_bytes = 128;
+        let mut used = 0;
+        reserve_group(&mut used, 1, key_bytes, 0).unwrap();
+        assert_eq!(used, fixed + key_bytes);
+
+        let collision_bytes = 2 * std::mem::size_of::<usize>();
+        reserve_group(&mut used, 1, key_bytes, collision_bytes).unwrap();
+        assert_eq!(used, 2 * (fixed + key_bytes) + collision_bytes);
+    }
+}
+
+#[cfg(test)]
+mod text_group_lookup_tests {
+    use super::*;
+
+    #[test]
+    fn text_group_lookup_checks_values_after_hash_collisions() {
+        let mut groups = vec![(Cell::Text(b"alpha".to_vec()), Vec::new())];
+        let mut bucket = TextGroupBucket::One(0);
+        assert_eq!(find_text_group(&groups, &bucket, b"alpha"), Some(0));
+        assert_eq!(find_text_group(&groups, &bucket, b"missing"), None);
+
+        groups.push((Cell::Text(b"beta".to_vec()), Vec::new()));
+        insert_text_group(&mut bucket, 1);
+        assert_eq!(find_text_group(&groups, &bucket, b"alpha"), Some(0));
+        assert_eq!(find_text_group(&groups, &bucket, b"beta"), Some(1));
+        assert_eq!(find_text_group(&groups, &bucket, b"gamma"), None);
     }
 }
 
