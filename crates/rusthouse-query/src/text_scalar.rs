@@ -1290,10 +1290,13 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .case_insensitive(false)
                         .size_limit(2 * 1024 * 1024)
                         .build()
-                        .map_err(|error| ParseError(format!("invalid countmatches regex: {error}")))?;
+                        .map_err(|error| {
+                            ParseError(format!("invalid countmatches regex: {error}"))
+                        })?;
                     ConstantValue::Integer(
-                        i64::try_from(regex.find_iter(&input).count())
-                            .map_err(|_| ParseError("countmatches match count exceeds Int64".into()))?,
+                        i64::try_from(regex.find_iter(&input).count()).map_err(|_| {
+                            ParseError("countmatches match count exceeds Int64".into())
+                        })?,
                     )
                 }
                 _ => ConstantValue::Null,
