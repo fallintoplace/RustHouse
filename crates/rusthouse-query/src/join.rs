@@ -46,6 +46,7 @@ pub use derived_group::{
     parse_derived_union_join_with_schema,
 };
 pub use derived_sum::parse_derived_join_sum_with_schema;
+pub(crate) use exists_lookup::JoinExistsLookupPair;
 pub use exists_lookup::{JoinExistsKey, JoinExistsLookup};
 pub use nested_sum::{NestedJoinSum, has_nested_join_sum, parse_nested_join_sum_with_schema};
 pub use substring_antijoin::{
