@@ -5,14 +5,9 @@ const MAX_GROUPS: usize = 200_000;
 const MAX_GROUP_BYTES: usize = 64 * 1024 * 1024;
 const GROUP_MEMORY_OVERHEAD: usize = 192;
 
-fn charge_group_bytes(
-    retained: &mut usize,
-    encoded_capacity: usize,
-    output_capacity: usize,
-) -> Result<(), ExecutionError> {
+fn charge_group_bytes(retained: &mut usize, encoded_capacity: usize) -> Result<(), ExecutionError> {
     let bytes = GROUP_MEMORY_OVERHEAD
         .checked_add(encoded_capacity)
-        .and_then(|total| total.checked_add(output_capacity))
         .ok_or_else(|| ExecutionError::Invalid("CASE group memory overflow".into()))?;
     *retained = retained
         .checked_add(bytes)
@@ -24,14 +19,8 @@ fn charge_group_bytes(
 fn charge_group_memory(
     retained: &mut usize,
     encoded_capacity: usize,
-    output_key: &[Vec<u8>; 5],
 ) -> Result<(), ExecutionError> {
-    let output_capacity = output_key
-        .iter()
-        .try_fold(0usize, |total, value| total.checked_add(value.capacity()));
-    let output_capacity = output_capacity
-        .ok_or_else(|| ExecutionError::Invalid("CASE group memory overflow".into()))?;
-    charge_group_bytes(retained, encoded_capacity, output_capacity)
+    charge_group_bytes(retained, encoded_capacity)
 }
 
 fn integer_zero(column: &TypedColumn, row: usize) -> bool {
@@ -92,29 +81,110 @@ fn append_case_integer_component(column: &TypedColumn, row: usize, buffer: &mut 
     }
 }
 
-fn output_component(column: &TypedColumn, row: usize) -> Result<Vec<u8>, ExecutionError> {
-    let mut output = Vec::new();
-    typed::write_value(&mut output, &typed::cell(column, row))?;
-    Ok(output)
+fn take_case_key_bytes<const N: usize>(key: &mut &[u8]) -> Result<[u8; N], ExecutionError> {
+    let bytes = key
+        .get(..N)
+        .ok_or_else(|| ExecutionError::Invalid("invalid CASE group key".into()))?;
+    let bytes = bytes
+        .try_into()
+        .map_err(|_| ExecutionError::Invalid("invalid CASE group key".into()))?;
+    *key = &key[N..];
+    Ok(bytes)
 }
 
-fn output_group_key(
-    batch: &[TypedColumn],
-    group_indices: &[usize],
-    row: usize,
-    use_source: bool,
-) -> Result<[Vec<u8>; 5], ExecutionError> {
-    Ok([
-        output_component(&batch[group_indices[0]], row)?,
-        output_component(&batch[group_indices[1]], row)?,
-        output_component(&batch[group_indices[2]], row)?,
-        if use_source {
-            output_component(&batch[group_indices[3]], row)?
-        } else {
-            Vec::new()
-        },
-        output_component(&batch[group_indices[4]], row)?,
-    ])
+fn write_case_integer_key<W: Write>(
+    key: &mut &[u8],
+    data_type: &str,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let present = match key.split_first() {
+        Some((&0, rest)) => {
+            *key = rest;
+            false
+        }
+        Some((&1, rest)) => {
+            *key = rest;
+            true
+        }
+        _ => return Err(ExecutionError::Invalid("invalid CASE group key".into())),
+    };
+
+    macro_rules! write_integer {
+        ($type:ty, $width:literal) => {{
+            let value = <$type>::from_le_bytes(take_case_key_bytes::<$width>(key)?);
+            if present {
+                write!(output, "{value}")?;
+            } else {
+                output.write_all(b"\\N")?;
+            }
+        }};
+    }
+
+    match typed::base_type(data_type) {
+        "UInt8" => write_integer!(u8, 1),
+        "Int8" => write_integer!(i8, 1),
+        "UInt16" => write_integer!(u16, 2),
+        "Int16" => write_integer!(i16, 2),
+        "UInt32" => write_integer!(u32, 4),
+        "Int32" => write_integer!(i32, 4),
+        "UInt64" => write_integer!(u64, 8),
+        "Int64" => write_integer!(i64, 8),
+        "UInt128" => write_integer!(u128, 16),
+        "Int128" => write_integer!(i128, 16),
+        _ => {
+            return Err(ExecutionError::Invalid(
+                "invalid CASE integer key type".into(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn write_case_text_key<W: Write>(key: &mut &[u8], output: &mut W) -> Result<(), ExecutionError> {
+    let tag = match key.split_first() {
+        Some((&tag, rest)) => {
+            *key = rest;
+            tag
+        }
+        None => return Err(ExecutionError::Invalid("invalid CASE group key".into())),
+    };
+    match tag {
+        0 => output.write_all(b"\\N")?,
+        1 => {
+            let length = u64::from_le_bytes(take_case_key_bytes::<8>(key)?);
+            let length = usize::try_from(length)
+                .map_err(|_| ExecutionError::Invalid("invalid CASE group key length".into()))?;
+            let bytes = key
+                .get(..length)
+                .ok_or_else(|| ExecutionError::Invalid("invalid CASE group key".into()))?;
+            typed::write_text_bytes(output, bytes)?;
+            *key = &key[length..];
+        }
+        _ => return Err(ExecutionError::Invalid("invalid CASE group key".into())),
+    }
+    Ok(())
+}
+
+fn write_case_group_key<W: Write>(
+    key: &[u8],
+    integer_types: &[String],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let mut key = key;
+    for (index, data_type) in integer_types.iter().enumerate() {
+        if index > 0 {
+            output.write_all(b"\t")?;
+        }
+        write_case_integer_key(&mut key, data_type, output)?;
+    }
+    output.write_all(b"\t")?;
+    write_case_text_key(&mut key, output)?;
+    output.write_all(b"\t")?;
+    write_case_text_key(&mut key, output)?;
+    if !key.is_empty() {
+        return Err(ExecutionError::Invalid("invalid CASE group key".into()));
+    }
+    Ok(())
 }
 
 fn append_empty_text_component(buffer: &mut Vec<u8>) {
@@ -217,6 +287,7 @@ pub(super) fn execute<W: Write>(
             "CASE grouping requires five keys".into(),
         ));
     }
+    let mut integer_types = Vec::with_capacity(3);
     for (index, name) in keys.iter().enumerate() {
         let kind = metadata
             .columns
@@ -227,6 +298,9 @@ pub(super) fn execute<W: Write>(
             return Err(ExecutionError::Invalid(
                 "CASE grouping requires integer keys".into(),
             ));
+        }
+        if index < 3 {
+            integer_types.push(kind.data_type.clone());
         }
         if index >= 3 && typed::base_type(&kind.data_type) != "String" {
             return Err(ExecutionError::Invalid(
@@ -269,9 +343,8 @@ pub(super) fn execute<W: Write>(
     }
     let no_filters = query.predicates.is_empty() && query.or_predicates.is_empty();
     let mut reader = TypedQueryReader::open_with_metadata(path, &names, &metadata)?;
-    let mut encoded_groups = HashMap::<Vec<u8>, usize>::new();
+    let mut encoded_groups = HashMap::<Vec<u8>, u64>::new();
     let mut encoded_probe = Vec::with_capacity(128);
-    let mut groups = Vec::<([Vec<u8>; 5], u64)>::new();
     let mut retained = 0usize;
     while let Some(batch) = reader.next_batch()? {
         for row in 0..batch[0].len() {
@@ -300,26 +373,23 @@ pub(super) fn execute<W: Write>(
                 &mut encoded_probe,
             );
 
-            if let Some(&index) = encoded_groups.get(encoded_probe.as_slice()) {
-                groups[index].1 = groups[index].1.checked_add(1).ok_or_else(|| {
+            if let Some(count) = encoded_groups.get_mut(encoded_probe.as_slice()) {
+                *count = count.checked_add(1).ok_or_else(|| {
                     ExecutionError::Invalid("CASE grouping count overflow".into())
                 })?;
                 continue;
             }
-            if groups.len() >= MAX_GROUPS {
+            if encoded_groups.len() >= MAX_GROUPS {
                 return Err(ExecutionError::Invalid(
                     "CASE grouping exceeds 200000 groups".into(),
                 ));
             }
-            let key = output_group_key(&batch, &group_indices, row, use_source)?;
             let encoded_key = encoded_probe.clone();
-            charge_group_memory(&mut retained, encoded_key.capacity(), &key)?;
-            let index = groups.len();
-            encoded_groups.insert(encoded_key, index);
-            groups.push((key, 1));
+            charge_group_memory(&mut retained, encoded_key.capacity())?;
+            encoded_groups.insert(encoded_key, 1);
         }
     }
-    let mut rows = groups;
+    let mut rows = encoded_groups.into_iter().collect::<Vec<_>>();
     let descending = query
         .order_by
         .as_ref()
@@ -331,17 +401,12 @@ pub(super) fn execute<W: Write>(
         query.limit,
     );
     write_case_header(output, keys, case, count_label)?;
-    for (keys, count) in rows
+    for (key, count) in rows
         .into_iter()
         .skip(query.offset.unwrap_or(0))
         .take(query.limit.unwrap_or(usize::MAX))
     {
-        for (i, key) in keys.iter().enumerate() {
-            if i > 0 {
-                output.write_all(b"\t")?;
-            }
-            output.write_all(key)?;
-        }
+        write_case_group_key(&key, &integer_types, output)?;
         writeln!(output, "\t{count}")?;
     }
     Ok(())
@@ -418,20 +483,19 @@ mod case_memory_tests {
     use super::*;
 
     #[test]
-    fn retained_budget_counts_both_stored_key_buffers_and_checks_overflow() {
-        let keys = std::array::from_fn::<_, 5, _>(|_| vec![b'x'; 8]);
+    fn retained_budget_counts_one_stored_key_buffer_and_checks_overflow() {
         let mut retained = 0;
-        charge_group_memory(&mut retained, 24, &keys).unwrap();
-        assert_eq!(retained, GROUP_MEMORY_OVERHEAD + 24 + 5 * 8);
+        charge_group_memory(&mut retained, 24).unwrap();
+        assert_eq!(retained, GROUP_MEMORY_OVERHEAD + 24);
 
         let before = retained;
-        assert!(charge_group_bytes(&mut retained, usize::MAX, 0).is_err());
+        assert!(charge_group_bytes(&mut retained, usize::MAX).is_err());
         assert_eq!(retained, before);
 
         let mut at_limit = 0;
-        charge_group_bytes(&mut at_limit, MAX_GROUP_BYTES - GROUP_MEMORY_OVERHEAD, 0).unwrap();
+        charge_group_bytes(&mut at_limit, MAX_GROUP_BYTES - GROUP_MEMORY_OVERHEAD).unwrap();
         assert_eq!(at_limit, MAX_GROUP_BYTES);
-        assert!(charge_group_bytes(&mut at_limit, 0, 0).is_err());
+        assert!(charge_group_bytes(&mut at_limit, 0).is_err());
         assert_eq!(at_limit, MAX_GROUP_BYTES);
     }
 
@@ -496,5 +560,38 @@ mod case_memory_tests {
         let mut actual = Vec::new();
         append_empty_text_component(&mut actual);
         assert_eq!(actual, [vec![1], vec![0; 8]].concat());
+    }
+
+    #[test]
+    fn grouped_case_key_round_trips_wide_numbers_nulls_and_escaped_text() {
+        use rusthouse_storage::NumericColumn;
+
+        let first = TypedColumn::Numeric(NumericColumn::Int16(vec![-17]));
+        let second = TypedColumn::Numeric(NumericColumn::UInt64(vec![9_007_199_254_740_993]));
+        let third = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int8(vec![0]),
+            nulls: vec![1],
+        };
+        let mut key = Vec::new();
+        append_case_integer_component(&first, 0, &mut key);
+        append_case_integer_component(&second, 0, &mut key);
+        append_case_integer_component(&third, 0, &mut key);
+        key.push(1);
+        key.extend_from_slice(&6u64.to_le_bytes());
+        key.extend_from_slice(b"a\t\n\\\0\x01");
+        key.push(0);
+
+        let types = ["Int16", "UInt64", "Nullable(Int8)"].map(str::to_owned);
+        let mut output = Vec::new();
+        write_case_group_key(&key, &types, &mut output).unwrap();
+        let expected = [
+            b"-17\t9007199254740993\t\\N\ta".as_slice(),
+            br"\t\n\\\0\x01",
+            b"\t\\N",
+        ]
+        .concat();
+        assert_eq!(output, expected);
+
+        assert!(write_case_group_key(&key[..key.len() - 1], &types, &mut Vec::new()).is_err());
     }
 }

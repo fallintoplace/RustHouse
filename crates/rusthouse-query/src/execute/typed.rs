@@ -1006,7 +1006,10 @@ pub(super) fn passes(batch: &[TypedColumn], row: usize, branches: &[Vec<Conditio
     })
 }
 
-fn write_text_bytes<W: Write>(output: &mut W, bytes: &[u8]) -> Result<(), ExecutionError> {
+pub(super) fn write_text_bytes<W: Write>(
+    output: &mut W,
+    bytes: &[u8],
+) -> Result<(), ExecutionError> {
     let mut start = 0;
     for (index, &byte) in bytes.iter().enumerate() {
         let escape: Option<&[u8]> = match byte {
