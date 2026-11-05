@@ -249,6 +249,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "FORMATREADABLEDECIMALSIZE"
                 | "TODECIMALSTRING"
                 | "TOTYPENAME"
+                | "JSONEXTRACTFLOAT"
                 | "POSITION"
                 | "ENCODEURLFORMCOMPONENT"
                 | "ISIPV4PRIVATE"
@@ -4958,6 +4959,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "JSONEXTRACTFLOAT" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(parser, Token::RParen, "JSONExtractFloat requires one or two arguments")?;
+            match (input, path) {
+                (None, _) | (_, Some(None)) => ConstantValue::Null,
+                (Some(input), path) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let value = match path {
+                        Some(Some(path)) => json.at_path(&path),
+                        None => Some(&json),
+                        Some(None) => unreachable!(),
+                    };
+                    let number = value
+                        .and_then(|node| node.raw().parse::<f64>().ok())
+                        .filter(|number| number.is_finite())
+                        .unwrap_or(0.0);
+                    ConstantValue::Decimal(number.to_string())
+                }
             }
         }
         "EXTRACTURLPARAMETER" => {
