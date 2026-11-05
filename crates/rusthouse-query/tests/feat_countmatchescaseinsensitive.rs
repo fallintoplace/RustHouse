@@ -10,13 +10,25 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn countmatchescaseinsensitive_handles_regex_constants() {
     for (sql, expected) in [
-        ("SELECT countMatchesCaseInsensitive('AbAB','ab')", ConstantValue::Integer(2)),
-        ("SELECT countMatchesCaseInsensitive('foo','bar')", ConstantValue::Integer(0)),
+        (
+            "SELECT countMatchesCaseInsensitive('AbAB','ab')",
+            ConstantValue::Integer(2),
+        ),
+        (
+            "SELECT countMatchesCaseInsensitive('foo','bar')",
+            ConstantValue::Integer(0),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
-    assert_eq!(value("SELECT countmatchescaseinsensitive(NULL, 'x')"), ConstantValue::Null);
-    assert_eq!(value("SELECT countmatchescaseinsensitive('x', NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT countmatchescaseinsensitive(NULL, 'x')"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT countmatchescaseinsensitive('x', NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]
