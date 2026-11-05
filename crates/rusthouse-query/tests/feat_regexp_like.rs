@@ -10,8 +10,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn regexp_like_supports_constant_patterns() {
     for (sql, expected) in [
-        ("SELECT regexp_like('ABC123', '[0-9]+')", ConstantValue::Integer(1)),
-        ("SELECT regexp_like('hello', '[0-9]+')", ConstantValue::Integer(0)),
+        (
+            "SELECT regexp_like('ABC123', '[0-9]+')",
+            ConstantValue::Integer(1),
+        ),
+        (
+            "SELECT regexp_like('hello', '[0-9]+')",
+            ConstantValue::Integer(0),
+        ),
         ("SELECT regexp_like('abc', '^a')", ConstantValue::Integer(1)),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
