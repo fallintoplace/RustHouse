@@ -19,6 +19,38 @@ fn runs_scalar_queries_without_a_part() {
 }
 
 #[test]
+fn projects_constants_once_for_each_filtered_source_row() {
+    assert_eq!(
+        run(
+            "SELECT 7 AS fixed, 'x' AS label FROM numbers(5) WHERE number >= 2 ORDER BY number DESC LIMIT 2 OFFSET 1",
+            None,
+        )
+        .unwrap(),
+        "fixed\tlabel\n7\tx\n7\tx\n"
+    );
+    assert_eq!(
+        run(
+            "SELECT 'none' AS label FROM numbers(3) WHERE number > 9",
+            None
+        )
+        .unwrap(),
+        "label\n"
+    );
+}
+
+#[test]
+fn distinct_constant_projection_returns_at_most_one_source_row() {
+    assert_eq!(
+        run(
+            "SELECT DISTINCT 7 AS fixed FROM numbers(5) WHERE number >= 2 LIMIT 10",
+            None,
+        )
+        .unwrap(),
+        "fixed\n7\n"
+    );
+}
+
+#[test]
 fn single_result_aliases_change_headers_and_support_order_by() {
     assert_eq!(run("SELECT 1 AS result", None).unwrap(), "result\n1\n");
     assert_eq!(

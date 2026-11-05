@@ -235,7 +235,7 @@ pub(super) fn parse(
     }
     flat.extend_from_slice(&inner[inner_from..]);
     flat.extend_from_slice(&tokens[end + suffix_start..]);
-    let plan = parse_join_resolved(flat, Some(resolve))?
+    let plan = parse_join_resolved(flat, Some(resolve), false)?
         .ok_or_else(|| ParseError("derived formula requires an INNER JOIN".into()))?;
     Ok(Some(plan))
 }

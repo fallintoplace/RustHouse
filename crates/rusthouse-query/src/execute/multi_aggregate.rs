@@ -159,6 +159,10 @@ pub(super) enum BoundExpr {
     Divide(Box<Self>, Box<Self>),
     Modulo(Box<Self>, Box<Self>),
     Compare(Box<Self>, crate::Operator, Box<Self>),
+    IsNull {
+        index: usize,
+        negated: bool,
+    },
     TextCompare {
         index: usize,
         operator: crate::Operator,
@@ -356,6 +360,10 @@ impl BoundExpr {
                     .transpose()?,
             },
             ScalarExpr::Column(name) => Self::Column(index(name)?),
+            ScalarExpr::IsNull { column, negated } => Self::IsNull {
+                index: index(column)?,
+                negated: *negated,
+            },
             ScalarExpr::TextLength(name) => Self::TextLength(index(name)?),
             ScalarExpr::TextCompare {
                 column,
@@ -628,6 +636,9 @@ pub(super) fn eval_row_arithmetic(
             };
             Ok(Some(Number::Unsigned(u128::from(result))))
         }
+        BoundExpr::IsNull { index, negated } => Ok(Some(Number::Unsigned(u128::from(
+            matches!(row.get(*index), Some(Cell::Null)) == !*negated,
+        )))),
         BoundExpr::And(left, right) | BoundExpr::Or(left, right) => {
             let as_bool = |value: Number| match value {
                 Number::Unsigned(v) => v != 0,
@@ -797,6 +808,19 @@ pub(super) fn eval_number(
                 Number::Unsigned(u128::from(result != *negated))
             }))
         }
+        BoundExpr::IsNull { index, negated } => Ok(Some(Number::Unsigned(u128::from(
+            matches!(
+                typed::cell(
+                    batch.get(*index).ok_or_else(|| {
+                        ExecutionError::Invalid(
+                            "NULL expression references an unknown column".into(),
+                        )
+                    })?,
+                    row
+                ),
+                typed::Cell::Null
+            ) == !*negated,
+        )))),
         BoundExpr::And(left, right) | BoundExpr::Or(left, right) => {
             let as_bool = |value: Number| match value {
                 Number::Unsigned(value) => value != 0,

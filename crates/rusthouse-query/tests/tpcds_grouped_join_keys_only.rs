@@ -70,7 +70,7 @@ fn grouped_inner_join_chain_emits_distinct_keys_without_count() {
     execute_multi_join(&query, &paths, &mut output).unwrap();
     assert_eq!(
         String::from_utf8(output).unwrap(),
-        "region\tf.id\neast\t1\nwest\t2\neast\t3\n"
+        "region\tid\neast\t1\nwest\t2\neast\t3\n"
     );
 
     let query = parse_join(&format!("{base} LIMIT 1 OFFSET 1"))
@@ -78,9 +78,16 @@ fn grouped_inner_join_chain_emits_distinct_keys_without_count() {
         .unwrap();
     let mut output = Vec::new();
     execute_multi_join(&query, &paths, &mut output).unwrap();
+    assert_eq!(String::from_utf8(output).unwrap(), "region\tid\nwest\t2\n");
+
+    let two_table = "SELECT f.category AS region, f.id FROM fact f, dimension d WHERE f.id = d.id GROUP BY region, f.id ORDER BY f.id";
+    let query = parse_join(two_table).unwrap().unwrap();
+    assert!(query.grouped_keys_only);
+    let mut output = Vec::new();
+    execute_multi_join(&query, &paths[..2], &mut output).unwrap();
     assert_eq!(
         String::from_utf8(output).unwrap(),
-        "region\tf.id\nwest\t2\n"
+        "region\tid\neast\t1\nwest\t2\neast\t3\n"
     );
     fs::remove_dir_all(root).unwrap();
 }
@@ -88,7 +95,6 @@ fn grouped_inner_join_chain_emits_distinct_keys_without_count() {
 #[test]
 fn unsupported_join_group_only_forms_fail_at_parse_time() {
     for sql in [
-        "SELECT a.id FROM a JOIN b ON a.id=b.id GROUP BY a.id",
         "SELECT a.id FROM a JOIN b ON a.id=b.id LEFT JOIN c ON b.id=c.id GROUP BY a.id",
         "SELECT a.id FROM a JOIN b ON a.id=b.id JOIN c ON b.id=c.id GROUP BY b.id",
         "SELECT a.id FROM a JOIN b ON a.id=b.id JOIN c ON b.id=c.id GROUP BY a.id ORDER BY count",

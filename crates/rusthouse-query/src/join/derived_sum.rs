@@ -248,7 +248,7 @@ pub fn parse_derived_join_sum_with_schema(
     flat.extend([Token::RParen, w("AS"), w(&aggregate_alias)]);
     flat.extend_from_slice(&inner[inner_from..]);
     flat.extend_from_slice(&tokens[end + suffix_start..]);
-    let plan = parse_join_resolved(flat, Some(&mut resolve))?
+    let plan = parse_join_resolved(flat, Some(&mut resolve), false)?
         .ok_or_else(|| ParseError("derived SUM requires an INNER JOIN".into()))?;
     Ok(Some(plan))
 }

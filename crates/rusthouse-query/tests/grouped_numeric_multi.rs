@@ -107,3 +107,63 @@ fn grouped_mixed_count_and_sum_keep_nullable_numeric_semantics() {
     );
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn grouped_query_accepts_sixty_four_numeric_aggregates() {
+    let root = std::env::temp_dir().join(format!(
+        "rusthouse-grouped-numeric-limit-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed),
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let columns = [
+        Column {
+            name: "station".into(),
+            data_type: "String".into(),
+        },
+        Column {
+            name: "temperature".into(),
+            data_type: "Float64".into(),
+        },
+    ];
+    write_wide_part(
+        &root.join("all_1_1_0"),
+        &columns,
+        &[
+            vec![Some("Berlin".into()), Some("10".into())],
+            vec![Some("Berlin".into()), Some("20".into())],
+            vec![Some("Bremen".into()), Some("-4".into())],
+        ],
+    )
+    .unwrap();
+
+    let aggregates = (0..64)
+        .map(|index| format!("sum(temperature) AS total_{index}"))
+        .collect::<Vec<_>>();
+    let sql = format!(
+        "SELECT station, {} FROM part GROUP BY station ORDER BY station",
+        aggregates.join(", ")
+    );
+    let actual = run(&sql, &root);
+    let headers = (0..64)
+        .map(|index| format!("total_{index}"))
+        .collect::<Vec<_>>();
+    let metric = std::iter::repeat_n("30", 64).collect::<Vec<_>>().join("\t");
+    let negative_metric = std::iter::repeat_n("-4", 64).collect::<Vec<_>>().join("\t");
+    assert_eq!(
+        actual,
+        format!(
+            "station\t{}\nBerlin\t{metric}\nBremen\t{negative_metric}\n",
+            headers.join("\t")
+        )
+    );
+    let too_many = format!(
+        "SELECT station, {} FROM part GROUP BY station",
+        (0..65)
+            .map(|index| format!("sum(temperature) AS total_{index}"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    assert!(parse_select(&too_many).is_err());
+    fs::remove_dir_all(root).unwrap();
+}

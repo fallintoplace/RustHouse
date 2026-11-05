@@ -3,14 +3,17 @@
 mod correlated_avg;
 mod correlated_min;
 mod correlated_sum;
+mod derived_group_join;
 mod nested_sum;
+pub use derived_group_join::execute_derived_union_join;
+pub use derived_group_join::{execute_derived_grouped_join, execute_derived_grouped_select};
 pub use nested_sum::execute_nested_join_sum;
 mod exists;
 mod reorder;
 mod row_filters;
 mod streaming;
 use super::{ExecutionError, typed};
-use crate::{JoinColumn, JoinSelect, JoinStep, JoinType};
+use crate::{JoinColumn, JoinProjectionOrder, JoinSelect, JoinStep, JoinType};
 use rusthouse_storage::inspect_query_source;
 use std::collections::HashMap;
 use std::io::Write;
@@ -25,8 +28,15 @@ use super::join::{
 };
 
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
-const MAX_CHAIN_COLUMNS: usize = 128;
+const MAX_CHAIN_COLUMNS: usize = 256;
 const MAX_CHAIN_HASH_BYTES: usize = MAX_CHAIN_BYTES;
+const SCALAR_OUTPUT_INDEX_BASE: usize = usize::MAX;
+
+fn scalar_output_index(index: usize, projection_count: usize) -> Option<usize> {
+    SCALAR_OUTPUT_INDEX_BASE
+        .checked_sub(index)
+        .filter(|scalar_index| *scalar_index < projection_count)
+}
 
 /// Hash table keys are owned again after the build-side rows are decoded.
 /// Include duplicate row index lists, which are separate from row retention.
@@ -100,11 +110,46 @@ fn write_scalar_sum<W: Write>(
     Ok(())
 }
 
+fn write_scalar_aggregate_header<W: Write>(
+    query: &JoinSelect,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    for (index, aggregate) in query.scalar_aggregates.iter().enumerate() {
+        if index > 0 {
+            output.write_all(b"\t")?;
+        }
+        output.write_all(aggregate.alias.as_bytes())?;
+    }
+    output.write_all(b"\n")?;
+    Ok(())
+}
+
 fn write_group_header<W: Write>(
     query: &JoinSelect,
     selected: &[(usize, String, Option<usize>)],
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    if !query.grouped_output.is_empty() {
+        for (index, item) in query.grouped_output.iter().enumerate() {
+            if index > 0 {
+                output.write_all(b"\t")?;
+            }
+            let name = match item {
+                crate::JoinGroupedOutput::Key(key) => &selected[*key].1,
+                crate::JoinGroupedOutput::Count(alias)
+                | crate::JoinGroupedOutput::Sum(alias)
+                | crate::JoinGroupedOutput::WindowRatio(alias)
+                | crate::JoinGroupedOutput::WindowAverage(alias) => alias,
+                crate::JoinGroupedOutput::SumExtra(_, alias) => alias,
+                crate::JoinGroupedOutput::Min(_, alias)
+                | crate::JoinGroupedOutput::Max(_, alias)
+                | crate::JoinGroupedOutput::Average(_, alias) => alias,
+            };
+            output.write_all(name.as_bytes())?;
+        }
+        output.write_all(b"\n")?;
+        return Ok(());
+    }
     if query.grouped_keys_only {
         return write_join_header(output, selected);
     }
@@ -122,8 +167,25 @@ fn write_group_header<W: Write>(
         output.write_all(b"\n")?;
         return Ok(());
     }
+    if !query.grouped_case_counts.is_empty() {
+        for (index, (_, name, _)) in selected.iter().enumerate() {
+            if index > 0 {
+                output.write_all(b"\t")?;
+            }
+            output.write_all(name.as_bytes())?;
+        }
+        for (_, _, alias) in &query.grouped_case_counts {
+            output.write_all(b"\t")?;
+            output.write_all(alias.as_bytes())?;
+        }
+        output.write_all(b"\n")?;
+        return Ok(());
+    }
     let metric = query.grouped_sum_position.unwrap_or(selected.len());
-    for index in 0..=selected.len() {
+    let has_window_ratio = query.grouped_window_ratio.is_some();
+    let extra_sums = query.grouped_sum_extras.len();
+    let last_column = selected.len() + extra_sums + if has_window_ratio { 1 } else { 0 };
+    for index in 0..=last_column {
         if index > 0 {
             output.write_all(b"\t")?;
         }
@@ -135,8 +197,23 @@ fn write_group_header<W: Write>(
                     .unwrap_or("count")
                     .as_bytes(),
             )?;
+        } else if index > metric && index <= metric + extra_sums {
+            output.write_all(query.grouped_sum_extras[index - metric - 1].1.as_bytes())?;
+        } else if has_window_ratio && index == metric + extra_sums + 1 {
+            output.write_all(
+                query
+                    .grouped_window_ratio
+                    .as_ref()
+                    .expect("window ratio checked")
+                    .alias
+                    .as_bytes(),
+            )?;
         } else {
-            let key = if index < metric { index } else { index - 1 };
+            let key = if index < metric {
+                index
+            } else {
+                index - 1 - extra_sums - if has_window_ratio { 1 } else { 0 }
+            };
             output.write_all(selected[key].1.as_bytes())?;
         }
     }
@@ -212,6 +289,7 @@ fn validate_sum_expression(
         BoundExpr::TextLength(index)
         | BoundExpr::TextCompare { index, .. }
         | BoundExpr::TextLike { index, .. } => check(*index, true),
+        BoundExpr::IsNull { .. } => Ok(()),
         BoundExpr::Integer(_) | BoundExpr::Float(_) => Ok(()),
         BoundExpr::Add(a, b)
         | BoundExpr::Subtract(a, b)
@@ -254,8 +332,17 @@ struct Relation {
     alias: String,
     names: Vec<String>,
     types: Vec<String>,
+    physical_columns: usize,
+    virtual_columns: Vec<BoundVirtualColumn>,
     start: usize,
     rows: u64,
+}
+
+struct BoundVirtualColumn {
+    index: usize,
+    source_index: usize,
+    start: usize,
+    length: usize,
 }
 
 type BoundSubstringComparison = (usize, usize, usize, crate::Operator, usize, usize, usize);
@@ -473,7 +560,7 @@ fn output_columns(
                     } else if column.relation.is_empty() {
                         column.name.clone()
                     } else {
-                        format!("{}.{}", column.relation, column.name)
+                        column.name.clone()
                     },
                     None,
                 ));
@@ -495,7 +582,167 @@ fn output_columns(
             }
         }
     }
+    if !query.scalar_projections.is_empty() {
+        let mut ordered = Vec::with_capacity(query.projection_order.len());
+        for projection in &query.projection_order {
+            match projection {
+                JoinProjectionOrder::Column(index) => ordered.push(
+                    selected
+                        .get(*index)
+                        .cloned()
+                        .ok_or_else(|| invalid("JOIN projection column is out of range"))?,
+                ),
+                JoinProjectionOrder::Scalar(index) => {
+                    let projection = query
+                        .scalar_projections
+                        .get(*index)
+                        .ok_or_else(|| invalid("JOIN scalar projection is out of range"))?;
+                    ordered.push((
+                        SCALAR_OUTPUT_INDEX_BASE - *index,
+                        projection.alias.clone(),
+                        None,
+                    ));
+                }
+            }
+        }
+        return Ok(ordered);
+    }
     Ok(selected)
+}
+
+fn bind_scalar_projections(
+    query: &JoinSelect,
+    relations: &[Relation],
+) -> Result<Vec<super::multi_aggregate::BoundExpr>, ExecutionError> {
+    let mut indices = HashMap::new();
+    let mut unqualified: HashMap<String, Option<usize>> = HashMap::new();
+    for relation in relations {
+        for (column_index, name) in relation.names.iter().enumerate() {
+            let index = relation.start + column_index;
+            indices.insert(format!("{}\0{name}", relation.alias), index);
+            unqualified
+                .entry(name.clone())
+                .and_modify(|existing| *existing = None)
+                .or_insert(Some(index));
+        }
+    }
+    for (name, index) in unqualified {
+        if let Some(index) = index {
+            indices.insert(name, index);
+        }
+    }
+    query
+        .scalar_projections
+        .iter()
+        .map(|projection| super::multi_aggregate::BoundExpr::bind(&projection.expression, &indices))
+        .collect()
+}
+
+fn write_global_case_aggregates<W: Write>(
+    query: &JoinSelect,
+    rows: &[Vec<typed::Cell>],
+    relations: &[Relation],
+    output: &mut W,
+) -> Result<bool, ExecutionError> {
+    if !query.grouped_count.as_ref().is_some_and(Vec::is_empty)
+        || query.grouped_case_counts.is_empty()
+    {
+        return Ok(false);
+    }
+
+    let mut indices = HashMap::new();
+    for relation in relations {
+        for (column_index, name) in relation.names.iter().enumerate() {
+            indices.insert(
+                format!("{}\0{name}", relation.alias),
+                relation.start + column_index,
+            );
+            indices.insert(name.clone(), relation.start + column_index);
+        }
+    }
+    let mut filters = Vec::with_capacity(query.grouped_case_counts.len());
+    let mut values = Vec::with_capacity(query.grouped_case_counts.len());
+    for (filter, value, _) in &query.grouped_case_counts {
+        let crate::GroupedFilter::CaseExpression { condition, .. } = filter else {
+            return Err(invalid(
+                "global grouped CASE aggregates require expression conditions",
+            ));
+        };
+        filters.push(super::multi_aggregate::BoundExpr::bind(
+            condition, &indices,
+        )?);
+        values.push(match value {
+            crate::GroupedCaseValue::Count => None,
+            crate::GroupedCaseValue::Column(column) => {
+                let name = if column.relation.is_empty() {
+                    column.name.clone()
+                } else {
+                    format!("{}\0{}", column.relation, column.name)
+                };
+                Some(super::multi_aggregate::BoundExpr::bind(
+                    &crate::ScalarExpr::Column(name),
+                    &indices,
+                )?)
+            }
+            crate::GroupedCaseValue::Expression(expression) => Some(
+                super::multi_aggregate::BoundExpr::bind(expression, &indices)?,
+            ),
+        });
+    }
+
+    for (index, (_, _, alias)) in query.grouped_case_counts.iter().enumerate() {
+        if index != 0 {
+            output.write_all(b"\t")?;
+        }
+        output.write_all(alias.as_bytes())?;
+    }
+    output.write_all(b"\n")?;
+    if query.offset > 0 || query.limit == Some(0) {
+        return Ok(true);
+    }
+
+    let mut sums = vec![None; filters.len()];
+    for row in rows {
+        for index in 0..filters.len() {
+            let matches = match super::multi_aggregate::eval_row_arithmetic(&filters[index], row)? {
+                Some(super::Number::Unsigned(value)) => value != 0,
+                Some(super::Number::Signed(value)) => value != 0,
+                Some(super::Number::Float(value)) => value != 0.0,
+                None => false,
+            };
+            if matches {
+                let value = match &values[index] {
+                    Some(expression) => {
+                        super::multi_aggregate::eval_row_arithmetic(expression, row)?
+                    }
+                    None => Some(super::Number::Unsigned(1)),
+                };
+                if let Some(value) = value {
+                    sums[index] = Some(match sums[index] {
+                        Some(current) => super::checked_aggregate_sum(current, value)?,
+                        None => value,
+                    });
+                }
+            }
+        }
+    }
+    if rows.is_empty() {
+        for (index, _) in sums.iter().enumerate() {
+            if index != 0 {
+                output.write_all(b"\t")?;
+            }
+            typed::write_value(output, &typed::Cell::Null)?;
+        }
+    } else {
+        for (index, sum) in sums.into_iter().enumerate() {
+            if index != 0 {
+                output.write_all(b"\t")?;
+            }
+            typed::write_value(output, &sum.map_or(typed::Cell::Null, typed::Cell::Numeric))?;
+        }
+    }
+    output.write_all(b"\n")?;
+    Ok(true)
 }
 
 /// Retain only physical streams needed by the query's output, join keys,
@@ -506,6 +753,7 @@ fn required_physical_columns(
     relations: &[Relation],
     initial_step: &JoinStep,
     row_filters: Option<&row_filters::RowFilters>,
+    avg_filter: Option<&correlated_avg::BoundAvg>,
     min_filter: Option<&correlated_min::BoundMin>,
     sum_filter: Option<&correlated_sum::BoundSum>,
 ) -> Result<Vec<Vec<usize>>, ExecutionError> {
@@ -524,7 +772,45 @@ fn required_physical_columns(
         }
     };
     if query.aggregate.is_none() {
-        if let Some(columns) = &query.columns {
+        if let Some(crate::ScalarExpr::Column(name)) = &query.scalar_sum {
+            let (relation, column) = if let Some(relation) = &query.scalar_sum_qualifier {
+                (relation.as_str(), name.as_str())
+            } else {
+                ("", name.as_str())
+            };
+            retain_absolute(column_index(
+                relations,
+                &JoinColumn {
+                    relation: relation.to_owned(),
+                    name: column.to_owned(),
+                },
+            )?);
+        } else if let Some(formula) = &query.scalar_formula {
+            for expression in &formula.sums {
+                let mut names = Vec::new();
+                expression.referenced_columns(&mut names);
+                for name in names {
+                    let (relation, column) = name
+                        .split_once('\0')
+                        .map_or(("", name.as_str()), |(relation, column)| (relation, column));
+                    retain_absolute(column_index(
+                        relations,
+                        &JoinColumn {
+                            relation: relation.to_owned(),
+                            name: column.to_owned(),
+                        },
+                    )?);
+                }
+            }
+        } else if !query.scalar_aggregates.is_empty() {
+            for item in &query.scalar_aggregates {
+                if let crate::JoinAggregate::CountColumn(column)
+                | crate::JoinAggregate::Numeric { column, .. } = &item.aggregate
+                {
+                    retain_absolute(column_index(relations, column)?);
+                }
+            }
+        } else if let Some(columns) = &query.columns {
             for column in columns {
                 if column.name == "*" {
                     let relation = relations
@@ -548,6 +834,74 @@ fn required_physical_columns(
             }
         }
     }
+    for projection in &query.scalar_projections {
+        let mut names = Vec::new();
+        projection.expression.referenced_columns(&mut names);
+        for name in names {
+            let (relation, column) = name
+                .split_once('\0')
+                .map_or(("", name.as_str()), |(relation, column)| (relation, column));
+            retain_absolute(column_index(
+                relations,
+                &JoinColumn {
+                    relation: relation.to_owned(),
+                    name: column.to_owned(),
+                },
+            )?);
+        }
+    }
+    for (filter, value, _) in &query.grouped_case_counts {
+        if let Some(column) = filter.column() {
+            let (relation, name) = column
+                .split_once('\0')
+                .map_or(("", column), |(relation, name)| (relation, name));
+            retain_absolute(column_index(
+                relations,
+                &JoinColumn {
+                    relation: relation.to_owned(),
+                    name: name.to_owned(),
+                },
+            )?);
+        }
+        if let crate::GroupedFilter::CaseExpression { condition, .. } = filter {
+            let mut names = Vec::new();
+            condition.referenced_columns(&mut names);
+            for name in names {
+                let (relation, column) = name
+                    .split_once('\0')
+                    .map_or(("", name.as_str()), |(relation, column)| (relation, column));
+                retain_absolute(column_index(
+                    relations,
+                    &JoinColumn {
+                        relation: relation.to_owned(),
+                        name: column.to_owned(),
+                    },
+                )?);
+            }
+        }
+        match value {
+            crate::GroupedCaseValue::Count => {}
+            crate::GroupedCaseValue::Column(column) => {
+                retain_absolute(column_index(relations, column)?);
+            }
+            crate::GroupedCaseValue::Expression(expression) => {
+                let mut names = Vec::new();
+                expression.referenced_columns(&mut names);
+                for name in names {
+                    let (relation, column) = name
+                        .split_once('\0')
+                        .map_or(("", name.as_str()), |(relation, column)| (relation, column));
+                    retain_absolute(column_index(
+                        relations,
+                        &JoinColumn {
+                            relation: relation.to_owned(),
+                            name: column.to_owned(),
+                        },
+                    )?);
+                }
+            }
+        }
+    }
     if let Some(crate::JoinAggregate::CountColumn(column)) = &query.aggregate {
         retain_absolute(column_index(relations, column)?);
     }
@@ -555,7 +909,13 @@ fn required_physical_columns(
         retain_absolute(column_index(relations, column)?);
     }
     for (column, _, _) in &query.order_by {
-        retain_absolute(column_index(relations, column)?);
+        if !(column.is_count_order()
+            && (query.aggregate == Some(crate::JoinAggregate::CountStar)
+                || !query.scalar_aggregates.is_empty()
+                || query.scalar_sum.is_some()))
+        {
+            retain_absolute(column_index(relations, column)?);
+        }
     }
     for (column, _, _) in query
         .where_comparison
@@ -572,6 +932,10 @@ fn required_physical_columns(
         for &index in &filters.indices {
             retain_absolute(index);
         }
+    }
+    if let Some(filter) = avg_filter {
+        retain_absolute(filter.outer_key);
+        retain_absolute(filter.outer_value);
     }
     if let Some(filter) = min_filter {
         retain_absolute(filter.outer_key);
@@ -873,7 +1237,7 @@ pub fn execute_correlated_join<W: Write>(
     execute_multi_join_inner(
         plan.outer(),
         paths,
-        Some((&plan.filters, inner_paths)),
+        Some((&plan.filters, &plan.expression, inner_paths)),
         None,
         None,
         None,
@@ -889,11 +1253,22 @@ pub fn execute_correlated_avg<W: Write>(
     inner: &std::path::Path,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
+    let inner_paths = [inner.to_path_buf()];
+    execute_correlated_avg_with_paths(plan, paths, &inner_paths, output)
+}
+
+/// Execute a correlated AVG plan with either a single table or a grouped inner join.
+pub fn execute_correlated_avg_with_paths<W: Write>(
+    plan: &crate::JoinCorrelatedAvg,
+    paths: &[PathBuf],
+    inner_paths: &[PathBuf],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
     execute_multi_join_inner(
         plan.outer(),
         paths,
         None,
-        Some((plan, inner)),
+        Some((plan, inner_paths)),
         None,
         None,
         false,
@@ -961,8 +1336,8 @@ fn execute_nested_correlated_sum<W: Write>(
 fn execute_multi_join_inner<W: Write>(
     query: &JoinSelect,
     paths: &[PathBuf],
-    exists_plan: Option<(&[crate::JoinExistsFilter], &[PathBuf])>,
-    avg_plan: Option<(&crate::JoinCorrelatedAvg, &std::path::Path)>,
+    exists_plan: Option<(&[crate::JoinExistsFilter], &[Vec<usize>], &[PathBuf])>,
+    avg_plan: Option<(&crate::JoinCorrelatedAvg, &[PathBuf])>,
     min_plan: Option<(&crate::JoinCorrelatedMin, &[PathBuf])>,
     sum_plan: Option<(&crate::JoinCorrelatedSum, &std::path::Path)>,
     stream_buffered_sum: bool,
@@ -1005,12 +1380,6 @@ fn execute_multi_join_inner<W: Write>(
             || query.steps.iter().any(|step| step.kind != JoinType::Inner))
     {
         return Err(invalid("grouped MIN requires an INNER grouped plan"));
-    }
-    if query.scalar_where.is_some()
-        && (query.kind != JoinType::Inner
-            || query.steps.iter().any(|step| step.kind != JoinType::Inner))
-    {
-        return Err(invalid("JOIN boolean filters require INNER joins"));
     }
     if query.on_right_like.is_some() {
         return Err(invalid(
@@ -1057,12 +1426,12 @@ fn execute_multi_join_inner<W: Write>(
     let mut width = 0usize;
     for (index, path) in paths.iter().enumerate() {
         let metadata = inspect_query_source(path)?;
-        let names = metadata
+        let mut names = metadata
             .columns
             .iter()
             .map(|column| column.name.clone())
             .collect::<Vec<_>>();
-        let types = metadata
+        let mut types = metadata
             .columns
             .iter()
             .map(|column| column.data_type.clone())
@@ -1072,17 +1441,46 @@ fn execute_multi_join_inner<W: Write>(
             1 => query.right_alias.clone(),
             _ => query.steps[index - 2].alias.clone(),
         };
+        let physical_columns = names.len();
+        let mut virtual_columns = Vec::new();
+        for virtual_column in query
+            .virtual_columns
+            .iter()
+            .filter(|column| column.relation == alias)
+        {
+            if names.iter().any(|name| name == &virtual_column.name) {
+                return Err(invalid(
+                    "derived JOIN column conflicts with a stored column",
+                ));
+            }
+            let source_index = names
+                .iter()
+                .position(|name| name == &virtual_column.source)
+                .ok_or_else(|| invalid("derived JOIN source column does not exist"))?;
+            let virtual_index = names.len();
+            names.push(virtual_column.name.clone());
+            types.push("String".into());
+            virtual_columns.push(BoundVirtualColumn {
+                index: virtual_index,
+                source_index,
+                start: virtual_column.start,
+                length: virtual_column.length,
+            });
+        }
+        let start = width;
         width = width
             .checked_add(names.len())
             .ok_or_else(|| invalid("JOIN column count overflow"))?;
         if width > MAX_CHAIN_COLUMNS {
-            return Err(invalid("JOIN supports at most 128 source columns"));
+            return Err(invalid("JOIN supports at most 256 source columns"));
         }
         relations.push(Relation {
             alias,
             names,
             types,
-            start: width - metadata.columns.len(),
+            physical_columns,
+            virtual_columns,
+            start,
             rows: metadata.rows,
         });
     }
@@ -1109,11 +1507,10 @@ fn execute_multi_join_inner<W: Write>(
             );
         }
     }
-    let exists = if let Some((filters, inner_paths)) = exists_plan {
-        if query.grouped_count.is_none()
+    let exists = if let Some((filters, _, inner_paths)) = exists_plan {
+        if (query.grouped_count.is_none() && query.scalar_aggregates.is_empty())
             || query.aggregate.is_some()
             || query.grouped_sum.is_some()
-            || query.grouped_min.is_some()
             || query.grouped_distinct.is_some()
             || query.grouped_count_column.is_some()
             || !query.grouped_case_counts.is_empty()
@@ -1121,44 +1518,59 @@ fn execute_multi_join_inner<W: Write>(
             || query.steps.iter().any(|step| step.kind != JoinType::Inner)
         {
             return Err(invalid(
-                "correlated JOIN EXISTS requires grouped INNER COUNT",
+                "correlated JOIN EXISTS requires an INNER aggregate",
             ));
         }
         exists::bind(filters, inner_paths, &relations)?
     } else {
         Vec::new()
     };
-    let avg = if let Some((plan, path)) = avg_plan {
-        if query.scalar_formula.is_none()
-            || query.grouped_count.is_some()
+    let exists_expression = exists_plan.map_or(&[][..], |(_, expression, _)| expression);
+    let avg = if let Some((plan, inner_paths)) = avg_plan {
+        if (query.scalar_formula.is_none() && query.scalar_sum.is_none() && query.columns.is_none())
             || query.kind != JoinType::Inner
             || query.steps.iter().any(|step| step.kind != JoinType::Inner)
         {
-            return Err(invalid("correlated AVG requires scalar INNER JOIN formula"));
+            return Err(invalid(
+                "correlated AVG requires a scalar INNER JOIN aggregate",
+            ));
         }
-        Some(correlated_avg::bind(plan, path, &relations)?)
+        Some(correlated_avg::bind(plan, inner_paths, &relations)?)
     } else {
         None
     };
 
     if !query.grouped_key_aliases.is_empty() {
-        if query.grouped_count.is_none()
+        let simple_projection = query.grouped_count.is_none()
+            && !query.grouped_keys_only
+            && query.aggregate.is_none()
+            && query.scalar_aggregates.is_empty()
+            && query.scalar_sum.is_none()
+            && query.scalar_formula.is_none()
+            && query.grouped_sum.is_none()
+            && query.grouped_min.is_none()
+            && query.grouped_formula.is_none()
+            && query.grouped_window_ratio.is_none();
+        if !(query.grouped_count.is_some() || simple_projection)
             || query.kind != JoinType::Inner
             || query.steps.iter().any(|step| step.kind != JoinType::Inner)
         {
-            return Err(invalid("JOIN key aliases require a grouped INNER join"));
+            return Err(invalid(
+                "JOIN key aliases require a simple or grouped INNER join",
+            ));
         }
         for (position, alias) in &query.grouped_key_aliases {
             if query
                 .columns
                 .as_ref()
                 .is_none_or(|columns| *position >= columns.len())
-                || relations.iter().any(|relation| {
-                    relation
-                        .names
-                        .iter()
-                        .any(|name| name.eq_ignore_ascii_case(alias))
-                })
+                || (query.grouped_count.is_some()
+                    && relations.iter().any(|relation| {
+                        relation
+                            .names
+                            .iter()
+                            .any(|name| name.eq_ignore_ascii_case(alias))
+                    }))
             {
                 return Err(invalid("JOIN key alias conflicts with a source column"));
             }
@@ -1297,6 +1709,11 @@ fn execute_multi_join_inner<W: Write>(
         .or(min_metric.as_ref())
         .map(bind_sum)
         .transpose()?;
+    let grouped_sum_extras = query
+        .grouped_sum_extras
+        .iter()
+        .map(|(metric, _)| bind_sum(metric))
+        .collect::<Result<Vec<_>, _>>()?;
     let formula = query
         .scalar_formula
         .as_ref()
@@ -1465,6 +1882,7 @@ fn execute_multi_join_inner<W: Write>(
     if query.limit == Some(0)
         || ((query.aggregate.is_some()
             || query.scalar_sum.is_some()
+            || !query.scalar_aggregates.is_empty()
             || query.scalar_formula.is_some())
             && query.offset > 0)
     {
@@ -1479,11 +1897,18 @@ fn execute_multi_join_inner<W: Write>(
             column_index(&relations, column)?;
         }
         for (column, _, _) in &query.order_by {
-            if !(column.is_count_order() && query.grouped_count.is_some()) {
+            if !(column.is_count_order()
+                && (query.grouped_count.is_some()
+                    || query.aggregate == Some(crate::JoinAggregate::CountStar)
+                    || !query.scalar_aggregates.is_empty()
+                    || query.scalar_sum.is_some()))
+            {
                 column_index(&relations, column)?;
             }
         }
-        if query.scalar_sum.is_some() || query.scalar_formula.is_some() {
+        if !query.scalar_aggregates.is_empty() {
+            write_scalar_aggregate_header(query, output)?;
+        } else if query.scalar_sum.is_some() || query.scalar_formula.is_some() {
             write_scalar_sum(query, None, false, output)?;
         } else if let Some((_, header)) = &count_column {
             writeln!(output, "{header}")?;
@@ -1491,7 +1916,7 @@ fn execute_multi_join_inner<W: Write>(
             writeln!(
                 output,
                 "{}",
-                query.aggregate_alias.as_deref().unwrap_or("count")
+                query.aggregate_alias.as_deref().unwrap_or("count_star()")
             )?;
         } else {
             let selected = output_columns(query, &relations, &initial_step)?;
@@ -1505,10 +1930,30 @@ fn execute_multi_join_inner<W: Write>(
     }
 
     // A left-deep INNER chain can stream its large fact side when each
-    // right-hand build table fits the shared chain memory budget.
-    if query.kind == JoinType::Inner
-        && query.steps.iter().all(|step| step.kind == JoinType::Inner)
-        && (query.order_by.is_empty() || query.grouped_count.is_some())
+    // right-hand build table fits the shared chain memory budget. Grouped
+    // CASE metrics also support LEFT stages for NULL checks.
+    let streamable_join_chain = (query.kind == JoinType::Inner
+        && query.steps.iter().all(|step| step.kind == JoinType::Inner))
+        || (!query.grouped_case_counts.is_empty()
+            && matches!(query.kind, JoinType::Inner | JoinType::Left)
+            && query
+                .steps
+                .iter()
+                .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left)));
+    if streamable_join_chain
+        && (query.order_by.is_empty()
+            || query.grouped_count.is_some()
+            || (!query.scalar_projections.is_empty() && query.grouped_count.is_none())
+            || (!query.scalar_aggregates.is_empty()
+                && query
+                    .order_by
+                    .iter()
+                    .all(|(column, _, _)| column.is_count_order()))
+            || (query.scalar_sum.is_some()
+                && query
+                    .order_by
+                    .iter()
+                    .all(|(column, _, _)| column.is_count_order())))
         && query.aggregate.is_none()
         && min_filter.is_none()
         && (sum_filter.is_none() || stream_buffered_sum)
@@ -1522,10 +1967,12 @@ fn execute_multi_join_inner<W: Write>(
             &column_comparisons,
             &substring_comparisons,
             grouped_sum.as_ref(),
+            &grouped_sum_extras,
             formula.as_ref(),
             distinct_index,
             row_filters.as_ref(),
             &exists,
+            exists_expression,
             avg.as_ref(),
             sum_filter.as_ref(),
             output,
@@ -1544,13 +1991,18 @@ fn execute_multi_join_inner<W: Write>(
         &relations,
         &initial_step,
         row_filters.as_ref(),
+        avg.as_ref(),
         min_filter.as_ref(),
         sum_filter.as_ref(),
     )?;
     // Correlated MIN needs a materialized ordered result. Its projected inputs
     // can use the same bounded build-row cap as streaming joins; retained
     // bytes and intermediate matches are still checked independently.
-    let input_row_limit = if min_filter.is_some() {
+    let input_row_limit = if min_filter.is_some()
+        || (query.aggregate == Some(crate::JoinAggregate::CountStar)
+            && query.kind == JoinType::Inner
+            && query.steps.iter().all(|step| step.kind == JoinType::Inner))
+    {
         crate::join::MAX_STREAM_JOIN_BUILD_ROWS
     } else {
         MAX_INPUT_ROWS
@@ -1610,6 +2062,7 @@ fn execute_multi_join_inner<W: Write>(
         if query.aggregate == Some(crate::JoinAggregate::CountStar)
             && query.kind == JoinType::Inner
             && query.steps.iter().all(|step| step.kind == JoinType::Inner)
+            && avg.is_none()
             && step_index == query.steps.len()
             && comparisons.is_empty()
             && column_comparisons.is_empty()
@@ -1664,7 +2117,7 @@ fn execute_multi_join_inner<W: Write>(
             writeln!(
                 output,
                 "{}\n{count}",
-                query.aggregate_alias.as_deref().unwrap_or("count")
+                query.aggregate_alias.as_deref().unwrap_or("count_star()")
             )?;
             return Ok(());
         }
@@ -1717,17 +2170,19 @@ fn execute_multi_join_inner<W: Write>(
                                     &joined[*right],
                                     *operator,
                                 )
-                            }) && row_filters
-                                .as_ref()
-                                .is_none_or(|filters| filters.passes(&joined))
-                                && match &min_filter {
-                                    Some(filter) => filter.passes(&joined)?,
-                                    None => true,
-                                }
-                                && match &sum_filter {
-                                    Some(filter) => filter.passes(&joined)?,
-                                    None => true,
-                                })
+                            }) && match &row_filters {
+                                Some(filters) => filters.passes(&joined)?,
+                                None => true,
+                            } && match &min_filter {
+                                Some(filter) => filter.passes(&joined)?,
+                                None => true,
+                            } && match &sum_filter {
+                                Some(filter) => filter.passes(&joined)?,
+                                None => true,
+                            }) && match &avg {
+                                Some(filter) => filter.passes(&joined)?,
+                                None => true,
+                            }
                         {
                             push_visible_row(&mut next, joined, &mut retained, filter)?;
                         }
@@ -1753,7 +2208,7 @@ fn execute_multi_join_inner<W: Write>(
         rows = next;
     }
 
-    if !query.order_by.is_empty() {
+    if !query.order_by.is_empty() && query.aggregate != Some(crate::JoinAggregate::CountStar) {
         let ordering_columns = query
             .order_by
             .iter()
@@ -1776,11 +2231,14 @@ fn execute_multi_join_inner<W: Write>(
             std::cmp::Ordering::Equal
         });
     }
+    if write_global_case_aggregates(query, &rows, &relations, output)? {
+        return Ok(());
+    }
     if query.aggregate == Some(crate::JoinAggregate::CountStar) {
         writeln!(
             output,
             "{}",
-            query.aggregate_alias.as_deref().unwrap_or("count")
+            query.aggregate_alias.as_deref().unwrap_or("count_star()")
         )?;
         if query.offset == 0 {
             writeln!(output, "{}", rows.len())?;
@@ -1797,6 +2255,7 @@ fn execute_multi_join_inner<W: Write>(
     }
     let selected = output_columns(query, &relations, &initial_step)?;
     write_join_header(output, &selected)?;
+    let scalar_projections = bind_scalar_projections(query, &relations)?;
     for row in rows
         .iter()
         .skip(query.offset)
@@ -1805,6 +2264,17 @@ fn execute_multi_join_inner<W: Write>(
         for (position, (index, _, fallback)) in selected.iter().enumerate() {
             if position != 0 {
                 output.write_all(b"\t")?;
+            }
+            if let Some(expression) = scalar_output_index(*index, scalar_projections.len()) {
+                let value = super::multi_aggregate::eval_row_arithmetic(
+                    &scalar_projections[expression],
+                    row,
+                )?;
+                typed::write_value(
+                    output,
+                    &value.map_or(typed::Cell::Null, typed::Cell::Numeric),
+                )?;
+                continue;
             }
             let source = if matches!(row[*index], typed::Cell::Null) {
                 fallback.unwrap_or(*index)

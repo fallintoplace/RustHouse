@@ -329,6 +329,7 @@ pub(super) fn execute<W: Write>(
                 Some(Some(
                     crate::GroupedFilter::CaseElseZero { .. }
                         | crate::GroupedFilter::CaseElseZeroCombined { .. }
+                        | crate::GroupedFilter::CaseExpression { .. }
                 ))
             )
         {
@@ -348,7 +349,11 @@ pub(super) fn execute<W: Write>(
         ));
     }
     for filter in filters.iter().flatten() {
-        let name = filter.column();
+        if let crate::GroupedFilter::CaseExpression { condition, .. } = filter {
+            condition.referenced_columns(&mut names);
+            continue;
+        }
+        let name = filter.column().expect("column filter has a column");
         if !names.iter().any(|column| column == name) {
             names.push(name.to_owned());
         }

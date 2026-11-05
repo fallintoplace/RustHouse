@@ -146,7 +146,10 @@ pub(super) fn requires_typed_scan(query: &Select, path: &Path) -> Result<bool, E
         .iter()
         .chain(query.or_predicates.iter().flatten())
     {
-        if matches!(pred, Predicate::IsNull { .. } | Predicate::Like { .. }) {
+        if matches!(
+            pred,
+            Predicate::IsNull { .. } | Predicate::Like { .. } | Predicate::SubstringIn { .. }
+        ) {
             return Ok(true);
         }
         names.push(pred.column());
@@ -587,6 +590,16 @@ pub(super) fn compile(
                         case_insensitive: *case_insensitive,
                         negated: *negated,
                     }
+                }
+                Predicate::SubstringIn { .. } => {
+                    return Err(ExecutionError::Invalid(
+                        "SUBSTRING filters require typed JOIN execution".into(),
+                    ));
+                }
+                Predicate::Expression(_) => {
+                    return Err(ExecutionError::Invalid(
+                        "scalar expression filters require typed JOIN execution".into(),
+                    ));
                 }
             };
             Ok(Condition { index, test })

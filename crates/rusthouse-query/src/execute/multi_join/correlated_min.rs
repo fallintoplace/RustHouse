@@ -69,11 +69,14 @@ pub(super) fn bind(
             .iter()
             .map(|column| column.data_type.clone())
             .collect::<Vec<_>>();
+        let physical_columns = names.len();
         relations.push(Relation {
             alias,
             start: width,
             names,
             types,
+            physical_columns,
+            virtual_columns: Vec::new(),
             rows: metadata.rows,
         });
         width = width

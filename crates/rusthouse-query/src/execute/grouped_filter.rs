@@ -6,6 +6,11 @@ use std::collections::HashMap;
 
 pub(super) enum BoundGroupedFilter {
     Truthy(usize),
+    Expression(super::multi_aggregate::BoundExpr),
+    Null {
+        index: usize,
+        negated: bool,
+    },
     Comparison {
         index: usize,
         operator: Operator,
@@ -29,45 +34,69 @@ pub(super) fn bind_grouped_filters(
             let Some(filter) = filter else {
                 return Ok(None);
             };
-            let name = filter.column();
-            let index = *indices.get(name).ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown grouped filter column: {name}"))
-            })?;
             match filter {
-                GroupedFilter::Truthy(_) => Ok(Some(BoundGroupedFilter::Truthy(index))),
-                GroupedFilter::CaseElseZeroCombined {
-                    comparisons, all, ..
-                } => {
-                    let data_type = types.get(name).ok_or_else(|| {
+                GroupedFilter::CaseExpression { condition, .. } => {
+                    Ok(Some(BoundGroupedFilter::Expression(
+                        super::multi_aggregate::BoundExpr::bind(condition, indices)?,
+                    )))
+                }
+                _ => {
+                    let name = filter.column().ok_or_else(|| {
+                        ExecutionError::Invalid("grouped filter column is missing".into())
+                    })?;
+                    let index = *indices.get(name).ok_or_else(|| {
                         ExecutionError::Invalid(format!("unknown grouped filter column: {name}"))
                     })?;
-                    let comparisons = comparisons
-                        .iter()
-                        .map(|(operator, literal)| {
-                            Ok((*operator, typed::parse_literal(data_type, literal)?))
-                        })
-                        .collect::<Result<Vec<_>, ExecutionError>>()?;
-                    Ok(Some(BoundGroupedFilter::Combined {
-                        index,
-                        comparisons,
-                        all: *all,
-                    }))
-                }
-                GroupedFilter::Comparison {
-                    operator, literal, ..
-                }
-                | GroupedFilter::CaseElseZero {
-                    operator, literal, ..
-                } => {
-                    let data_type = types.get(name).ok_or_else(|| {
-                        ExecutionError::Invalid(format!("unknown grouped filter column: {name}"))
-                    })?;
-                    let literal = typed::parse_literal(data_type, literal)?;
-                    Ok(Some(BoundGroupedFilter::Comparison {
-                        index,
-                        operator: *operator,
-                        literal,
-                    }))
+                    match filter {
+                        GroupedFilter::Truthy(_) => Ok(Some(BoundGroupedFilter::Truthy(index))),
+                        GroupedFilter::CaseNull { negated, .. } => {
+                            Ok(Some(BoundGroupedFilter::Null {
+                                index,
+                                negated: *negated,
+                            }))
+                        }
+                        GroupedFilter::CaseElseZeroCombined {
+                            comparisons, all, ..
+                        } => {
+                            let data_type = types.get(name).ok_or_else(|| {
+                                ExecutionError::Invalid(format!(
+                                    "unknown grouped filter column: {name}"
+                                ))
+                            })?;
+                            let comparisons = comparisons
+                                .iter()
+                                .map(|(operator, literal)| {
+                                    Ok((*operator, typed::parse_literal(data_type, literal)?))
+                                })
+                                .collect::<Result<Vec<_>, ExecutionError>>()?;
+                            Ok(Some(BoundGroupedFilter::Combined {
+                                index,
+                                comparisons,
+                                all: *all,
+                            }))
+                        }
+                        GroupedFilter::Comparison {
+                            operator, literal, ..
+                        }
+                        | GroupedFilter::CaseElseZero {
+                            operator, literal, ..
+                        } => {
+                            let data_type = types.get(name).ok_or_else(|| {
+                                ExecutionError::Invalid(format!(
+                                    "unknown grouped filter column: {name}"
+                                ))
+                            })?;
+                            let literal = typed::parse_literal(data_type, literal)?;
+                            Ok(Some(BoundGroupedFilter::Comparison {
+                                index,
+                                operator: *operator,
+                                literal,
+                            }))
+                        }
+                        GroupedFilter::CaseExpression { .. } => Err(ExecutionError::Invalid(
+                            "expression grouped filter binding failed".into(),
+                        )),
+                    }
                 }
             }
         })
@@ -83,6 +112,18 @@ impl BoundGroupedFilter {
     ) -> Result<bool, ExecutionError> {
         match self {
             Self::Truthy(index) => truthy(&batch[*index], row),
+            Self::Expression(expression) => {
+                let value = super::multi_aggregate::eval_number(expression, batch, row)?;
+                Ok(match value {
+                    Some(super::Number::Unsigned(value)) => value != 0,
+                    Some(super::Number::Signed(value)) => value != 0,
+                    Some(super::Number::Float(value)) => value != 0.0,
+                    None => false,
+                })
+            }
+            Self::Null { index, negated } => {
+                Ok(matches!(typed::cell(&batch[*index], row), typed::Cell::Null) != *negated)
+            }
             Self::Combined {
                 index,
                 comparisons,

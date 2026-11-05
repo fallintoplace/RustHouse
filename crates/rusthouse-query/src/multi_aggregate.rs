@@ -80,6 +80,10 @@ fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
             output.push_str(&pattern.replace('\'', "''"));
             output.push('\'');
         }
+        ScalarExpr::IsNull { column, negated } => {
+            output.push_str(column);
+            output.push_str(if *negated { " IS NOT NULL" } else { " IS NULL" });
+        }
         ScalarExpr::And(left, right) | ScalarExpr::Or(left, right) => {
             output.push('(');
             render_expr_into(left, output);
@@ -250,11 +254,7 @@ pub(crate) fn parse_multiple(
         if !already_closed && !parser.take(Token::RParen) {
             return Err(ParseError("expected ')' after aggregate argument".into()));
         }
-        let alias = if parser.keyword("AS") {
-            Some(parser.output_alias_word()?)
-        } else {
-            None
-        };
+        let alias = parser.select_output_alias()?;
         if distinct && argument.is_none() {
             return Err(ParseError("COUNT(DISTINCT) requires a column".into()));
         }
@@ -351,6 +351,28 @@ mod tests {
         assert!(!items[1].distinct);
         assert_eq!(items[0].header(), "count(DISTINCT customer)");
         assert!(parse_select("SELECT sum(DISTINCT amount), count(*) FROM part").is_err());
+    }
+
+    #[test]
+    fn parses_implicit_aliases_on_multiple_aggregates() {
+        let query = parse_select(
+            "SELECT avg(price) average_price, count(price) price_count, count(DISTINCT price) unique_prices FROM sales",
+        )
+        .unwrap();
+        let Projection::MultipleAggregates(items) = query.projection else {
+            panic!("expected multiple aggregates");
+        };
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.alias.as_deref())
+                .collect::<Vec<_>>(),
+            [
+                Some("average_price"),
+                Some("price_count"),
+                Some("unique_prices")
+            ]
+        );
     }
 
     #[test]

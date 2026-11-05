@@ -1489,11 +1489,13 @@ pub fn execute_join<W: Write>(
     }
     if query.scalar_sum.is_some()
         || query.scalar_formula.is_some()
+        || query.scalar_where.is_some()
         || query.grouped_distinct.is_some()
         || query.grouped_sum.is_some()
         || query.grouped_min.is_some()
         || query.grouped_formula.is_some()
         || query.grouped_year.is_some()
+        || (!query.grouped_case_counts.is_empty() && query.kind == crate::JoinType::Full)
         || !query.grouped_key_aliases.is_empty()
     {
         return super::multi_join::execute_multi_join(
@@ -1552,7 +1554,7 @@ pub fn execute_join<W: Write>(
                 let label = if col.relation.is_empty() {
                     col.name.clone()
                 } else {
-                    format!("{}.{}", col.relation, col.name)
+                    col.name.clone()
                 };
                 selected.push((index, label, None));
             }
@@ -1601,7 +1603,10 @@ pub fn execute_join<W: Write>(
         .order_by
         .iter()
         .map(|(column, descending, nulls_first)| {
-            if column.is_count_order() && query.grouped_count.is_some() {
+            if column.is_count_order()
+                && (query.grouped_count.is_some()
+                    || query.aggregate == Some(JoinAggregate::CountStar))
+            {
                 Ok((usize::MAX, *descending, *nulls_first))
             } else {
                 resolve(query, column, &left_names, &right_names)

@@ -40,18 +40,21 @@ pub(super) fn bind(
     skip_rows: bool,
 ) -> Result<BoundSum, ExecutionError> {
     let metadata = inspect_query_source(path)?;
+    let names = metadata
+        .columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>();
     let inner = Relation {
         alias: plan.inner_alias.clone(),
-        names: metadata
-            .columns
-            .iter()
-            .map(|column| column.name.clone())
-            .collect(),
+        physical_columns: names.len(),
+        names,
         types: metadata
             .columns
             .iter()
             .map(|column| column.data_type.clone())
             .collect(),
+        virtual_columns: Vec::new(),
         start: 0,
         rows: metadata.rows,
     };
@@ -115,7 +118,7 @@ pub(super) fn bind(
                 for (position, &column) in projected.iter().enumerate() {
                     row[column] = typed::cell(&batch[position], index);
                 }
-                if !filters.passes(&row) {
+                if !filters.passes(&row)? {
                     continue;
                 }
                 let Some(first) = super::exists::key(&row[inner_keys[0]])? else {

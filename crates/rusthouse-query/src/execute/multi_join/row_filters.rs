@@ -6,8 +6,16 @@ use std::collections::HashSet;
 enum RowTest {
     Compare(Operator, typed::Cell),
     Column(Operator, usize),
+    Expression(super::super::multi_aggregate::BoundExpr),
     In(Vec<typed::Cell>, bool),
     IntegerSet(HashSet<typed::Key>, bool),
+    SubstringIn {
+        start: usize,
+        length: usize,
+        values: Vec<Vec<u8>>,
+        has_null: bool,
+        negated: bool,
+    },
     Null(bool),
     Like(typed::TextPattern, bool, bool),
 }
@@ -82,6 +90,26 @@ impl RowFilters {
         for branch in predicates {
             let mut conditions = Vec::with_capacity(branch.len());
             for predicate in branch {
+                if let Predicate::Expression(expression) = predicate {
+                    let mut names = Vec::new();
+                    expression.referenced_columns(&mut names);
+                    let mut bindings = std::collections::HashMap::new();
+                    for name in names {
+                        let (relation, column) = name
+                            .split_once('\0')
+                            .map_or(("", name.as_str()), |(relation, column)| (relation, column));
+                        let index = resolve(&format!("{relation}\0{column}"))?;
+                        indices.push(index);
+                        bindings.insert(name, index);
+                    }
+                    let bound =
+                        super::super::multi_aggregate::BoundExpr::bind(expression, &bindings)?;
+                    conditions.push(RowCondition {
+                        index: 0,
+                        test: RowTest::Expression(bound),
+                    });
+                    continue;
+                }
                 let index = resolve(predicate.column())?;
                 indices.push(index);
                 let kind = column_type(relations, index);
@@ -138,6 +166,31 @@ impl RowFilters {
                             RowTest::In(values, negated)
                         }
                     }
+                    Predicate::SubstringIn {
+                        start,
+                        length,
+                        values,
+                        has_null,
+                        negated,
+                        ..
+                    } => {
+                        if typed::base_type(kind) != "String" {
+                            return Err(invalid("SUBSTRING IN requires a String column"));
+                        }
+                        if !(1..=64).contains(start) || !(1..=64).contains(length) {
+                            return Err(invalid("SUBSTRING bounds must be in 1..64"));
+                        }
+                        RowTest::SubstringIn {
+                            start: *start,
+                            length: *length,
+                            values: values
+                                .iter()
+                                .map(|value| value.as_bytes().to_vec())
+                                .collect(),
+                            has_null: *has_null,
+                            negated: *negated,
+                        }
+                    }
                     Predicate::IsNull { negated, .. } => RowTest::Null(*negated),
                     Predicate::Like {
                         pattern,
@@ -169,12 +222,20 @@ impl RowFilters {
         })
     }
 
-    pub(super) fn passes(&self, row: &[typed::Cell]) -> bool {
-        self.branches.iter().any(|branch| {
-            branch
-                .iter()
-                .all(|condition| Self::condition_passes(condition, row, 0))
-        })
+    pub(super) fn passes(&self, row: &[typed::Cell]) -> Result<bool, ExecutionError> {
+        for branch in &self.branches {
+            let mut matches = true;
+            for condition in branch {
+                if !Self::condition_passes(condition, row, 0)? {
+                    matches = false;
+                    break;
+                }
+            }
+            if matches {
+                return Ok(true);
+            }
+        }
+        Ok(false)
     }
 
     /// Conditions shared by every OR branch can safely reject rows before
@@ -192,6 +253,7 @@ impl RowFilters {
                 (start..end).contains(&condition.index)
                     && match &condition.test {
                         RowTest::Column(_, other) => (start..end).contains(other),
+                        RowTest::Expression(_) => false,
                         _ => true,
                     }
             })
@@ -199,15 +261,28 @@ impl RowFilters {
 
     pub(super) fn passes_relation(&self, row: &[typed::Cell], start: usize) -> bool {
         debug_assert!(self.can_prefilter_relation(start, row.len()));
-        self.common_conditions
-            .iter()
-            .all(|&index| Self::condition_passes(&self.branches[0][index], row, start))
+        self.common_conditions.iter().all(|&index| {
+            Self::condition_passes(&self.branches[0][index], row, start).is_ok_and(|passes| passes)
+        })
     }
 
-    fn condition_passes(condition: &RowCondition, row: &[typed::Cell], offset: usize) -> bool {
+    fn condition_passes(
+        condition: &RowCondition,
+        row: &[typed::Cell],
+        offset: usize,
+    ) -> Result<bool, ExecutionError> {
+        if let RowTest::Expression(expression) = &condition.test {
+            let value = super::super::multi_aggregate::eval_row_arithmetic(expression, row)?;
+            return Ok(match value {
+                Some(super::super::Number::Unsigned(value)) => value != 0,
+                Some(super::super::Number::Signed(value)) => value != 0,
+                Some(super::super::Number::Float(value)) => value != 0.0,
+                None => false,
+            });
+        }
         let index = condition.index - offset;
         let value = &row[index];
-        match &condition.test {
+        Ok(match &condition.test {
             RowTest::Compare(operator, target) => {
                 typed::matches_comparison(value, target, *operator)
             }
@@ -228,6 +303,31 @@ impl RowFilters {
             RowTest::IntegerSet(values, negated) => {
                 !matches!(value, typed::Cell::Null) && (values.contains(&value.key()) != *negated)
             }
+            RowTest::SubstringIn {
+                start,
+                length,
+                values,
+                has_null,
+                negated,
+            } => {
+                let typed::Cell::Text(bytes) = value else {
+                    return Ok(false);
+                };
+                let from = (start - 1).min(bytes.len());
+                let to = from.saturating_add(*length).min(bytes.len());
+                let substring = &bytes[from..to];
+                // Avoid matching a partial UTF-8 code point. The JOIN path
+                // currently uses bounded byte offsets for SUBSTRING.
+                if std::str::from_utf8(substring).is_err() {
+                    return Ok(false);
+                }
+                let contains = values.iter().any(|target| target == substring);
+                if contains {
+                    !*negated
+                } else {
+                    !*has_null && *negated
+                }
+            }
             RowTest::Null(negated) => matches!(value, typed::Cell::Null) != *negated,
             RowTest::Like(pattern, insensitive, negated) => match value {
                 typed::Cell::Text(bytes) => {
@@ -235,7 +335,8 @@ impl RowFilters {
                 }
                 _ => false,
             },
-        }
+            RowTest::Expression(_) => unreachable!("expressions are handled above"),
+        })
     }
 }
 
@@ -249,6 +350,8 @@ mod tests {
                 alias: "orders".into(),
                 names: vec!["id".into()],
                 types: vec!["UInt64".into()],
+                physical_columns: 1,
+                virtual_columns: Vec::new(),
                 start: 0,
                 rows: 1,
             },
@@ -256,6 +359,8 @@ mod tests {
                 alias: "part".into(),
                 names: vec!["p_name".into()],
                 types: vec!["String".into()],
+                physical_columns: 1,
+                virtual_columns: Vec::new(),
                 start: 1,
                 rows: 1,
             },
@@ -309,7 +414,10 @@ mod tests {
                 typed::Cell::Numeric(super::super::super::Number::Unsigned(1)),
                 typed::Cell::Text(name.to_vec()),
             ];
-            assert_eq!(filters.passes_relation(&local, 1), filters.passes(&full));
+            assert_eq!(
+                filters.passes_relation(&local, 1),
+                filters.passes(&full).unwrap()
+            );
         }
     }
 
@@ -344,7 +452,7 @@ mod tests {
             typed::Cell::Numeric(super::super::super::Number::Unsigned(11)),
             typed::Cell::Text(b"blue part".to_vec()),
         ];
-        assert!(filters.passes(&full_row));
+        assert!(filters.passes(&full_row).unwrap());
         assert!(filters.passes_relation(&full_row[..1], 0));
     }
 }

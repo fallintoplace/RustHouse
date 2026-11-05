@@ -122,6 +122,7 @@ version = "0.1.0"
 dependencies = [
  "ch_cityhash102",
  "regex",
+ "rusthouse-format",
  "rusthouse-storage",
 ]
 

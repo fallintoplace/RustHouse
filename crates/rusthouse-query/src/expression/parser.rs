@@ -9,6 +9,83 @@ fn parse_length_column(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     Ok(ScalarExpr::TextLength(column))
 }
 
+fn parse_coalesce(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+    parser.index += 1;
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("COALESCE requires '('".into()));
+    }
+    let mut arguments = Vec::new();
+    loop {
+        if arguments.len() == 16 {
+            return Err(ParseError("COALESCE supports at most 16 arguments".into()));
+        }
+        arguments.push(parse_expression_tokens_at_depth(parser, depth + 1)?);
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    if arguments.len() < 2 || !parser.take(Token::RParen) {
+        return Err(ParseError(
+            "COALESCE requires at least two arguments and ')'".into(),
+        ));
+    }
+    let mut result = arguments
+        .pop()
+        .expect("COALESCE has at least two arguments");
+    while let Some(argument) = arguments.pop() {
+        let ScalarExpr::Column(column) = &argument else {
+            return Err(ParseError(
+                "COALESCE currently requires column arguments before the final value".into(),
+            ));
+        };
+        result = ScalarExpr::Case {
+            branches: vec![(
+                ScalarExpr::IsNull {
+                    column: column.clone(),
+                    negated: true,
+                },
+                argument,
+            )],
+            else_expr: Some(Box::new(result)),
+        };
+    }
+    Ok(result)
+}
+
+fn parse_date_cast(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+    parser.index += 1;
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("CAST requires '('".into()));
+    }
+    let value = match parser.tokens.get(parser.index) {
+        Some(Token::String(value)) => {
+            let days = rusthouse_storage::parse_date32(value)
+                .ok_or_else(|| ParseError("CAST requires a valid DATE literal".into()))?;
+            parser.index += 1;
+            ScalarExpr::Integer(i64::from(days))
+        }
+        _ => parse_expression_tokens_at_depth(parser, depth + 1)?,
+    };
+    if !parser.keyword("AS") {
+        return Err(ParseError("CAST requires AS DATE".into()));
+    }
+    let data_type = parser.word()?;
+    if !matches!(data_type.to_ascii_uppercase().as_str(), "DATE" | "DATE32") {
+        return Err(ParseError(
+            "scalar CAST currently supports DATE only".into(),
+        ));
+    }
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("CAST requires closing ')'".into()));
+    }
+    if !matches!(value, ScalarExpr::Column(_) | ScalarExpr::Integer(_)) {
+        return Err(ParseError(
+            "CAST AS DATE requires a date column or literal".into(),
+        ));
+    }
+    Ok(value)
+}
+
 fn parse_parenthesized_scalar_expression(
     parser: &mut Parser,
     depth: usize,
@@ -77,10 +154,14 @@ fn parse_case(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseErro
         return Err(ParseError("CASE requires WHEN".into()));
     }
     let else_expr = if parser.keyword("ELSE") {
-        Some(Box::new(parse_expression_tokens_at_depth(
-            parser,
-            depth + 1,
-        )?))
+        if parser.keyword("NULL") {
+            None
+        } else {
+            Some(Box::new(parse_expression_tokens_at_depth(
+                parser,
+                depth + 1,
+            )?))
+        }
     } else {
         None
     };
@@ -149,8 +230,20 @@ pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
         {
             parse_length_column(parser)
         }
+        Some(Token::Word(name))
+            if name.eq_ignore_ascii_case("coalesce")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            parse_coalesce(parser, depth)
+        }
+        Some(Token::Word(name))
+            if name.eq_ignore_ascii_case("CAST")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            parse_date_cast(parser, depth)
+        }
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("CASE") => parse_case(parser, depth),
-        Some(Token::Word(_)) => Ok(ScalarExpr::Column(parser.word()?)),
+        Some(Token::Word(_) | Token::QuotedWord(_)) => Ok(ScalarExpr::Column(parser.word()?)),
         Some(Token::Number(number)) => {
             let literal = parse_numeric_literal(number)?;
             parser.index += 1;
@@ -283,6 +376,25 @@ mod separated_min_int64_literal_tests {
 }
 
 #[cfg(test)]
+mod date_cast_expression_tests {
+    use super::*;
+
+    #[test]
+    fn parses_date_casts_as_date32_values() {
+        assert_eq!(
+            super::super::parse_scalar_expression("CAST(d_date AS DATE)").unwrap(),
+            ScalarExpr::Column("d_date".into())
+        );
+        assert_eq!(
+            super::super::parse_scalar_expression("CAST('2000-03-11' AS DATE)").unwrap(),
+            ScalarExpr::Integer(i64::from(
+                rusthouse_storage::parse_date32("2000-03-11").unwrap()
+            ))
+        );
+    }
+}
+
+#[cfg(test)]
 mod simple_case_expression_tests {
     use crate::expression::{ScalarExpr, parse_scalar_expression};
 
@@ -333,5 +445,31 @@ mod simple_case_expression_tests {
         ] {
             assert!(parse_scalar_expression(input).is_err(), "{input}");
         }
+    }
+}
+
+#[cfg(test)]
+mod null_expression_tests {
+    use super::*;
+
+    #[test]
+    fn parses_null_checks_inside_boolean_conditions() {
+        let expression = super::super::parse_scalar_expression(
+            "store_customer_sk IS NOT NULL AND catalog_customer_sk IS NULL",
+        )
+        .unwrap();
+        assert_eq!(
+            expression,
+            ScalarExpr::And(
+                Box::new(ScalarExpr::IsNull {
+                    column: "store_customer_sk".into(),
+                    negated: true,
+                }),
+                Box::new(ScalarExpr::IsNull {
+                    column: "catalog_customer_sk".into(),
+                    negated: false,
+                }),
+            )
+        );
     }
 }

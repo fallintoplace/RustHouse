@@ -61,3 +61,58 @@ fn chained_inner_count_scans_last_bucket_without_retaining_join_product() {
     assert_eq!(String::from_utf8(result).unwrap(), "count\n0\n");
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn unqualified_join_keys_resolve_when_unique_and_reject_ambiguity() {
+    let root = std::env::temp_dir().join(format!(
+        "rusthouse-unqualified-join-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let left = root.join("lefts");
+    let right = root.join("rights");
+    let duplicate = root.join("duplicate");
+    write_wide_part(
+        &left,
+        &[Column {
+            name: "id".into(),
+            data_type: "UInt64".into(),
+        }],
+        &[vec![Some("1".into())], vec![Some("2".into())]],
+    )
+    .unwrap();
+    write_wide_part(
+        &right,
+        &[Column {
+            name: "right_id".into(),
+            data_type: "UInt64".into(),
+        }],
+        &[vec![Some("1".into())]],
+    )
+    .unwrap();
+    write_wide_part(
+        &duplicate,
+        &[Column {
+            name: "id".into(),
+            data_type: "UInt64".into(),
+        }],
+        &[vec![Some("1".into())]],
+    )
+    .unwrap();
+
+    let query = parse_join("SELECT l.id FROM lefts l JOIN rights r ON right_id = id ORDER BY l.id")
+        .unwrap()
+        .unwrap();
+    let mut output = Vec::new();
+    execute_multi_join(&query, &[left.clone(), right], &mut output).unwrap();
+    assert_eq!(String::from_utf8(output).unwrap(), "id\n1\n");
+
+    let query = parse_join("SELECT l.id FROM lefts l JOIN duplicate d ON id = d.id")
+        .unwrap()
+        .unwrap();
+    let error = execute_multi_join(&query, &[left, duplicate], &mut Vec::new()).unwrap_err();
+    assert!(error.to_string().contains("ambiguous JOIN column: id"));
+
+    fs::remove_dir_all(root).unwrap();
+}

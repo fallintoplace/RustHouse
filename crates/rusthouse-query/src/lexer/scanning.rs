@@ -221,18 +221,19 @@ fn valid_quoted_identifier(bytes: &[u8]) -> bool {
         && characters.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }
 
-/// Quoted names with spaces are only valid in output alias positions.
+/// Quoted names with spaces or benchmark label punctuation are only valid in
+/// output alias positions. They never become database identifiers.
 fn valid_quoted_output_alias(bytes: &[u8]) -> bool {
     bytes.contains(&b' ')
         && bytes
             .first()
-            .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
+            .is_some_and(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b'-' | b'>'))
         && bytes
             .last()
             .is_some_and(|byte| byte.is_ascii_alphanumeric() || *byte == b'_')
         && bytes
             .iter()
-            .all(|byte| byte.is_ascii_alphanumeric() || *byte == b'_' || *byte == b' ')
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(*byte, b'_' | b' ' | b'-' | b'>'))
 }
 
 /// Parse quoted identifiers without treating reserved words as SQL keywords.

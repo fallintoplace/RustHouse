@@ -36,6 +36,7 @@ harness = false
 
 [dependencies]
 regex = "1.12.3"
+rusthouse-format = { path = "../rusthouse-format" }
 rusthouse-storage = { path = "../rusthouse-storage" }
 
 [dev-dependencies]

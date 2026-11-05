@@ -1,7 +1,10 @@
 //! Build and apply bounded correlated EXISTS lookups.
 use super::*;
-use crate::{JoinExistsFilter, JoinExistsKey, JoinExistsLookup};
-use rusthouse_storage::TypedQueryReader;
+use crate::{JoinExistsFilter, JoinExistsKey, JoinExistsLookup, RowPredicate};
+use rusthouse_storage::{TypedQueryReader, inspect_query_source};
+use std::collections::HashSet;
+
+const MAX_EXISTS_DATE_KEYS: usize = 200_000;
 
 pub(super) struct BoundExists {
     pub(super) equality: usize,
@@ -51,19 +54,58 @@ impl BoundExists {
     }
 }
 
+pub(super) fn passes_expression(
+    expression: &[Vec<usize>],
+    filters: &[BoundExists],
+    row: &[typed::Cell],
+) -> Result<bool, ExecutionError> {
+    if expression.is_empty() {
+        for filter in filters {
+            if !filter.passes(row)? {
+                return Ok(false);
+            }
+        }
+        return Ok(true);
+    }
+    for group in expression {
+        let mut passes = true;
+        for &index in group {
+            let filter = filters
+                .get(index)
+                .ok_or_else(|| invalid("JOIN EXISTS expression has an unknown filter"))?;
+            if !filter.passes(row)? {
+                passes = false;
+                break;
+            }
+        }
+        if passes {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 pub(super) fn bind(
     filters: &[JoinExistsFilter],
     paths: &[PathBuf],
     outer: &[Relation],
 ) -> Result<Vec<BoundExists>, ExecutionError> {
-    if filters.is_empty() || filters.len() > 2 || paths.len() != filters.len() {
-        return Err(invalid("JOIN EXISTS requires one path per filter"));
+    let expected_paths = filters
+        .iter()
+        .map(|filter| 1 + usize::from(filter.date_filter.is_some()))
+        .sum::<usize>();
+    if filters.is_empty() || filters.len() > 8 || paths.len() != expected_paths {
+        return Err(invalid("JOIN EXISTS requires paths for each inner source"));
     }
     let mut result = Vec::with_capacity(filters.len());
-    for (filter, path) in filters.iter().zip(paths) {
+    let mut paths = paths.iter();
+    for filter in filters {
         if outer.iter().any(|relation| relation.alias == filter.alias) {
             return Err(invalid("JOIN EXISTS inner alias shadows an outer alias"));
         }
+        let path = paths
+            .next()
+            .ok_or_else(|| invalid("JOIN EXISTS is missing its fact table path"))?;
         let meta = inspect_query_source(path)?;
         let names = meta
             .columns
@@ -75,10 +117,13 @@ pub(super) fn bind(
             .iter()
             .map(|column| column.data_type.clone())
             .collect::<Vec<_>>();
+        let physical_columns = names.len();
         let inner = [Relation {
             alias: filter.alias.clone(),
             names,
             types,
+            physical_columns,
+            virtual_columns: Vec::new(),
             start: 0,
             rows: meta.rows,
         }];
@@ -101,6 +146,71 @@ pub(super) fn bind(
             };
         let (inner_eq, outer_eq) = pair(&filter.equality)?;
         let unequal = filter.inequality.as_ref().map(pair).transpose()?;
+        let date_join = if let Some(date_filter) = &filter.date_filter {
+            if outer
+                .iter()
+                .any(|relation| relation.alias == date_filter.alias)
+            {
+                return Err(invalid("JOIN EXISTS date alias shadows an outer alias"));
+            }
+            let date_path = paths
+                .next()
+                .ok_or_else(|| invalid("JOIN EXISTS is missing its date table path"))?;
+            let date_meta = inspect_query_source(date_path)?;
+            let date_column = date_meta
+                .columns
+                .iter()
+                .find(|column| column.name.eq_ignore_ascii_case(&date_filter.keys.1.name))
+                .ok_or_else(|| invalid("JOIN EXISTS date key column does not exist"))?;
+            let date_type = typed::base_type(&date_column.data_type);
+            if !integer(date_type) {
+                return Err(invalid("JOIN EXISTS date key must be an integer"));
+            }
+            let fact_date_index = inner_index(&date_filter.keys.0)?;
+            let fact_date_type = typed::base_type(column_type(&inner, fact_date_index));
+            if fact_date_type != date_type {
+                return Err(invalid("JOIN EXISTS fact/date keys require matching types"));
+            }
+            let predicate = RowPredicate::new(&date_filter.select, &date_meta.columns)?;
+            let date_key_index = date_meta
+                .columns
+                .iter()
+                .position(|column| column.name.eq_ignore_ascii_case(&date_column.name))
+                .expect("date key column was validated");
+            let date_fields = date_meta
+                .columns
+                .iter()
+                .map(|column| column.name.clone())
+                .collect::<Vec<_>>();
+            let mut reader = TypedQueryReader::open(date_path, &date_fields)?;
+            let mut allowed = HashSet::new();
+            let mut rows = 0u64;
+            while let Some(batch) = reader.next_batch()? {
+                for index in 0..batch[0].len() {
+                    rows = rows
+                        .checked_add(1)
+                        .ok_or_else(|| invalid("JOIN EXISTS date row count overflow"))?;
+                    if predicate.matches(&batch, index) {
+                        if let Some(key) = key(&typed::cell(&batch[date_key_index], index))? {
+                            allowed.insert(key);
+                            if allowed.len() > MAX_EXISTS_DATE_KEYS {
+                                return Err(invalid(
+                                    "JOIN EXISTS date key set exceeds 200000 keys",
+                                ));
+                            }
+                        }
+                    }
+                }
+            }
+            if rows != date_meta.rows {
+                return Err(invalid(
+                    "JOIN EXISTS date input row count changed during scan",
+                ));
+            }
+            Some((fact_date_index, allowed))
+        } else {
+            None
+        };
         let mut comparisons = Vec::new();
         for (left, operator, right) in &filter.inner_comparisons {
             let a = inner_index(left)?;
@@ -128,6 +238,9 @@ pub(super) fn bind(
         if let Some((index, _)) = unequal {
             projected.push(index);
         }
+        if let Some((index, _)) = &date_join {
+            projected.push(*index);
+        }
         for (a, _, b) in &comparisons {
             projected.push(*a);
             projected.push(*b);
@@ -135,6 +248,7 @@ pub(super) fn bind(
         projected.sort_unstable();
         projected.dedup();
         let position = |index: usize| projected.binary_search(&index).expect("projected column");
+        let date_position = date_join.as_ref().map(|(index, _)| position(*index));
         let fields = projected
             .iter()
             .map(|&index| inner[0].names[index].clone())
@@ -147,6 +261,12 @@ pub(super) fn bind(
                 rows = rows
                     .checked_add(1)
                     .ok_or_else(|| invalid("JOIN EXISTS row count overflow"))?;
+                if let (Some(position), Some((_, date_keys))) = (&date_position, &date_join) {
+                    let date_key = key(&typed::cell(&batch[*position], i))?;
+                    if !date_key.is_some_and(|date_key| date_keys.contains(&date_key)) {
+                        continue;
+                    }
+                }
                 if !comparisons.iter().all(|(a, op, b)| {
                     typed::matches_comparison(
                         &typed::cell(&batch[position(*a)], i),
@@ -173,6 +293,9 @@ pub(super) fn bind(
             negated: filter.negated,
             lookup,
         });
+    }
+    if paths.next().is_some() {
+        return Err(invalid("JOIN EXISTS has unused inner table paths"));
     }
     Ok(result)
 }

@@ -105,7 +105,7 @@ fn write_case_header<W: Write>(
         .ok_or_else(|| invalid("JOIN group key missing"))?
         .1;
     write!(output, "{name}")?;
-    for (_, alias) in &query.grouped_case_counts {
+    for (_, _, alias) in &query.grouped_case_counts {
         write!(output, "\t{alias}")?;
     }
     writeln!(output)?;
@@ -536,7 +536,12 @@ pub(super) fn execute<W: Write>(
 
     let mut case_selected = selected.to_vec();
     let mut case_metrics = Vec::new();
-    for (filter, _) in &query.grouped_case_counts {
+    for (filter, value, _) in &query.grouped_case_counts {
+        if !matches!(value, crate::GroupedCaseValue::Count) {
+            return Err(invalid(
+                "conditional numeric SUM requires a streaming INNER join chain",
+            ));
+        }
         let (column, comparisons, all) = match filter {
             crate::GroupedFilter::CaseElseZero {
                 column,
@@ -548,6 +553,11 @@ pub(super) fn execute<W: Write>(
                 comparisons,
                 all,
             } => (column, comparisons.clone(), *all),
+            crate::GroupedFilter::CaseExpression { .. } | crate::GroupedFilter::CaseNull { .. } => {
+                return Err(invalid(
+                    "expression JOIN CASE requires a streaming INNER join chain",
+                ));
+            }
             _ => return Err(invalid("unsupported JOIN CASE metric")),
         };
         let index = resolve(
