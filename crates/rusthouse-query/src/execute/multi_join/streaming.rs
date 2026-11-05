@@ -6,24 +6,33 @@ use rusthouse_storage::TypedQueryReader;
 use std::collections::HashSet;
 
 use super::super::join::{
-    read_compact_projected_build_rows, read_compact_projected_build_rows_matching,
-    read_filtered_compact_projected_build_rows,
+    Bucket as JoinBucket, JoinHash, read_compact_projected_build_rows,
+    read_compact_projected_build_rows_matching, read_filtered_compact_projected_build_rows,
+    single_numeric_join_key,
 };
 
 const MAX_STREAM_GROUPS: usize = 100_000;
 const MAX_STREAM_GROUP_BYTES: usize = 64 * 1024 * 1024;
 
-// Conservatively charge hash buckets, key vectors and owned payloads as
-// well as the already-accounted retained dimension rows.
-fn hash_key_bytes(key: &[typed::Key]) -> Result<usize, ExecutionError> {
-    let base = std::mem::size_of::<Vec<typed::Key>>()
-        .checked_add(96)
-        .and_then(|bytes| {
-            key.len()
-                .checked_mul(std::mem::size_of::<typed::Key>())
-                .and_then(|slots| bytes.checked_add(slots))
-        })
-        .ok_or_else(|| invalid("JOIN hash key memory overflow"))?;
+// Account for hash entries and owned key payloads alongside the retained rows.
+fn hash_key_bytes(key: &[typed::Key], single_numeric: bool) -> Result<usize, ExecutionError> {
+    let base = if key.len() == 1 {
+        let entry = if single_numeric {
+            std::mem::size_of::<(super::super::NumberKey, JoinBucket)>()
+        } else {
+            std::mem::size_of::<(typed::Key, JoinBucket)>()
+        };
+        entry.checked_add(96)
+    } else {
+        std::mem::size_of::<Vec<typed::Key>>()
+            .checked_add(96)
+            .and_then(|bytes| {
+                key.len()
+                    .checked_mul(std::mem::size_of::<typed::Key>())
+                    .and_then(|slots| bytes.checked_add(slots))
+            })
+    }
+    .ok_or_else(|| invalid("JOIN hash key memory overflow"))?;
     key.iter().try_fold(base, |total, part| {
         let bytes = match part {
             typed::Key::Text(value) => value.len(),
@@ -46,7 +55,7 @@ fn charge_hash_build(retained: &mut usize, bytes: usize) -> Result<(), Execution
 
 struct Stage {
     rows: Vec<Vec<typed::Cell>>,
-    hash: HashMap<Vec<typed::Key>, Bucket>,
+    hash: JoinHash,
     left_keys: Vec<usize>,
     projected_columns: Vec<usize>,
     full_width: usize,
@@ -1162,7 +1171,7 @@ fn visit<W: Write>(
     // Preserve per-stage key buffers across millions of fact rows.
     let has_key = row_key_into(row, &stage.left_keys, &mut scratch_keys[depth]);
     let matches = has_key
-        .then(|| stage.hash.get(scratch_keys[depth].as_slice()))
+        .then(|| stage.hash.lookup(scratch_keys[depth].as_slice()))
         .flatten();
     let Some(matches) = matches else {
         if stage.kind == JoinType::Left {
@@ -1678,23 +1687,25 @@ pub(super) fn execute<W: Write>(
         }
         // A skewed build can contain far fewer distinct keys than input
         // rows. Reserve a small table, then charge each retained key.
+        let single_numeric = single_numeric_join_key(&right_rows, &right_keys);
         let mut hash =
-            HashMap::<Vec<typed::Key>, Bucket>::with_capacity(right_rows.len().min(4096));
+            JoinHash::with_capacity(right_keys.len(), right_rows.len().min(4096), single_numeric);
         let mut scratch_key = Vec::with_capacity(right_keys.len());
         for (index, row) in right_rows.iter().enumerate() {
             if !row_key_into(row, &right_keys, &mut scratch_key) {
                 continue;
             }
-            if let Some(bucket) = hash.get_mut(scratch_key.as_slice()) {
+            if let Some(bucket) = hash.lookup_mut(scratch_key.as_slice()) {
                 if !step.any {
-                    // Count a duplicate index and conservative Vec growth
-                    // overhead. ANY only needs its first matching index.
-                    charge_hash_build(&mut retained, std::mem::size_of::<usize>() * 2)?;
+                    // Promotion adds a boxed Vec header and two indices; later
+                    // pushes include one index and conservative spare capacity.
+                    let growth_slots = if bucket.len() == 1 { 5 } else { 3 };
+                    charge_hash_build(&mut retained, std::mem::size_of::<usize>() * growth_slots)?;
                     bucket.push(index);
                 }
             } else {
-                charge_hash_build(&mut retained, hash_key_bytes(&scratch_key)?)?;
-                hash.insert(scratch_key.clone(), Bucket::One(index));
+                charge_hash_build(&mut retained, hash_key_bytes(&scratch_key, single_numeric)?)?;
+                hash.insert_new(scratch_key.as_slice(), index);
             }
         }
         stages.push(Stage {

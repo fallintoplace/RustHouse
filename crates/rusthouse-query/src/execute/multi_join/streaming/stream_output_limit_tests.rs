@@ -6,8 +6,9 @@ fn streaming_inner_joins_can_emit_more_than_the_materialized_row_cap() {
     let fact = typed::Cell::Numeric(Number::Unsigned(7));
     let dimension = typed::Cell::Numeric(Number::Unsigned(7));
     let right_rows = vec![vec![dimension]];
-    let mut hash = HashMap::new();
-    hash.insert(row_key(&right_rows[0], &[0]).unwrap(), Bucket::One(0));
+    let key = row_key(&right_rows[0], &[0]).unwrap();
+    let mut hash = JoinHash::with_capacity(1, 1, true);
+    hash.insert_new(&key, 0);
     let stages = [Stage {
         rows: right_rows,
         hash,
@@ -76,8 +77,9 @@ fn streaming_inner_join_still_respects_explicit_limit() {
     let fact = typed::Cell::Numeric(Number::Unsigned(7));
     let dimension = typed::Cell::Numeric(Number::Unsigned(7));
     let right_rows = vec![vec![dimension]];
-    let mut hash = HashMap::new();
-    hash.insert(row_key(&right_rows[0], &[0]).unwrap(), Bucket::One(0));
+    let key = row_key(&right_rows[0], &[0]).unwrap();
+    let mut hash = JoinHash::with_capacity(1, 1, true);
+    hash.insert_new(&key, 0);
     let stages = [Stage {
         rows: right_rows,
         hash,
