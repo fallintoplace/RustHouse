@@ -1832,19 +1832,28 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             } else {
                 Some(0)
             };
-            require(parser, Token::RParen, "regexpExtract requires two or three arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "regexpExtract requires two or three arguments",
+            )?;
             match (input, pattern, index) {
                 (Some(input), Some(pattern), Some(index)) => {
-                    let index = usize::try_from(index)
-                        .map_err(|_| ParseError("regexpExtract index must be nonnegative".into()))?;
+                    let index = usize::try_from(index).map_err(|_| {
+                        ParseError("regexpExtract index must be nonnegative".into())
+                    })?;
                     if index > 9 || pattern.len() > 4096 {
-                        return Err(ParseError("regexpExtract index or pattern exceeds limit".into()));
+                        return Err(ParseError(
+                            "regexpExtract index or pattern exceeds limit".into(),
+                        ));
                     }
                     let regex = regex::RegexBuilder::new(&pattern)
                         .dot_matches_new_line(true)
                         .size_limit(2 * 1024 * 1024)
                         .build()
-                        .map_err(|error| ParseError(format!("invalid regexpExtract regex: {error}")))?;
+                        .map_err(|error| {
+                            ParseError(format!("invalid regexpExtract regex: {error}"))
+                        })?;
                     let result = regex.captures(&input).and_then(|groups| {
                         groups.get(index).map(|capture| capture.as_str().to_owned())
                     });
