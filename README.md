@@ -88,8 +88,15 @@ Each result matched SQLite. These are synthetic, warm-cache tests with seven run
 
 A local smoke run matched all 43 ClickBench queries against SQLite with tie-aware comparisons. It
 used 100,500 synthetic rows and 25 query-used columns (2026-11-04). This is not an official
-ClickBench score. Query 40 exceeded the 64 MiB `GROUP BY` memory limit on a higher-cardinality
-synthetic fixture. See the [ClickBench smoke guide](bench/clickbench/README.md).
+ClickBench score. The checked-in three-column projection covers nine queries; 33 need other
+columns, and query 24 (`SELECT *`) has unknown requirements. Query 40 exceeded the 64 MiB
+`GROUP BY` memory limit on a higher-cardinality synthetic fixture. See the
+[ClickBench smoke guide](bench/clickbench/README.md).
+
+An exploratory TPC-H run matched all 22 canonical queries against DuckDB on generated SF0.05
+data (299,814 lineitems; 2026-11-05). It used unscaled `Float64` values with `1e-9` absolute and
+relative tolerance. This checks compatibility on that fixture; it is not exact `DECIMAL`
+validation or an official TPC-H score. See the [TPC-H runner guide](bench/tpch/README.md).
 
 ## Learn more
 
