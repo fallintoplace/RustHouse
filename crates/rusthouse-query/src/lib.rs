@@ -58,6 +58,7 @@ pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};
 pub use insert::{Insert, parse_insert};
 pub use insert_select::{InsertSelect, parse_insert_select};
+pub(crate) use join::JoinExistsLookupPair;
 pub use join::{
     DerivedColumn, DerivedGroupedJoin, DerivedGroupedSelect, DerivedJoinCount, DerivedUnionJoin,
     GroupedCaseValue, GroupedSum, GroupedWindowRatio, JoinAggregate, JoinColumn, JoinCorrelatedAvg,

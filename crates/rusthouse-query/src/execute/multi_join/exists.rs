@@ -1,8 +1,12 @@
 //! Build and apply bounded correlated EXISTS lookups.
 use super::*;
-use crate::{JoinExistsFilter, JoinExistsKey, JoinExistsLookup, RowPredicate};
+use crate::{
+    JoinExistsFilter, JoinExistsKey, JoinExistsLookup, JoinExistsLookupPair, RowPredicate,
+};
 use rusthouse_storage::{TypedQueryReader, inspect_query_source};
 use std::collections::HashSet;
+use std::path::Path;
+use std::sync::Arc;
 
 const MAX_EXISTS_DATE_KEYS: usize = 200_000;
 
@@ -10,7 +14,12 @@ pub(super) struct BoundExists {
     pub(super) equality: usize,
     pub(super) inequality: Option<usize>,
     pub(super) negated: bool,
-    lookup: JoinExistsLookup,
+    lookup: BoundLookup,
+}
+
+enum BoundLookup {
+    Single(JoinExistsLookup),
+    Pair(Arc<JoinExistsLookupPair>, usize),
 }
 
 pub(super) fn integer(kind: &str) -> bool {
@@ -68,7 +77,11 @@ impl BoundExists {
             .map(|index| key(&row[index]))
             .transpose()?
             .flatten();
-        Ok(self.lookup.exists(equal, unequal) != self.negated)
+        let exists = match &self.lookup {
+            BoundLookup::Single(lookup) => lookup.exists(equal, unequal),
+            BoundLookup::Pair(lookup, slot) => lookup.exists(*slot, equal, unequal),
+        };
+        Ok(exists != self.negated)
     }
 }
 
@@ -136,6 +149,216 @@ pub(super) fn fact_prefilters(
         .collect())
 }
 
+fn same_inner_column(left: &crate::JoinColumn, right: &crate::JoinColumn) -> bool {
+    left.name.eq_ignore_ascii_case(&right.name)
+}
+
+fn can_share_pair(
+    first: &JoinExistsFilter,
+    second: &JoinExistsFilter,
+    first_path: &Path,
+    second_path: &Path,
+) -> bool {
+    if first.date_filter.is_some()
+        || second.date_filter.is_some()
+        || !first.table.eq_ignore_ascii_case(&second.table)
+        || first_path != second_path
+        || !same_inner_column(&first.equality.0, &second.equality.0)
+    {
+        return false;
+    }
+    match (&first.inequality, &second.inequality) {
+        (Some((first, _)), Some((second, _))) => same_inner_column(first, second),
+        _ => true,
+    }
+}
+
+struct SharedInnerFilter {
+    equality: (usize, usize),
+    inequality: Option<(usize, usize)>,
+    comparisons: Vec<(usize, crate::Operator, usize)>,
+}
+
+fn bind_shared_inner_filter(
+    filter: &JoinExistsFilter,
+    inner: &[Relation],
+    outer: &[Relation],
+) -> Result<SharedInnerFilter, ExecutionError> {
+    let inner_index = |column: &crate::JoinColumn| {
+        if column.relation != filter.alias {
+            return Err(invalid("unknown JOIN EXISTS inner qualifier"));
+        }
+        column_index(inner, column)
+    };
+    let pair =
+        |(left, right): &(crate::JoinColumn, crate::JoinColumn)| -> Result<_, ExecutionError> {
+            let a = inner_index(left)?;
+            let b = column_index(outer, right)?;
+            let left_type = typed::base_type(column_type(inner, a));
+            let right_type = typed::base_type(column_type(outer, b));
+            if left_type != right_type || !integer(left_type) {
+                return Err(invalid("JOIN EXISTS requires matching integer key types"));
+            }
+            Ok((a, b))
+        };
+    let equality = pair(&filter.equality)?;
+    let inequality = filter.inequality.as_ref().map(pair).transpose()?;
+    let mut comparisons = Vec::with_capacity(filter.inner_comparisons.len());
+    for (left, operator, right) in &filter.inner_comparisons {
+        let a = inner_index(left)?;
+        let b = inner_index(right)?;
+        let left_type = typed::base_type(column_type(inner, a));
+        let right_type = typed::base_type(column_type(inner, b));
+        if left_type != right_type
+            || !matches!(
+                operator,
+                crate::Operator::Eq
+                    | crate::Operator::Ne
+                    | crate::Operator::Lt
+                    | crate::Operator::Le
+                    | crate::Operator::Gt
+                    | crate::Operator::Ge
+            )
+        {
+            return Err(invalid(
+                "JOIN EXISTS inner comparison requires matching types",
+            ));
+        }
+        comparisons.push((a, *operator, b));
+    }
+    Ok(SharedInnerFilter {
+        equality,
+        inequality,
+        comparisons,
+    })
+}
+
+fn shared_lookup_for(inner: &[Relation], plans: &[SharedInnerFilter; 2]) -> JoinExistsLookupPair {
+    let equality_type = typed::base_type(column_type(inner, plans[0].equality.0));
+    let inequality_type = plans.iter().find_map(|plan| {
+        plan.inequality
+            .map(|(index, _)| typed::base_type(column_type(inner, index)))
+    });
+    let unsigned64 = |kind: &str| matches!(kind, "UInt8" | "UInt16" | "UInt32" | "UInt64");
+    let signed64 = |kind: &str| matches!(kind, "Int8" | "Int16" | "Int32" | "Int64");
+    let inequalities = [plans[0].inequality.is_some(), plans[1].inequality.is_some()];
+    if unsigned64(equality_type) && inequality_type.is_none_or(unsigned64) {
+        JoinExistsLookupPair::new_compact64(inequalities, false)
+    } else if signed64(equality_type) && inequality_type.is_none_or(signed64) {
+        JoinExistsLookupPair::new_compact64(inequalities, true)
+    } else {
+        JoinExistsLookupPair::new(inequalities)
+    }
+}
+
+fn bind_shared_pair(
+    filters: [&JoinExistsFilter; 2],
+    path: &Path,
+    outer: &[Relation],
+) -> Result<[BoundExists; 2], ExecutionError> {
+    let metadata = inspect_query_source(path)?;
+    let names = metadata
+        .columns
+        .iter()
+        .map(|column| column.name.clone())
+        .collect::<Vec<_>>();
+    let types = metadata
+        .columns
+        .iter()
+        .map(|column| column.data_type.clone())
+        .collect::<Vec<_>>();
+    let make_inner = |alias: &str| Relation {
+        alias: alias.to_owned(),
+        names: names.clone(),
+        types: types.clone(),
+        physical_columns: names.len(),
+        virtual_columns: Vec::new(),
+        start: 0,
+        rows: metadata.rows,
+    };
+    let inner = [make_inner(&filters[0].alias), make_inner(&filters[1].alias)];
+    let plans = [
+        bind_shared_inner_filter(filters[0], std::slice::from_ref(&inner[0]), outer)?,
+        bind_shared_inner_filter(filters[1], std::slice::from_ref(&inner[1]), outer)?,
+    ];
+    if plans[0].equality.0 != plans[1].equality.0
+        || plans[0]
+            .inequality
+            .zip(plans[1].inequality)
+            .is_some_and(|(first, second)| first.0 != second.0)
+    {
+        return Err(invalid("shared JOIN EXISTS keys do not match"));
+    }
+
+    let common_inequality = plans[0]
+        .inequality
+        .or(plans[1].inequality)
+        .map(|(index, _)| index);
+    let mut projected = vec![plans[0].equality.0];
+    projected.extend(common_inequality);
+    for plan in &plans {
+        for (left, _, right) in &plan.comparisons {
+            projected.push(*left);
+            projected.push(*right);
+        }
+    }
+    projected.sort_unstable();
+    projected.dedup();
+    let position = |index: usize| projected.binary_search(&index).expect("projected column");
+    let fields = projected
+        .iter()
+        .map(|&index| names[index].clone())
+        .collect::<Vec<_>>();
+    let mut reader = TypedQueryReader::open(path, &fields)?;
+    let mut lookup = shared_lookup_for(std::slice::from_ref(&inner[0]), &plans);
+    let equality_position = position(plans[0].equality.0);
+    let inequality_position = common_inequality.map(position);
+    let comparison_positions = plans
+        .iter()
+        .map(|plan| {
+            plan.comparisons
+                .iter()
+                .map(|(left, operator, right)| (position(*left), *operator, position(*right)))
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let mut rows = 0u64;
+    while let Some(batch) = reader.next_batch()? {
+        for row in 0..batch[0].len() {
+            rows = rows
+                .checked_add(1)
+                .ok_or_else(|| invalid("JOIN EXISTS row count overflow"))?;
+            let equality = key(&typed::cell(&batch[equality_position], row))?;
+            let inequality = inequality_position
+                .map(|index| key(&typed::cell(&batch[index], row)))
+                .transpose()?
+                .flatten();
+            for slot in 0..2 {
+                let matches = comparison_positions[slot].iter().all(|(left, op, right)| {
+                    typed::matches_comparison(
+                        &typed::cell(&batch[*left], row),
+                        &typed::cell(&batch[*right], row),
+                        *op,
+                    )
+                });
+                if matches {
+                    lookup.insert(slot, equality, inequality)?;
+                }
+            }
+        }
+    }
+    if rows != metadata.rows {
+        return Err(invalid("JOIN EXISTS input row count changed during scan"));
+    }
+    let lookup = Arc::new(lookup);
+    Ok(std::array::from_fn(|slot| BoundExists {
+        equality: plans[slot].equality.1,
+        inequality: plans[slot].inequality.map(|(_, outer)| outer),
+        negated: filters[slot].negated,
+        lookup: BoundLookup::Pair(Arc::clone(&lookup), slot),
+    }))
+}
+
 pub(super) fn bind(
     filters: &[JoinExistsFilter],
     paths: &[PathBuf],
@@ -149,14 +372,30 @@ pub(super) fn bind(
         return Err(invalid("JOIN EXISTS requires paths for each inner source"));
     }
     let mut result = Vec::with_capacity(filters.len());
-    let mut paths = paths.iter();
-    for filter in filters {
+    let mut filters = filters.iter().peekable();
+    let mut paths = paths.iter().peekable();
+    while let Some(filter) = filters.next() {
         if outer.iter().any(|relation| relation.alias == filter.alias) {
             return Err(invalid("JOIN EXISTS inner alias shadows an outer alias"));
         }
         let path = paths
             .next()
             .ok_or_else(|| invalid("JOIN EXISTS is missing its fact table path"))?;
+        if let (Some(next_filter), Some(next_path)) = (filters.peek(), paths.peek()) {
+            if can_share_pair(filter, next_filter, path, next_path) {
+                if outer
+                    .iter()
+                    .any(|relation| relation.alias == next_filter.alias)
+                {
+                    return Err(invalid("JOIN EXISTS inner alias shadows an outer alias"));
+                }
+                let next_filter = filters.next().expect("peeked second shared EXISTS filter");
+                let next_path = paths.next().expect("peeked second shared EXISTS path");
+                result.extend(bind_shared_pair([filter, next_filter], path, outer)?);
+                debug_assert_eq!(path, next_path);
+                continue;
+            }
+        }
         let meta = inspect_query_source(path)?;
         let names = meta
             .columns
@@ -342,7 +581,7 @@ pub(super) fn bind(
             equality: outer_eq,
             inequality: unequal.map(|(_, index)| index),
             negated: filter.negated,
-            lookup,
+            lookup: BoundLookup::Single(lookup),
         });
     }
     if paths.next().is_some() {
@@ -402,7 +641,7 @@ mod tests {
             equality: 0,
             inequality: Some(1),
             negated: false,
-            lookup,
+            lookup: BoundLookup::Single(lookup),
         };
         let one = typed::Cell::Numeric(super::super::super::Number::Unsigned(1));
         assert!(!filter.passes(&[typed::Cell::Null, one.clone()]).unwrap());
@@ -536,19 +775,19 @@ mod tests {
                 equality: 0,
                 inequality: Some(1),
                 negated: false,
-                lookup: JoinExistsLookup::new(true),
+                lookup: BoundLookup::Single(JoinExistsLookup::new(true)),
             },
             BoundExists {
                 equality: 0,
                 inequality: None,
                 negated: false,
-                lookup: JoinExistsLookup::new(false),
+                lookup: BoundLookup::Single(JoinExistsLookup::new(false)),
             },
             BoundExists {
                 equality: 2,
                 inequality: None,
                 negated: false,
-                lookup: JoinExistsLookup::new(false),
+                lookup: BoundLookup::Single(JoinExistsLookup::new(false)),
             },
         ];
         assert_eq!(
@@ -565,12 +804,113 @@ mod tests {
             equality: 0,
             inequality: None,
             negated: false,
-            lookup: JoinExistsLookup::new(false),
+            lookup: BoundLookup::Single(JoinExistsLookup::new(false)),
         }];
         let row = [typed::Cell::Numeric(super::super::super::Number::Unsigned(
             1,
         ))];
         assert!(!passes_expression(&[vec![0]], &filters, &[], &row).unwrap());
         assert!(passes_expression(&[vec![0]], &filters, &[0], &row).unwrap());
+    }
+
+    #[test]
+    fn same_source_exists_filters_share_the_scan_and_keep_results_independent() {
+        use rusthouse_storage::{Column, write_wide_part};
+        use std::fs;
+
+        let part = std::env::temp_dir().join(format!(
+            "rusthouse-shared-correlated-exists-{}-{}",
+            std::process::id(),
+            line!(),
+        ));
+        let _ = fs::remove_dir_all(&part);
+        let columns = [
+            Column {
+                name: "order_id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "supp_id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "receipt".into(),
+                data_type: "Int64".into(),
+            },
+            Column {
+                name: "commit".into(),
+                data_type: "Int64".into(),
+            },
+        ];
+        let rows = [
+            vec![
+                Some("1".into()),
+                Some("10".into()),
+                Some("5".into()),
+                Some("1".into()),
+            ],
+            vec![
+                Some("1".into()),
+                Some("20".into()),
+                Some("2".into()),
+                Some("3".into()),
+            ],
+            vec![
+                Some("1".into()),
+                Some("30".into()),
+                Some("6".into()),
+                Some("2".into()),
+            ],
+            vec![
+                Some("2".into()),
+                Some("10".into()),
+                Some("5".into()),
+                Some("1".into()),
+            ],
+            vec![
+                Some("2".into()),
+                Some("20".into()),
+                Some("2".into()),
+                Some("3".into()),
+            ],
+            vec![
+                Some("3".into()),
+                Some("10".into()),
+                Some("2".into()),
+                Some("3".into()),
+            ],
+        ];
+        write_wide_part(&part, &columns, &rows).unwrap();
+        let outer = [Relation {
+            alias: "outer".into(),
+            names: vec!["order_id".into(), "supp_id".into()],
+            types: vec!["UInt64".into(), "UInt64".into()],
+            physical_columns: 2,
+            virtual_columns: Vec::new(),
+            start: 0,
+            rows: 0,
+        }];
+        let filters = [
+            exists_filter("all_lines", false, false),
+            exists_filter("late_lines", true, true),
+        ];
+        let paths = [part.clone(), part.clone()];
+        let bound = bind(&filters, &paths, &outer).unwrap();
+
+        match (&bound[0].lookup, &bound[1].lookup) {
+            (BoundLookup::Pair(first, 0), BoundLookup::Pair(second, 1)) => {
+                assert!(Arc::ptr_eq(first, second));
+            }
+            _ => panic!("compatible EXISTS filters should share one lookup"),
+        }
+
+        assert!(bound[0].passes(&outer_row(2, 10)).unwrap());
+        assert!(bound[1].passes(&outer_row(2, 10)).unwrap());
+        assert!(bound[0].passes(&outer_row(1, 10)).unwrap());
+        assert!(!bound[1].passes(&outer_row(1, 10)).unwrap());
+        assert!(!bound[0].passes(&outer_row(3, 10)).unwrap());
+        assert!(bound[1].passes(&outer_row(3, 10)).unwrap());
+
+        fs::remove_dir_all(part).unwrap();
     }
 }
