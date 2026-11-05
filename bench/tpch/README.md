@@ -19,6 +19,19 @@ byte-verified correctness. Unverified results never count as verified.
 Time includes per-query CLI startup and operating system cached reads.
 Measure load time, cold-cache behavior, and memory separately.
 
+To require the complete pinned Q1-Q22 corpus and a reference match for every
+query, add the canonical coverage checks:
+
+    python3 bench/tpch/run.py --binary target/release/rusthouse \
+      --database /path/to/tpch-float-db --queries-dir bench/tpch/queries \
+      --reference-dir /path/to/expected --require-22 --require-canonical \
+      --require-verified --comparison numeric --runs 3 --warmups 1 \
+      --output bench/results/tpch-float-compatibility.json
+
+Use `--comparison numeric` only with the unscaled Float64 fixture below. It
+uses a `1e-9` absolute and relative tolerance; it is not exact `DECIMAL`
+validation.
+
 Unit tests:
 
     python3 -m unittest discover -s bench/tpch -p 'test_*.py'
