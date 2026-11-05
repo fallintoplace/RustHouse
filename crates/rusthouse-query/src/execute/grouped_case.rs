@@ -35,10 +35,61 @@ fn charge_group_memory(
 }
 
 fn integer_zero(column: &TypedColumn, row: usize) -> bool {
+    let values = match column {
+        TypedColumn::Numeric(values) => values,
+        TypedColumn::NullableNumeric { values, nulls } if nulls[row] == 0 => values,
+        TypedColumn::NullableNumeric { .. } => return false,
+        _ => return false,
+    };
     matches!(
-        typed::cell(column, row),
-        typed::Cell::Numeric(super::Number::Signed(0) | super::Number::Unsigned(0))
+        super::number_at(values, row),
+        super::Number::Signed(0) | super::Number::Unsigned(0)
     )
+}
+
+fn append_case_integer_component(column: &TypedColumn, row: usize, buffer: &mut Vec<u8>) {
+    let (values, is_null) = match column {
+        TypedColumn::Numeric(values) => (values, false),
+        TypedColumn::NullableNumeric { values, nulls } => (values, nulls[row] != 0),
+        _ => unreachable!("CASE integer key was validated before scanning"),
+    };
+    buffer.push(u8::from(!is_null));
+    match values {
+        rusthouse_storage::NumericColumn::UInt8(values) => {
+            buffer.push(if is_null { 0 } else { values[row] });
+        }
+        rusthouse_storage::NumericColumn::Int8(values) => {
+            buffer.push(if is_null { 0 } else { values[row] as u8 });
+        }
+        rusthouse_storage::NumericColumn::UInt16(values) => {
+            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
+        }
+        rusthouse_storage::NumericColumn::Int16(values) => {
+            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
+        }
+        rusthouse_storage::NumericColumn::UInt32(values) => {
+            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
+        }
+        rusthouse_storage::NumericColumn::Int32(values) => {
+            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
+        }
+        rusthouse_storage::NumericColumn::UInt64(values) => {
+            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
+        }
+        rusthouse_storage::NumericColumn::Int64(values) => {
+            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
+        }
+        rusthouse_storage::NumericColumn::UInt128(values) => {
+            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
+        }
+        rusthouse_storage::NumericColumn::Int128(values) => {
+            buffer.extend_from_slice(&if is_null { 0 } else { values[row] }.to_le_bytes());
+        }
+        rusthouse_storage::NumericColumn::Float32(_)
+        | rusthouse_storage::NumericColumn::Float64(_) => {
+            unreachable!("CASE integer key was validated before scanning")
+        }
+    }
 }
 
 fn output_component(column: &TypedColumn, row: usize) -> Result<Vec<u8>, ExecutionError> {
@@ -232,11 +283,7 @@ pub(super) fn execute<W: Write>(
                 && integer_zero(&batch[group_indices[2]], row);
             encoded_probe.clear();
             for &index in &group_indices[..3] {
-                super::grouped_numeric_keys::append_group_component(
-                    &batch[index],
-                    row,
-                    &mut encoded_probe,
-                );
+                append_case_integer_component(&batch[index], row, &mut encoded_probe);
             }
             if use_source {
                 super::grouped_numeric_keys::append_group_component(
@@ -265,10 +312,10 @@ pub(super) fn execute<W: Write>(
                 ));
             }
             let key = output_group_key(&batch, &group_indices, row, use_source)?;
-            charge_group_memory(&mut retained, encoded_probe.capacity(), &key)?;
+            let encoded_key = encoded_probe.clone();
+            charge_group_memory(&mut retained, encoded_key.capacity(), &key)?;
             let index = groups.len();
-            encoded_groups.insert(std::mem::take(&mut encoded_probe), index);
-            encoded_probe = Vec::with_capacity(128);
+            encoded_groups.insert(encoded_key, index);
             groups.push((key, 1));
         }
     }
@@ -399,6 +446,49 @@ mod case_memory_tests {
         assert!(integer_zero(&flags, 0));
         assert!(!integer_zero(&flags, 1));
         assert!(!integer_zero(&flags, 2));
+    }
+
+    #[test]
+    fn compact_integer_components_preserve_null_and_signed_values() {
+        use rusthouse_storage::NumericColumn;
+
+        let values = TypedColumn::NullableNumeric {
+            values: NumericColumn::Int16(vec![0, i16::MIN, 0]),
+            nulls: vec![0, 0, 1],
+        };
+        let mut zero = Vec::new();
+        append_case_integer_component(&values, 0, &mut zero);
+        let mut minimum = Vec::new();
+        append_case_integer_component(&values, 1, &mut minimum);
+        let mut null = Vec::new();
+        append_case_integer_component(&values, 2, &mut null);
+
+        assert_eq!(zero.len(), 3);
+        assert_eq!(minimum.len(), 3);
+        assert_eq!(null.len(), 3);
+        assert_ne!(zero, minimum);
+        assert_ne!(zero, null);
+        assert_eq!(minimum, [vec![1], i16::MIN.to_le_bytes().to_vec()].concat());
+        assert_eq!(null, [vec![0], vec![0, 0]].concat());
+    }
+
+    #[test]
+    fn compact_integer_components_keep_fixed_width_for_wide_unsigned_values() {
+        use rusthouse_storage::NumericColumn;
+
+        let values = TypedColumn::Numeric(NumericColumn::UInt128(vec![0, u128::MAX]));
+        let mut zero = Vec::new();
+        append_case_integer_component(&values, 0, &mut zero);
+        let mut maximum = Vec::new();
+        append_case_integer_component(&values, 1, &mut maximum);
+
+        assert_eq!(zero.len(), 17);
+        assert_eq!(maximum.len(), 17);
+        assert_ne!(zero, maximum);
+        assert_eq!(
+            maximum,
+            [vec![1], u128::MAX.to_le_bytes().to_vec()].concat()
+        );
     }
 
     #[test]
