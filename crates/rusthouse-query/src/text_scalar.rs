@@ -2935,9 +2935,7 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             return Err(ParseError("regexp_replace output is too large".into()));
                         }
                         cursor = found.end();
-                        if !false {
-                            break;
-                        }
+                        break;
                     }
                     result.push_str(&input[cursor..]);
                     if result.len() > MAX_TEXT_BYTES {
