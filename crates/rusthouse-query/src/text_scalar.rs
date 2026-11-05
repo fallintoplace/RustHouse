@@ -199,6 +199,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "STARTSWITH"
                 | "HASTOKEN"
                 | "HASTOKENORNULL"
+                | "INSTR"
                 | "TOMONTHNUMSINCEEPOCH"
                 | "CONTAINS"
                 | "STRIP_PREFIX"
@@ -3400,6 +3401,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         i64::try_from(count).map_err(|_| {
                             ParseError("COUNT_SUBSTRING count exceeds Int64".into())
                         })?,
+                    )
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "INSTR" => {
+            let haystack = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "instr requires a needle")?;
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "instr requires two arguments")?;
+            match (haystack, needle) {
+                (Some(haystack), Some(needle)) => {
+                    let position = haystack.find(&needle)
+                        .map_or(0, |index| haystack[..index].chars().count() + 1);
+                    ConstantValue::Integer(
+                        i64::try_from(position)
+                            .map_err(|_| ParseError("instr position exceeds Int64".into()))?,
                     )
                 }
                 _ => ConstantValue::Null,
