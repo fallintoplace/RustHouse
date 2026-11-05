@@ -1995,6 +1995,17 @@ fn execute_multi_join_inner<W: Write>(
         min_filter.as_ref(),
         sum_filter.as_ref(),
     )?;
+    let min_filter_relation = min_filter
+        .as_ref()
+        .map(|filter| {
+            relations
+                .iter()
+                .position(|relation| {
+                    filter.required_row_width() <= relation.start + relation.names.len()
+                })
+                .ok_or_else(|| invalid("correlated MIN columns exceed the JOIN row width"))
+        })
+        .transpose()?;
     // Correlated MIN needs a materialized ordered result. Its projected inputs
     // can use the same bounded build-row cap as streaming joins; retained
     // bytes and intermediate matches are still checked independently.
@@ -2015,6 +2026,18 @@ fn execute_multi_join_inner<W: Write>(
         input_row_limit,
         MAX_STREAM_BUILD_BYTES,
     )?;
+    if min_filter_relation == Some(0) {
+        let filter = min_filter
+            .as_ref()
+            .ok_or_else(|| invalid("correlated MIN relation has no filter"))?;
+        let mut filtered = Vec::with_capacity(rows.len());
+        for row in rows {
+            if filter.passes(&row)? {
+                filtered.push(row);
+            }
+        }
+        rows = filtered;
+    }
     for (step_index, step) in std::iter::once(&initial_step)
         .chain(query.steps.iter())
         .enumerate()
@@ -2022,6 +2045,7 @@ fn execute_multi_join_inner<W: Write>(
         let right_relation = &relations[step_index + 1];
         let left_width = right_relation.start;
         let (left_keys, right_keys) = step_keys(step, &relations[..=step_index + 1], left_width)?;
+        let apply_min_filter = min_filter_relation == Some(step_index + 1);
         // INNER and LEFT cannot create rows from an empty intermediate.
         // Keep the source row limit even when its payload is not needed.
         if rows.is_empty() && matches!(step.kind, JoinType::Inner | JoinType::Left) {
@@ -2161,6 +2185,14 @@ fn execute_multi_join_inner<W: Write>(
                             Vec::with_capacity(left_width + right_relation.names.len());
                         joined.extend_from_slice(row);
                         joined.extend_from_slice(&right_rows[match_index]);
+                        if apply_min_filter {
+                            let filter = min_filter
+                                .as_ref()
+                                .ok_or_else(|| invalid("correlated MIN relation has no filter"))?;
+                            if !filter.passes(&joined)? {
+                                continue;
+                            }
+                        }
                         if step_index != query.steps.len()
                             || (comparisons.iter().all(|(index, operator, literal)| {
                                 typed::matches_comparison(&joined[*index], literal, *operator)
@@ -2172,9 +2204,6 @@ fn execute_multi_join_inner<W: Write>(
                                 )
                             }) && match &row_filters {
                                 Some(filters) => filters.passes(&joined)?,
-                                None => true,
-                            } && match &min_filter {
-                                Some(filter) => filter.passes(&joined)?,
                                 None => true,
                             } && match &sum_filter {
                                 Some(filter) => filter.passes(&joined)?,
