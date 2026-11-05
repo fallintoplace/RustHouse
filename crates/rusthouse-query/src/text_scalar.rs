@@ -620,7 +620,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .case_insensitive(false)
                         .size_limit(2 * 1024 * 1024)
                         .build()
-                        .map_err(|error| ParseError(format!("invalid regexp_like regex: {error}")))?;
+                        .map_err(|error| {
+                            ParseError(format!("invalid regexp_like regex: {error}"))
+                        })?;
                     ConstantValue::Integer(i64::from(regex.is_match(&input)))
                 }
                 _ => ConstantValue::Null,
