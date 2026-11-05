@@ -10,6 +10,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || matches!(
             name.to_ascii_uppercase().as_str(),
             "CRC32"
+                | "MATCH"
                 | "CRC32IEEE"
                 | "ISIPADDRESSINRANGE"
                 | "MACSTRINGTOOUI"
@@ -292,6 +293,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         return super::date_scalar::parse_after_open(parser, &name, depth);
     }
     let value = match name.as_str() {
+        "MATCH" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "match requires a pattern")?;
+            let pattern = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "match requires two arguments")?;
+            match (input, pattern) {
+                (Some(input), Some(pattern)) => {
+                    if pattern.len() > 4096 {
+                        return Err(ParseError("match pattern exceeds 4096 bytes".into()));
+                    }
+                    let regex = regex::RegexBuilder::new(&pattern)
+                        .dot_matches_new_line(true)
+                        .size_limit(2 * 1024 * 1024)
+                        .build()
+                        .map_err(|error| ParseError(format!("invalid match regex: {error}")))?;
+                    ConstantValue::Integer(i64::from(regex.is_match(&input)))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "CRC32IEEE" => {
             let value = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "CRC32IEEE requires one argument")?;
