@@ -333,8 +333,8 @@ fn bind_shared_pair(
                 .map(|index| key(&typed::cell(&batch[index], row)))
                 .transpose()?
                 .flatten();
-            for slot in 0..2 {
-                let matches = comparison_positions[slot].iter().all(|(left, op, right)| {
+            for (slot, comparisons) in comparison_positions.iter().enumerate() {
+                let matches = comparisons.iter().all(|(left, op, right)| {
                     typed::matches_comparison(
                         &typed::cell(&batch[*left], row),
                         &typed::cell(&batch[*right], row),
