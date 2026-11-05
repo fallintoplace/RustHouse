@@ -10,14 +10,29 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn jsonextractfloat_handles_constant_inputs() {
     for (sql, expected) in [
-        ("SELECT JSONExtractFloat('{\"price\":1.25}', 'price')", ConstantValue::Decimal("1.25".into())),
-        ("SELECT JSONExtractFloat('{\"price\":-0.5}', 'price')", ConstantValue::Decimal("-0.5".into())),
-        ("SELECT JSONExtractFloat('{\"price\":\"1.5\"}', 'price')", ConstantValue::Decimal("0".into())),
-        ("SELECT JSONExtractFloat('{\"price\":1.25}', 'missing')", ConstantValue::Decimal("0".into())),
+        (
+            "SELECT JSONExtractFloat('{\"price\":1.25}', 'price')",
+            ConstantValue::Decimal("1.25".into()),
+        ),
+        (
+            "SELECT JSONExtractFloat('{\"price\":-0.5}', 'price')",
+            ConstantValue::Decimal("-0.5".into()),
+        ),
+        (
+            "SELECT JSONExtractFloat('{\"price\":\"1.5\"}', 'price')",
+            ConstantValue::Decimal("0".into()),
+        ),
+        (
+            "SELECT JSONExtractFloat('{\"price\":1.25}', 'missing')",
+            ConstantValue::Decimal("0".into()),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
-    assert_eq!(value("SELECT jsonextractfloat(NULL, NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT jsonextractfloat(NULL, NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]
