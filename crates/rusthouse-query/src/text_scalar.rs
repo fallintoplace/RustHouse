@@ -110,6 +110,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "JSONEXTRACTRAW"
                 | "SUBSTRING"
                 | "SUBSTRINGUTF8"
+                | "EXTRACT"
                 | "HASSUBSEQUENCECASEINSENSITIVE"
                 | "HASSUBSEQUENCECASEINSENSITIVEUTF8"
                 | "OVERLAY"
@@ -1655,6 +1656,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Integer(i64::from(is_ipv6))
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "EXTRACT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "extract requires a pattern")?;
+            let pattern = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "extract requires two arguments")?;
+            match (input, pattern) {
+                (Some(input), Some(pattern)) => {
+                    if pattern.len() > 4096 {
+                        return Err(ParseError("extract pattern exceeds 4096 bytes".into()));
+                    }
+                    let regex = regex::RegexBuilder::new(&pattern)
+                        .dot_matches_new_line(true)
+                        .size_limit(2 * 1024 * 1024)
+                        .build()
+                        .map_err(|error| ParseError(format!("invalid extract regex: {error}")))?;
+                    let result = regex.captures(&input).map_or_else(String::new, |groups| {
+                        let index = if regex.captures_len() > 1 { 1 } else { 0 };
+                        groups.get(index).map_or_else(String::new, |capture| {
+                            capture.as_str().to_owned()
+                        })
+                    });
+                    ConstantValue::Text(result)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "UTF16_LENGTH" => {
