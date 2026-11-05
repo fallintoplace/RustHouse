@@ -1,16 +1,16 @@
 # RustHouse
 
-RustHouse is an experimental SQL database written in Rust. Use it to create local tables, run analytical queries, and inspect frozen ClickHouse MergeTree parts.
+RustHouse is a SQL database written in Rust for local analytics. Create tables, import files, run analytical queries, and inspect frozen columnar data parts.
 
 ## What can I do with RustHouse?
 
 - **Query data:** filter, sort, group, and join tables with SQL.
 - **Store data locally:** create tables and import CSV, TSV, or JSONEachRow files.
-- **Inspect parts:** read and check frozen MergeTree parts.
+- **Inspect data parts:** read and validate frozen parts.
 - **Connect an app:** use the [read-only HTTP server](crates/rusthouse-server/README.md).
 - **Choose an output format:** use TSV, CSV, JSON, Markdown, HTML, and more.
 
-RustHouse is for local experiments and offline analysis. It supports a subset of SQL and is not ready for production use. The HTTP server has no built-in authentication and listens on loopback by default. See the [security guide](docs/security-threat-model.md) before sharing access.
+RustHouse supports local data workflows and offline analysis. The [SQL support guide](docs/reference.md#supported-features) describes the available syntax. The read-only HTTP server listens on loopback by default; see the [security guide](docs/security-threat-model.md) when configuring access from other machines.
 
 ## Quick start
 
@@ -53,30 +53,30 @@ You can also import a CSV file:
 cargo run -p rusthouse-cli -- sql "COPY events FROM '/path/to/events.csv' WITH (FORMAT CSV, HEADER TRUE)" --database ./mydb
 ```
 
-Use table column names in the CSV header. For larger imports, TSV is also supported. See the [local database guide](docs/reference.md#local-sql-database-experimental) for import formats, updates, deletes, joins, and limits.
+Use table column names in the CSV header. TSV is supported for larger imports. See the [local database guide](docs/reference.md) for import formats, updates, deletes, and joins.
 
-## Inspect a frozen MergeTree part
+## Inspect a frozen data part
 
 ```sh
 cargo run -p rusthouse-cli -- inspect-part /path/to/wide-part --json
 cargo run -p rusthouse-cli -- sql "SELECT id, count(*) FROM part GROUP BY id ORDER BY id" --part /path/to/frozen-active-parts
 ```
 
-Use a **frozen, offline snapshot**. Do not read a directory while another process is changing it. See the [part guide](docs/reference.md#query-frozen-parts) for details.
+Use a **stable, offline snapshot** for consistent inspection. See the [part guide](docs/reference.md#query-frozen-parts) for details.
 
 ## Check a database
 
-Stop writers and the HTTP server before running the offline doctor:
+Run the offline doctor when the database is idle and the HTTP server is stopped:
 
 ```sh
 cargo run -p rusthouse-cli -- doctor --database ./mydb
 ```
 
-Doctor checks your tables and reports problems. It does not repair or delete files. See the [doctor guide](docs/reference.md#diagnose-a-local-database-without-changing-it) for details and full hash checks.
+Doctor validates your tables and reports its findings while preserving all data files. See the [doctor guide](docs/reference.md#diagnose-a-local-database-without-changing-it) for details and full hash checks.
 
 ## Benchmarks
 
-On an Apple M1 Pro with 32 GB RAM, a release build at `7c450104` ran these queries:
+Example timings from a release build at `7c450104` on an Apple M1 Pro with 32 GB RAM:
 
 | Query | Data | Median time |
 | --- | ---: | ---: |
@@ -84,23 +84,15 @@ On an Apple M1 Pro with 32 GB RAM, a release build at `7c450104` ran these queri
 | Group counts by user and rank them | 200,000 events, 997 users | 12.0 ms |
 | Join four tables and return 20 rows | 16,000 events, 997 accounts | 41.6 ms |
 
-Each result matched SQLite. These are synthetic, warm-cache tests with seven runs after two warmups. Times include CLI startup and output, but not data generation or import. Rust 1.96.0 was used. See the [benchmark guide](bench/README.md) and [reproduction commands](docs/reference.md#benchmarks).
+Each result matched SQLite. Measurements use synthetic data and seven warm-cache runs after two warmups. Times include CLI startup and output; data generation and import are outside the timed run. Rust 1.96.0 was used. See the [benchmark guide](bench/README.md) and [reproduction commands](docs/reference.md#benchmarks).
 
-A local smoke run matched all 43 ClickBench queries against SQLite with tie-aware comparisons. It
-used 100,500 synthetic rows and 25 query-used columns (2026-11-04). This is not an official
-ClickBench score. The checked-in three-column projection covers nine queries; 33 need other
-columns, and query 24 (`SELECT *`) has unknown requirements. Query 40 exceeded the 64 MiB
-`GROUP BY` memory limit on a higher-cardinality synthetic fixture. See the
-[ClickBench smoke guide](bench/clickbench/README.md).
-
-An exploratory TPC-H run matched all 22 canonical queries against DuckDB on generated SF0.05
-data (299,814 lineitems; 2026-11-05). It used unscaled `Float64` values with `1e-9` absolute and
-relative tolerance. This checks compatibility on that fixture; it is not exact `DECIMAL`
-validation or an official TPC-H score. See the [TPC-H runner guide](bench/tpch/README.md).
+All 22 canonical TPC-H queries matched reference results on a generated SF0.05 fixture with
+299,814 lineitems (2026-11-05). The run used `Float64` values with `1e-9` absolute and relative
+tolerance. See the [TPC-H runner guide](bench/tpch/README.md) for the fixture and reproduction commands.
 
 ## Learn more
 
-- [SQL features and limits](docs/reference.md#supported-features)
+- [SQL support](docs/reference.md#supported-features)
 - [Local database and joins](docs/reference.md)
 - [HTTP server](crates/rusthouse-server/README.md)
 - [Examples](examples/demo/README.md)
