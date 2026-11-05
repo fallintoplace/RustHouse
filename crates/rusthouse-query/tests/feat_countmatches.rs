@@ -10,8 +10,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn countmatches_handles_regex_constants() {
     for (sql, expected) in [
-        ("SELECT countMatches('a1b2c3','[0-9]')", ConstantValue::Integer(3)),
-        ("SELECT countMatches('abc','[0-9]')", ConstantValue::Integer(0)),
+        (
+            "SELECT countMatches('a1b2c3','[0-9]')",
+            ConstantValue::Integer(3),
+        ),
+        (
+            "SELECT countMatches('abc','[0-9]')",
+            ConstantValue::Integer(0),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
