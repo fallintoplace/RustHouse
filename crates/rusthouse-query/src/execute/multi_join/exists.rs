@@ -42,6 +42,24 @@ pub(super) fn key(value: &typed::Cell) -> Result<Option<JoinExistsKey>, Executio
     }
 }
 
+fn lookup_for(
+    relation: &[Relation],
+    equality: usize,
+    inequality: Option<usize>,
+) -> JoinExistsLookup {
+    let equality_type = typed::base_type(column_type(relation, equality));
+    let inequality_type = inequality.map(|index| typed::base_type(column_type(relation, index)));
+    let unsigned64 = |kind: &str| matches!(kind, "UInt8" | "UInt16" | "UInt32" | "UInt64");
+    let signed64 = |kind: &str| matches!(kind, "Int8" | "Int16" | "Int32" | "Int64");
+    if unsigned64(equality_type) && inequality_type.is_none_or(unsigned64) {
+        JoinExistsLookup::new_compact64(inequality.is_some(), false)
+    } else if signed64(equality_type) && inequality_type.is_none_or(signed64) {
+        JoinExistsLookup::new_compact64(inequality.is_some(), true)
+    } else {
+        JoinExistsLookup::new(inequality.is_some())
+    }
+}
+
 impl BoundExists {
     pub(super) fn passes(&self, row: &[typed::Cell]) -> Result<bool, ExecutionError> {
         let equal = key(&row[self.equality])?;
@@ -254,7 +272,7 @@ pub(super) fn bind(
             .map(|&index| inner[0].names[index].clone())
             .collect::<Vec<_>>();
         let mut reader = TypedQueryReader::open(path, &fields)?;
-        let mut lookup = JoinExistsLookup::new(unequal.is_some());
+        let mut lookup = lookup_for(&inner, inner_eq, unequal.map(|(inner, _)| inner));
         let mut rows = 0u64;
         while let Some(batch) = reader.next_batch()? {
             for i in 0..batch[0].len() {
