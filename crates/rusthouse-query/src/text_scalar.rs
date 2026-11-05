@@ -1675,9 +1675,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .map_err(|error| ParseError(format!("invalid extract regex: {error}")))?;
                     let result = regex.captures(&input).map_or_else(String::new, |groups| {
                         let index = if regex.captures_len() > 1 { 1 } else { 0 };
-                        groups.get(index).map_or_else(String::new, |capture| {
-                            capture.as_str().to_owned()
-                        })
+                        groups
+                            .get(index)
+                            .map_or_else(String::new, |capture| capture.as_str().to_owned())
                     });
                     ConstantValue::Text(result)
                 }
