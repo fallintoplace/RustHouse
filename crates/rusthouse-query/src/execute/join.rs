@@ -118,10 +118,11 @@ impl Bucket {
     }
 }
 
-/// Store single-column keys inline; keep the existing vector key for composites.
+/// Store single-column and nonnegative numeric pair keys without key vectors.
 pub(super) enum JoinHash {
     SingleNumeric(HashMap<NumberKey, Bucket>),
     SingleOther(HashMap<typed::Key, Bucket>),
+    CompositeUnsignedPair(HashMap<(u128, u128), Bucket>),
     Composite(HashMap<Vec<typed::Key>, Bucket>),
 }
 
@@ -138,6 +139,10 @@ impl JoinHash {
         }
     }
 
+    pub(super) fn with_unsigned_pair_capacity(capacity: usize) -> Self {
+        Self::CompositeUnsignedPair(HashMap::with_capacity(capacity))
+    }
+
     pub(super) fn lookup(&self, key: &[typed::Key]) -> Option<&Bucket> {
         match self {
             Self::SingleNumeric(hash) if key.len() == 1 => match &key[0] {
@@ -147,6 +152,16 @@ impl JoinHash {
             Self::SingleNumeric(_) => None,
             Self::SingleOther(hash) if key.len() == 1 => hash.get(&key[0]),
             Self::SingleOther(_) => None,
+            Self::CompositeUnsignedPair(hash) => {
+                let [
+                    typed::Key::Numeric(NumberKey::Unsigned(first)),
+                    typed::Key::Numeric(NumberKey::Unsigned(second)),
+                ] = key
+                else {
+                    return None;
+                };
+                hash.get(&(*first, *second))
+            }
             Self::Composite(hash) => hash.get(key),
         }
     }
@@ -160,6 +175,16 @@ impl JoinHash {
             Self::SingleNumeric(_) => None,
             Self::SingleOther(hash) if key.len() == 1 => hash.get_mut(&key[0]),
             Self::SingleOther(_) => None,
+            Self::CompositeUnsignedPair(hash) => {
+                let [
+                    typed::Key::Numeric(NumberKey::Unsigned(first)),
+                    typed::Key::Numeric(NumberKey::Unsigned(second)),
+                ] = key
+                else {
+                    return None;
+                };
+                hash.get_mut(&(*first, *second))
+            }
             Self::Composite(hash) => hash.get_mut(key),
         }
     }
@@ -177,6 +202,16 @@ impl JoinHash {
                 debug_assert_eq!(key.len(), 1);
                 hash.insert(key[0].clone(), Bucket::One(index));
             }
+            Self::CompositeUnsignedPair(hash) => {
+                let [
+                    typed::Key::Numeric(NumberKey::Unsigned(first)),
+                    typed::Key::Numeric(NumberKey::Unsigned(second)),
+                ] = key
+                else {
+                    unreachable!("unsigned pair JOIN keys changed type while building");
+                };
+                hash.insert((*first, *second), Bucket::One(index));
+            }
             Self::Composite(hash) => {
                 hash.insert(key.to_vec(), Bucket::One(index));
             }
@@ -191,6 +226,9 @@ impl JoinHash {
             (Self::SingleOther(target), Self::SingleOther(source)) => {
                 merge_bucket_maps(target, source, any);
             }
+            (Self::CompositeUnsignedPair(target), Self::CompositeUnsignedPair(source)) => {
+                merge_bucket_maps(target, source, any);
+            }
             (Self::Composite(target), Self::Composite(source)) => {
                 merge_bucket_maps(target, source, any);
             }
@@ -202,6 +240,7 @@ impl JoinHash {
         match self {
             Self::SingleNumeric(hash) => hash.len(),
             Self::SingleOther(hash) => hash.len(),
+            Self::CompositeUnsignedPair(hash) => hash.len(),
             Self::Composite(hash) => hash.len(),
         }
     }
@@ -214,6 +253,7 @@ impl JoinHash {
         match self {
             Self::SingleNumeric(hash) => hash.values().map(Bucket::len).sum(),
             Self::SingleOther(hash) => hash.values().map(Bucket::len).sum(),
+            Self::CompositeUnsignedPair(hash) => hash.values().map(Bucket::len).sum(),
             Self::Composite(hash) => hash.values().map(Bucket::len).sum(),
         }
     }
@@ -231,6 +271,21 @@ pub(super) fn single_numeric_join_key(rows: &[Vec<typed::Cell>], keys: &[usize])
             _ => Some(false),
         })
         .unwrap_or(false)
+}
+
+pub(super) fn unsigned_composite_join_key(rows: &[Vec<typed::Cell>], keys: &[usize]) -> bool {
+    keys.len() == 2
+        && keys.iter().all(|&index| {
+            rows.iter()
+                .find_map(|row| match row.get(index) {
+                    Some(typed::Cell::Numeric(Number::Unsigned(_)))
+                    | Some(typed::Cell::Numeric(Number::Signed(0..=i128::MAX))) => Some(true),
+                    Some(typed::Cell::Numeric(_)) => Some(false),
+                    Some(typed::Cell::Null) => None,
+                    Some(_) | None => Some(false),
+                })
+                .unwrap_or(false)
+        })
 }
 
 trait JoinLookup {
@@ -2542,6 +2597,102 @@ mod reusable_join_build_key_tests {
                 .copied()
                 .collect::<Vec<_>>(),
             vec![3]
+        );
+    }
+
+    #[test]
+    fn unsigned_composite_pair_keys_keep_duplicates_without_allocating_vectors() {
+        let key = [
+            typed::Key::Numeric(NumberKey::Unsigned(3)),
+            typed::Key::Numeric(NumberKey::Unsigned(7)),
+        ];
+        let mut hash = JoinHash::with_unsigned_pair_capacity(0);
+        hash.insert_new(&key, 3);
+
+        assert!(matches!(&hash, JoinHash::CompositeUnsignedPair(_)));
+        hash.lookup_mut(&key).unwrap().push(8);
+        assert_eq!(
+            hash.lookup(&key)
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![3, 8]
+        );
+        let other = [
+            typed::Key::Numeric(NumberKey::Unsigned(3)),
+            typed::Key::Numeric(NumberKey::Unsigned(9)),
+        ];
+        assert!(hash.lookup(&other).is_none());
+    }
+
+    #[test]
+    fn non_numeric_composite_pairs_keep_vector_lookup_and_duplicates() {
+        let key = [
+            typed::Key::Text(b"part".to_vec()),
+            typed::Key::Numeric(NumberKey::Unsigned(7)),
+        ];
+        let mut hash = JoinHash::with_capacity(2, 0, false);
+        hash.insert_new(&key, 3);
+
+        assert!(matches!(&hash, JoinHash::Composite(_)));
+        hash.lookup_mut(&key).unwrap().push(8);
+        assert_eq!(
+            hash.lookup(&key)
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![3, 8]
+        );
+        let other = [
+            typed::Key::Text(b"part".to_vec()),
+            typed::Key::Numeric(NumberKey::Unsigned(9)),
+        ];
+        assert!(hash.lookup(&other).is_none());
+    }
+
+    #[test]
+    fn unsigned_composite_detection_skips_nulls_and_rejects_other_types() {
+        let numeric_rows = [
+            vec![typed::Cell::Null, typed::Cell::Null],
+            vec![
+                typed::Cell::Numeric(Number::Unsigned(1)),
+                typed::Cell::Numeric(Number::Signed(2)),
+            ],
+        ];
+        assert!(unsigned_composite_join_key(&numeric_rows, &[0, 1]));
+
+        let text_rows = [vec![
+            typed::Cell::Text(b"a".to_vec()),
+            typed::Cell::Numeric(Number::Unsigned(2)),
+        ]];
+        let negative_rows = [vec![
+            typed::Cell::Numeric(Number::Signed(-1)),
+            typed::Cell::Numeric(Number::Unsigned(2)),
+        ]];
+        assert!(!unsigned_composite_join_key(&text_rows, &[0, 1]));
+        assert!(!unsigned_composite_join_key(&negative_rows, &[0, 1]));
+        assert!(!unsigned_composite_join_key(&numeric_rows, &[0]));
+    }
+
+    #[test]
+    fn wider_composite_keys_keep_the_vector_fallback() {
+        let key = [
+            typed::Key::Numeric(NumberKey::Unsigned(1)),
+            typed::Key::Numeric(NumberKey::Unsigned(2)),
+            typed::Key::Numeric(NumberKey::Unsigned(3)),
+        ];
+        let mut hash = JoinHash::with_capacity(key.len(), 0, false);
+        hash.insert_new(&key, 5);
+        assert!(matches!(&hash, JoinHash::Composite(_)));
+        assert_eq!(
+            hash.lookup(&key)
+                .unwrap()
+                .iter()
+                .copied()
+                .collect::<Vec<_>>(),
+            vec![5]
         );
     }
 }

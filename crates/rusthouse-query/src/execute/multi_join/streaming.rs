@@ -8,7 +8,7 @@ use std::collections::HashSet;
 use super::super::join::{
     Bucket as JoinBucket, JoinHash, read_compact_projected_build_rows,
     read_compact_projected_build_rows_matching, read_filtered_compact_projected_build_rows,
-    single_numeric_join_key,
+    single_numeric_join_key, unsigned_composite_join_key,
 };
 
 const MAX_STREAM_GROUPS: usize = 100_000;
@@ -23,6 +23,14 @@ fn hash_key_bytes(key: &[typed::Key], single_numeric: bool) -> Result<usize, Exe
             std::mem::size_of::<(typed::Key, JoinBucket)>()
         };
         entry.checked_add(96)
+    } else if matches!(
+        key,
+        [
+            typed::Key::Numeric(super::super::NumberKey::Unsigned(_)),
+            typed::Key::Numeric(super::super::NumberKey::Unsigned(_))
+        ]
+    ) {
+        std::mem::size_of::<((u128, u128), JoinBucket)>().checked_add(96)
     } else {
         std::mem::size_of::<Vec<typed::Key>>()
             .checked_add(96)
@@ -1705,8 +1713,13 @@ pub(super) fn execute<W: Write>(
         // A skewed build can contain far fewer distinct keys than input
         // rows. Reserve a small table, then charge each retained key.
         let single_numeric = single_numeric_join_key(&right_rows, &right_keys);
-        let mut hash =
-            JoinHash::with_capacity(right_keys.len(), right_rows.len().min(4096), single_numeric);
+        let unsigned_pair = unsigned_composite_join_key(&right_rows, &right_keys);
+        let hash_capacity = right_rows.len().min(4096);
+        let mut hash = if unsigned_pair {
+            JoinHash::with_unsigned_pair_capacity(hash_capacity)
+        } else {
+            JoinHash::with_capacity(right_keys.len(), hash_capacity, single_numeric)
+        };
         let mut scratch_key = Vec::with_capacity(right_keys.len());
         for (index, row) in right_rows.iter().enumerate() {
             if !row_key_into(row, &right_keys, &mut scratch_key) {
