@@ -3189,7 +3189,10 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             require(parser, Token::RParen, "locate requires two or three arguments")?;
             match (needle, haystack, start) {
                 (Some(needle), Some(haystack), Some(start)) => {
-                    let position = usize::try_from(start - 1).ok().and_then(|skip| {
+                    let position = start
+                        .checked_sub(1)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .and_then(|skip| {
                         if skip > haystack.chars().count() {
                             return None;
                         }
