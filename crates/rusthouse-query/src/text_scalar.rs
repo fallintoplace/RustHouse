@@ -2493,7 +2493,9 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .dot_matches_new_line(true)
                         .size_limit(2 * 1024 * 1024)
                         .build()
-                        .map_err(|error| ParseError(format!("invalid replaceregexpall regex: {error}")))?;
+                        .map_err(|error| {
+                            ParseError(format!("invalid replaceregexpall regex: {error}"))
+                        })?;
                     let mut converted = String::with_capacity(replacement.len());
                     let mut characters = replacement.chars();
                     while let Some(character) = characters.next() {
