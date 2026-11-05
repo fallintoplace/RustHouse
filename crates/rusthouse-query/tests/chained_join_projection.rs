@@ -45,7 +45,7 @@ fn chained_join_skips_unused_huge_dimension_payload_columns() {
         .unwrap();
     let mut out = Vec::new();
     execute_multi_join(&query, &[a, b, c], &mut out).unwrap();
-    assert_eq!(String::from_utf8(out).unwrap(), "a.id\n1\n");
+    assert_eq!(String::from_utf8(out).unwrap(), "id\n1\n");
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -87,7 +87,7 @@ fn chained_star_retains_all_columns_and_order_by_reads_unprojected_sort_keys() {
     .unwrap();
     let mut out = Vec::new();
     execute_multi_join(&query, &paths, &mut out).unwrap();
-    assert_eq!(String::from_utf8(out).unwrap(), "a.id\n1\n");
+    assert_eq!(String::from_utf8(out).unwrap(), "id\n1\n");
 
     let query = parse_join("SELECT * FROM a JOIN b ON a.id = b.id JOIN c ON b.id = c.id")
         .unwrap()

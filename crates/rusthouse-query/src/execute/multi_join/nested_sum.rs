@@ -37,16 +37,19 @@ fn relations(query: &JoinSelect, paths: &[PathBuf]) -> Result<Vec<Relation>, Exe
             .columns
             .iter()
             .map(|column| column.name.clone())
-            .collect();
+            .collect::<Vec<_>>();
         let types = metadata
             .columns
             .iter()
             .map(|column| column.data_type.clone())
             .collect();
+        let physical_columns = names.len();
         relations.push(Relation {
             alias,
             names,
             types,
+            physical_columns,
+            virtual_columns: Vec::new(),
             start: width,
             rows: metadata.rows,
         });

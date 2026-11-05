@@ -138,9 +138,8 @@ pub(in crate::execute) fn read_projected_build_rows(
     )
 }
 
-/// JOIN plans that already inspected their immutable snapshot do not need to
-/// reopen and validate its part metadata a second time.
-pub(in crate::execute) fn read_filtered_projected_build_rows(
+/// Retain only projected cells while preserving their projection order.
+pub(in crate::execute) fn read_filtered_compact_projected_build_rows(
     path: &Path,
     names: &[String],
     indices: &[usize],
@@ -159,11 +158,33 @@ pub(in crate::execute) fn read_filtered_projected_build_rows(
         None,
         Some(filter),
         None,
+        true,
     )
 }
 
-/// Filter a projected build row before retaining its decoded values.
-pub(in crate::execute) fn read_projected_build_rows_matching(
+pub(in crate::execute) fn read_compact_projected_build_rows(
+    path: &Path,
+    names: &[String],
+    indices: &[usize],
+    expected_rows: u64,
+    row_limit: u64,
+    byte_limit: usize,
+) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
+    read_projected_build_rows_filtered(
+        path,
+        names,
+        indices,
+        expected_rows,
+        row_limit,
+        byte_limit,
+        None,
+        None,
+        None,
+        true,
+    )
+}
+
+pub(in crate::execute) fn read_compact_projected_build_rows_matching(
     path: &Path,
     names: &[String],
     indices: &[usize],
@@ -182,6 +203,7 @@ pub(in crate::execute) fn read_projected_build_rows_matching(
         None,
         None,
         Some(predicate),
+        true,
     )
 }
 
@@ -204,6 +226,7 @@ pub(in crate::execute) fn read_projected_build_rows_using_metadata(
         metadata,
         None,
         None,
+        false,
     )
 }
 
@@ -220,6 +243,7 @@ fn read_projected_build_rows_filtered(
     metadata: Option<&PartMetadata>,
     filter: Option<(usize, crate::Operator, &typed::Cell)>,
     mut row_filter: Option<&mut RowPredicate<'_>>,
+    compact: bool,
 ) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
     if filter.is_none() && row_filter.is_none() && expected_rows > row_limit {
         return Err(invalid(format!(
@@ -228,6 +252,16 @@ fn read_projected_build_rows_filtered(
     }
     if indices.is_empty() || names.is_empty() {
         return Err(invalid("JOIN requires nonempty build columns"));
+    }
+    if compact
+        && indices
+            .iter()
+            .enumerate()
+            .any(|(index, column)| indices[..index].contains(column))
+    {
+        return Err(invalid(
+            "JOIN compact projection contains duplicate columns",
+        ));
     }
     let filter_column = filter
         .as_ref()
@@ -274,12 +308,20 @@ fn read_projected_build_rows_filtered(
             if rows.len() >= row_limit as usize {
                 return Err(invalid("JOIN input row limit exceeded"));
             }
-            let bytes = cells
+            let retained = if compact {
+                indices
+                    .iter()
+                    .map(|&column| std::mem::replace(&mut cells[column], typed::Cell::Null))
+                    .collect::<Vec<_>>()
+            } else {
+                cells
+            };
+            let bytes = retained
                 .len()
                 .checked_mul(std::mem::size_of::<typed::Cell>())
                 .and_then(|bytes| bytes.checked_add(std::mem::size_of::<Vec<typed::Cell>>()))
                 .and_then(|bytes| {
-                    cells.iter().try_fold(bytes, |sum, cell| {
+                    retained.iter().try_fold(bytes, |sum, cell| {
                         let added = match cell {
                             typed::Cell::Text(value) => value.len(),
                             typed::Cell::Uuid(value) => value.len(),
@@ -295,7 +337,7 @@ fn read_projected_build_rows_filtered(
             if retained_bytes > byte_limit {
                 return Err(invalid("JOIN exceeds its retained-row memory budget"));
             }
-            rows.push(cells);
+            rows.push(retained);
         }
     }
     if scanned != expected_rows {
@@ -363,9 +405,56 @@ mod row_filter_limit_tests {
     }
 
     #[test]
+    fn compact_projection_retains_only_selected_cells_in_projection_order() {
+        let part = std::env::temp_dir().join(format!(
+            "rusthouse-compact-join-build-{}-{}",
+            std::process::id(),
+            NEXT_PART.fetch_add(1, Ordering::Relaxed),
+        ));
+        let schema = [
+            Column {
+                name: "id".into(),
+                data_type: "UInt8".into(),
+            },
+            Column {
+                name: "unused".into(),
+                data_type: "String".into(),
+            },
+            Column {
+                name: "label".into(),
+                data_type: "String".into(),
+            },
+        ];
+        write_wide_part(
+            &part,
+            &schema,
+            &[vec![
+                Some("1".into()),
+                Some("wide payload".into()),
+                Some("kept".into()),
+            ]],
+        )
+        .unwrap();
+
+        let names = schema
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>();
+        let rows = read_compact_projected_build_rows(&part, &names, &[2, 0], 1, 1, 1024).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].len(), 2);
+        assert!(matches!(&rows[0][0], typed::Cell::Text(value) if value == b"kept"));
+        assert!(matches!(
+            rows[0][1],
+            typed::Cell::Numeric(Number::Unsigned(1))
+        ));
+        fs::remove_dir_all(part).unwrap();
+    }
+
+    #[test]
     fn rejected_rows_do_not_exhaust_the_retained_row_limit() {
         let part = write_rows(&["1", "0", "0"]);
-        let rows = read_projected_build_rows_matching(
+        let rows = read_compact_projected_build_rows_matching(
             &part,
             &["id".into()],
             &[0],
@@ -383,7 +472,7 @@ mod row_filter_limit_tests {
     #[test]
     fn matching_rows_still_enforce_the_retained_row_limit() {
         let part = write_rows(&["1", "1"]);
-        let result = read_projected_build_rows_matching(
+        let result = read_compact_projected_build_rows_matching(
             &part,
             &["id".into()],
             &[0],

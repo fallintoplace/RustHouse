@@ -276,7 +276,7 @@ pub fn parse_nested_join_sum_with_schema(
         }
         outer.extend_from_slice(filter);
     }
-    let mut outer = parse_join_resolved(outer, Some(&mut resolve))?
+    let mut outer = parse_join_resolved(outer, Some(&mut resolve), false)?
         .ok_or_else(|| ParseError("nested IN requires an outer JOIN".into()))?;
     if outer.kind != JoinType::Inner
         || outer.steps.iter().any(|step| step.kind != JoinType::Inner)

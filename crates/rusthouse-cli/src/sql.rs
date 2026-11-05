@@ -1,5 +1,7 @@
 mod exists;
 mod input;
+mod scalar_derived_cross;
+mod scalar_subquery;
 
 use self::input::*;
 
@@ -244,11 +246,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     }
     // ClickHouse clients may select a supported text encoding directly in SQL.
     // Only inspect SELECT statements; large INSERT payloads have a separate lexer limit.
-    let starts_with_select = query
-        .trim_start()
-        .split_ascii_whitespace()
-        .next()
-        .is_some_and(|word| word.eq_ignore_ascii_case("SELECT"));
+    let starts_with_select = scalar_subquery::starts_with_select(&query);
     if starts_with_select {
         let (statement, inline_format) =
             split_clickhouse_format(&query).map_err(|error| error.to_string())?;
@@ -381,7 +379,109 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         }
         return Err("--catalog is only supported for DDL statements".into());
     }
+    let mut _scalar_subquery_read_lock = None;
+    if starts_with_select && !explain && !show_ast {
+        let scalar_candidate = scalar_subquery::has_candidate(&query);
+        if let Some(directory) = database.as_deref()
+            && scalar_candidate
+        {
+            _scalar_subquery_read_lock = Some(crate::database::read_lock(directory)?);
+            if let Some(rewritten) = scalar_subquery::rewrite(&query, directory)? {
+                query = rewritten;
+            }
+        }
+    }
+    let scalar_derived = scalar_derived_cross::parse(&query)?;
+    let mut scalar_derived_part = None;
+    let mut scalar_query_started_at = None;
+    let mut _scalar_read_lock = None;
+    if let Some(plan) = scalar_derived.as_ref() {
+        if explain || show_ast {
+            return Err(
+                "scalar derived aggregate queries cannot use --explain or --show-ast yet".into(),
+            );
+        }
+        let directory = database
+            .as_deref()
+            .ok_or("scalar derived aggregate queries require --database")?;
+        _scalar_read_lock = Some(crate::database::read_lock(directory)?);
+        scalar_query_started_at = Some(std::time::Instant::now());
+        scalar_derived_part = Some(scalar_derived_cross::materialize(directory, plan)?);
+        query = "SELECT * FROM part".into();
+    }
     if starts_with_select {
+        let derived_set_count = if let Some(directory) = database.as_deref() {
+            rusthouse_query::parse_derived_set_count_with_schema(&query, |table| {
+                crate::catalog::read_schema(directory, table)
+                    .map(|columns| {
+                        columns
+                            .into_iter()
+                            .map(|column| rusthouse_query::DerivedColumn {
+                                name: column.name,
+                                data_type: column.data_type,
+                            })
+                            .collect()
+                    })
+                    .map_err(ParseError)
+            })
+            .map_err(|error| error.to_string())?
+        } else {
+            None
+        };
+        if let Some(plan) = derived_set_count {
+            let directory = database
+                .as_deref()
+                .expect("schema resolver requires a database");
+            if part.is_some() || explain || max_rows.is_some() {
+                return Err(
+                    "derived set count does not support --part, --explain, or --max-rows".into(),
+                );
+            }
+            if !matches!(format.unwrap_or(SqlOutputFormat::Tsv), SqlOutputFormat::Tsv) {
+                return Err("derived set count currently supports TSV output only".into());
+            }
+            if show_ast {
+                if output_path.is_some() || time {
+                    return Err("--show-ast cannot use --output or --time".into());
+                }
+                println!("{plan:#?}");
+                return Ok(());
+            }
+            let _read_lock = crate::database::read_lock(directory)?;
+            let paths = plan
+                .branches()
+                .iter()
+                .map(|branch| {
+                    [&branch.left, &branch.right]
+                        .into_iter()
+                        .chain(branch.steps.iter().map(|step| &step.table))
+                        .map(|table| crate::database::select_source(directory, table))
+                        .collect::<Result<Vec<_>, _>>()
+                })
+                .collect::<Result<Vec<_>, String>>()?;
+            let mut output: Box<dyn std::io::Write> = match &output_path {
+                Some(path) => Box::new(
+                    std::fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(path)
+                        .map_err(|error| format!("cannot create {}: {error}", path.display()))?,
+                ),
+                None => Box::new(std::io::stdout()),
+            };
+            let start = std::time::Instant::now();
+            let result = rusthouse_query::execute_derived_set_count(&plan, &paths, &mut output);
+            if time {
+                eprintln!("Elapsed: {:.3} ms", start.elapsed().as_secs_f64() * 1_000.0);
+            }
+            if result.is_err() {
+                drop(output);
+                if let Some(path) = output_path {
+                    let _ = std::fs::remove_file(path);
+                }
+            }
+            return result.map_err(|error| error.to_string());
+        }
         if let Some(plan) =
             rusthouse_query::parse_bounded_except(&query).map_err(|error| error.to_string())?
         {
@@ -435,6 +535,8 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     let implicit = has_implicit_join(&query).map_err(|error| error.to_string())?;
     let cte = has_cte_max_join(&query).map_err(|error| error.to_string())?;
     let derived = has_derived_join_count(&query).map_err(|error| error.to_string())?;
+    let derived_union =
+        rusthouse_query::has_derived_union(&query).map_err(|error| error.to_string())?;
     let substring_antijoin =
         rusthouse_query::has_substring_antijoin(&query).map_err(|error| error.to_string())?;
     let possible_join_exists = has_top_level_exists(&query).map_err(|error| error.to_string())?
@@ -450,6 +552,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     let implicit_lock = if implicit
         || cte
         || derived
+        || derived_union
         || substring_antijoin
         || possible_join_exists
         || possible_join_avg
@@ -466,6 +569,73 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     };
     if cte {
         if let Some(directory) = database.as_deref() {
+            let correlated_avg =
+                rusthouse_query::parse_cte_correlated_avg_with_schema(&query, |table| {
+                    crate::catalog::read_schema(directory, table)
+                        .map(|columns| {
+                            columns
+                                .into_iter()
+                                .map(|column| rusthouse_query::CteOutputColumn {
+                                    name: column.name,
+                                    data_type: column.data_type,
+                                })
+                                .collect()
+                        })
+                        .map_err(ParseError)
+                })
+                .map_err(|error| error.to_string())?;
+            if let Some(mut plan) = correlated_avg {
+                if part.is_some() {
+                    return Err("CTE correlated AVG cannot use --part".into());
+                }
+                if show_ast || explain {
+                    return Err("CTE correlated AVG cannot use --show-ast or --explain yet".into());
+                }
+                if let Some(cap) = max_rows {
+                    plan.cap_rows(cap);
+                }
+                return crate::join::run_cte_correlated_avg(
+                    directory,
+                    &plan,
+                    format.unwrap_or(SqlOutputFormat::Tsv),
+                    output_path,
+                    time,
+                    implicit_lock,
+                );
+            }
+            let cte_join = rusthouse_query::parse_cte_multi_join_with_schema(&query, |table| {
+                crate::catalog::read_schema(directory, table)
+                    .map(|columns| {
+                        columns
+                            .into_iter()
+                            .map(|column| rusthouse_query::CteOutputColumn {
+                                name: column.name,
+                                data_type: column.data_type,
+                            })
+                            .collect()
+                    })
+                    .map_err(ParseError)
+            })
+            .map_err(|error| error.to_string())?;
+            if let Some(mut plan) = cte_join {
+                if part.is_some() {
+                    return Err("CTE JOIN cannot use --part".into());
+                }
+                if show_ast || explain {
+                    return Err("CTE JOIN cannot use --show-ast or --explain yet".into());
+                }
+                if let Some(cap) = max_rows {
+                    plan.cap_rows(cap);
+                }
+                return crate::join::run_cte_multi_join(
+                    directory,
+                    &plan,
+                    format.unwrap_or(SqlOutputFormat::Tsv),
+                    output_path,
+                    time,
+                    implicit_lock,
+                );
+            }
             let plan = parse_cte_max_join(&query).map_err(|error| error.to_string())?;
             if let Some(mut plan) = plan {
                 if part.is_some() {
@@ -517,8 +687,45 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             }
         }
     }
-    if derived {
+    if derived || derived_union {
         if let Some(directory) = database.as_deref() {
+            if derived_union {
+                let plan = rusthouse_query::parse_derived_union_join_with_schema(&query, |table| {
+                    crate::catalog::read_schema(directory, table)
+                        .map(|columns| {
+                            columns
+                                .into_iter()
+                                .map(|column| rusthouse_query::DerivedColumn {
+                                    name: column.name,
+                                    data_type: column.data_type,
+                                })
+                                .collect()
+                        })
+                        .map_err(ParseError)
+                })
+                .map_err(|error| error.to_string())?;
+                if let Some(mut plan) = plan {
+                    if part.is_some() {
+                        return Err("derived UNION JOIN cannot use --part".into());
+                    }
+                    if show_ast || explain {
+                        return Err(
+                            "derived UNION JOIN cannot use --show-ast or --explain yet".into()
+                        );
+                    }
+                    if let Some(cap) = max_rows {
+                        plan.cap_rows(cap);
+                    }
+                    return crate::join::run_derived_union(
+                        directory,
+                        &plan,
+                        format.unwrap_or(SqlOutputFormat::Tsv),
+                        output_path,
+                        time,
+                        implicit_lock,
+                    );
+                }
+            }
             let sum = parse_derived_join_sum_with_schema(&query, |table| {
                 crate::catalog::read_schema(directory, table)
                     .map(|columns| columns.into_iter().map(|column| column.name).collect())
@@ -561,6 +768,74 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                     plan.cap_rows(cap);
                 }
                 return crate::join::run_derived_count(
+                    directory,
+                    &plan,
+                    format.unwrap_or(SqlOutputFormat::Tsv),
+                    output_path,
+                    time,
+                    implicit_lock,
+                );
+            }
+            let plan = rusthouse_query::parse_derived_grouped_join_with_schema(&query, |table| {
+                crate::catalog::read_schema(directory, table)
+                    .map(|columns| {
+                        columns
+                            .into_iter()
+                            .map(|column| rusthouse_query::DerivedColumn {
+                                name: column.name,
+                                data_type: column.data_type,
+                            })
+                            .collect()
+                    })
+                    .map_err(ParseError)
+            })
+            .map_err(|error| error.to_string())?;
+            if let Some(mut plan) = plan {
+                if part.is_some() {
+                    return Err("derived JOIN cannot use --part".into());
+                }
+                if show_ast || explain {
+                    return Err("derived JOIN cannot use --show-ast or --explain yet".into());
+                }
+                if let Some(cap) = max_rows {
+                    plan.cap_rows(cap);
+                }
+                return crate::join::run_derived_grouped(
+                    directory,
+                    &plan,
+                    format.unwrap_or(SqlOutputFormat::Tsv),
+                    output_path,
+                    time,
+                    implicit_lock,
+                );
+            }
+            let plan = rusthouse_query::parse_derived_grouped_select_with_schema(&query, |table| {
+                crate::catalog::read_schema(directory, table)
+                    .map(|columns| {
+                        columns
+                            .into_iter()
+                            .map(|column| rusthouse_query::DerivedColumn {
+                                name: column.name,
+                                data_type: column.data_type,
+                            })
+                            .collect()
+                    })
+                    .map_err(ParseError)
+            })
+            .map_err(|error| error.to_string())?;
+            if let Some(mut plan) = plan {
+                if part.is_some() {
+                    return Err("derived grouped SELECT cannot use --part".into());
+                }
+                if show_ast || explain {
+                    return Err(
+                        "derived grouped SELECT cannot use --show-ast or --explain yet".into(),
+                    );
+                }
+                if let Some(cap) = max_rows {
+                    plan.cap_rows(cap);
+                }
+                return crate::join::run_derived_grouped_select(
                     directory,
                     &plan,
                     format.unwrap_or(SqlOutputFormat::Tsv),
@@ -775,6 +1050,12 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     } else {
         parse_select(&query).map_err(|error| error.to_string())?
     };
+    if let Some((source, target)) = scalar_derived_part
+        .as_ref()
+        .and_then(|temporary| temporary.output_rename.clone())
+    {
+        select.rename = Some((source, target));
+    }
     if explain {
         if show_ast || time || format.is_some() || output_path.is_some() {
             return Err(
@@ -803,11 +1084,19 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     }
     // Hold a shared lock for the entire query, not just snapshot discovery.
     // DROP and RENAME must not remove part directories beneath active readers.
-    let _database_read_lock = match (database.as_deref(), select.source.as_ref()) {
-        (Some(directory), Some(Source::Table(_))) if directory.is_dir() => {
-            Some(crate::database::read_lock(directory)?)
+    if let Some(plan) = scalar_derived.as_ref() {
+        select.limit = plan.limit;
+        select.offset = plan.offset;
+    }
+    let _database_read_lock = if scalar_derived_part.is_none() {
+        match (database.as_deref(), select.source.as_ref()) {
+            (Some(directory), Some(Source::Table(_))) if directory.is_dir() => {
+                Some(crate::database::read_lock(directory)?)
+            }
+            _ => None,
         }
-        _ => None,
+    } else {
+        None
     };
     if let Some(correlated) = correlated {
         let database_dir = database
@@ -821,7 +1110,11 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
             select.limit = Some(select.limit.map_or(cap, |limit| limit.min(cap)));
         }
     }
-    if let (Some(database_dir), Some(Source::Table(table))) =
+    if scalar_derived_part.is_some() {
+        part = scalar_derived_part
+            .as_ref()
+            .map(|temporary| temporary.path().to_owned());
+    } else if let (Some(database_dir), Some(Source::Table(table))) =
         (database.as_deref(), select.source.as_ref())
     {
         part = Some(crate::database::select_source(database_dir, table)?);
@@ -837,7 +1130,7 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         ),
         None => Box::new(std::io::stdout()),
     };
-    let start = std::time::Instant::now();
+    let start = scalar_query_started_at.unwrap_or_else(std::time::Instant::now);
     let result = match format.unwrap_or(SqlOutputFormat::Tsv) {
         SqlOutputFormat::Tsv => execute(&select, part.as_deref(), &mut output),
         SqlOutputFormat::TsvNoHeader => execute(

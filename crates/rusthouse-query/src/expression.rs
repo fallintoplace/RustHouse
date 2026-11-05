@@ -19,6 +19,10 @@ pub enum ScalarExpr {
     Divide(Box<ScalarExpr>, Box<ScalarExpr>),
     Modulo(Box<ScalarExpr>, Box<ScalarExpr>),
     Compare(Box<ScalarExpr>, Operator, Box<ScalarExpr>),
+    IsNull {
+        column: String,
+        negated: bool,
+    },
     /// String literal comparisons inside CASE WHEN expressions.
     TextCompare {
         column: String,
@@ -56,7 +60,8 @@ impl ScalarExpr {
             Self::Column(name)
             | Self::TextLength(name)
             | Self::TextCompare { column: name, .. }
-            | Self::TextLike { column: name, .. } => {
+            | Self::TextLike { column: name, .. }
+            | Self::IsNull { column: name, .. } => {
                 if let Some(index) = seen.as_mut() {
                     if index.insert(name.clone()) {
                         out.push(name.clone());
@@ -132,6 +137,12 @@ pub(crate) fn parse_expression_tokens(parser: &mut Parser) -> Result<ScalarExpr,
     Ok(expr)
 }
 
+pub(crate) fn parse_comparison_tokens(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
+    let expression = parse_comparison_tokens_at_depth(parser, 0)?;
+    check_expression_budget(&expression)?;
+    Ok(expression)
+}
+
 /// Reject extremely long left-associative chains before execution or planning
 /// recursively visits the AST. Parentheses depth alone does not bound tree depth.
 fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
@@ -171,6 +182,7 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
             ScalarExpr::Column(_)
             | ScalarExpr::TextCompare { .. }
             | ScalarExpr::TextLike { .. }
+            | ScalarExpr::IsNull { .. }
             | ScalarExpr::TextLength(_)
             | ScalarExpr::Integer(_)
             | ScalarExpr::Decimal(_) => {}
@@ -209,6 +221,16 @@ fn parse_comparison_tokens_at_depth(
     }
     if negated {
         return Err(ParseError("expected LIKE or ILIKE after NOT".into()));
+    }
+    if parser.keyword("IS") {
+        let negated = parser.keyword("NOT");
+        if !parser.keyword("NULL") {
+            return Err(ParseError("IS expression requires NULL".into()));
+        }
+        let ScalarExpr::Column(column) = left else {
+            return Err(ParseError("IS NULL requires a column".into()));
+        };
+        return Ok(ScalarExpr::IsNull { column, negated });
     }
     if let Some(Token::Operator(operator)) = parser.tokens.get(parser.index) {
         let operator = *operator;

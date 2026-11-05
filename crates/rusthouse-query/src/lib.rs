@@ -1,5 +1,7 @@
 mod copy;
 mod correlated_exists;
+mod cte_correlated_avg;
+mod cte_join;
 mod cte_max;
 mod date_scalar;
 mod ddl;
@@ -31,33 +33,46 @@ mod scalar;
 mod text_scalar;
 mod update;
 mod where_parser;
-pub use bounded_except::{ExceptSelect, execute_bounded_except, parse_bounded_except};
+pub use bounded_except::{
+    DerivedSetCount, DerivedSetOperation, ExceptSelect, execute_bounded_except,
+    execute_derived_set_count, parse_bounded_except, parse_derived_set_count_with_schema,
+};
 pub use copy::{CopyFormat, CopyFrom, parse_copy_from};
 pub use correlated_exists::{CorrelatedExists, parse_correlated_exists};
+pub use cte_correlated_avg::{
+    CteCorrelatedAvg, CteOutputColumn, parse_cte_correlated_avg_with_schema,
+};
+pub use cte_join::{CteMultiJoin, CteMultiJoinSource, parse_cte_multi_join_with_schema};
 pub use cte_max::{CteMaxJoin, has_cte_max_join, parse_cte_max_join};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
 pub use execute::{
     ExecutionError, RowPredicate, bind_join_having_subquery, bind_join_in_subquery, execute,
-    execute_correlated_avg, execute_correlated_join, execute_correlated_min,
-    execute_correlated_sum, execute_cte_max_join, execute_derived_join_count, execute_join,
-    execute_multi_join, execute_nested_join_sum, execute_substring_antijoin, merge_uniq_states,
+    execute_correlated_avg, execute_correlated_avg_with_paths, execute_correlated_join,
+    execute_correlated_min, execute_correlated_sum, execute_cte_max_join,
+    execute_derived_grouped_join, execute_derived_grouped_select, execute_derived_join_count,
+    execute_derived_union_join, execute_join, execute_multi_join, execute_nested_join_sum,
+    execute_substring_antijoin, merge_uniq_states,
 };
 pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};
 pub use insert::{Insert, parse_insert};
 pub use insert_select::{InsertSelect, parse_insert_select};
 pub use join::{
-    DerivedJoinCount, JoinAggregate, JoinColumn, JoinCorrelatedAvg, JoinCorrelatedExists,
-    JoinCorrelatedMin, JoinCorrelatedSum, JoinExistsFilter, JoinExistsKey, JoinExistsLookup,
-    JoinSelect, JoinStep, JoinType, NestedJoinSum, SubstringAntiJoin, explain_join,
-    has_derived_join_count, has_explicit_join, has_implicit_join, has_join_correlated_avg,
-    has_join_correlated_min, has_join_correlated_sum, has_nested_join_sum, has_substring_antijoin,
-    has_top_level_exists, parse_derived_join_count_with_schema, parse_derived_join_sum_with_schema,
-    parse_join, parse_join_correlated_avg_with_schema, parse_join_correlated_exists_with_schema,
-    parse_join_correlated_min_with_schema, parse_join_correlated_sum_with_schema,
-    parse_join_with_schema, parse_nested_join_sum_with_schema,
-    parse_substring_antijoin_with_schema,
+    DerivedColumn, DerivedGroupedJoin, DerivedGroupedSelect, DerivedJoinCount, DerivedUnionJoin,
+    GroupedCaseValue, GroupedSum, GroupedWindowRatio, JoinAggregate, JoinColumn, JoinCorrelatedAvg,
+    JoinCorrelatedExists, JoinCorrelatedMin, JoinCorrelatedSum, JoinExistsDateFilter,
+    JoinExistsFilter, JoinExistsKey, JoinExistsLookup, JoinGroupedOutput, JoinProjectionOrder,
+    JoinScalarAggregate, JoinScalarProjection, JoinSelect, JoinStep, JoinType, JoinVirtualColumn,
+    NestedJoinSum, SubstringAntiJoin, explain_join, has_derived_join_count, has_derived_union,
+    has_explicit_join, has_implicit_join, has_join_correlated_avg, has_join_correlated_min,
+    has_join_correlated_sum, has_nested_join_sum, has_substring_antijoin, has_top_level_exists,
+    parse_derived_grouped_join_with_schema, parse_derived_grouped_select_with_schema,
+    parse_derived_join_count_with_schema, parse_derived_join_sum_with_schema,
+    parse_derived_union_join_with_schema, parse_join, parse_join_correlated_avg_with_schema,
+    parse_join_correlated_exists_with_schema, parse_join_correlated_min_with_schema,
+    parse_join_correlated_sum_with_schema, parse_join_with_schema,
+    parse_nested_join_sum_with_schema, parse_substring_antijoin_with_schema,
 };
 pub use multi_aggregate::AggregateItem;
 pub use update::{Update, UpdateValue, parse_update};
@@ -170,27 +185,42 @@ pub enum GroupedFilter {
         operator: Operator,
         literal: String,
     },
+    /// Conditional CASE metric for a NULL or non-NULL input column.
+    CaseNull {
+        column: String,
+        negated: bool,
+    },
     /// Multiple comparisons of the same column in a CASE ... THEN 1 ELSE 0.
     CaseElseZeroCombined {
         column: String,
         comparisons: Vec<(Operator, String)>,
         all: bool,
     },
+    /// Searched CASE condition that uses a numeric expression across columns.
+    CaseExpression {
+        condition: ScalarExpr,
+        else_zero: bool,
+    },
 }
 
 impl GroupedFilter {
-    pub(crate) fn column(&self) -> &str {
+    pub(crate) fn column(&self) -> Option<&str> {
         match self {
             Self::Truthy(column)
             | Self::Comparison { column, .. }
             | Self::CaseElseZero { column, .. }
-            | Self::CaseElseZeroCombined { column, .. } => column,
+            | Self::CaseNull { column, .. }
+            | Self::CaseElseZeroCombined { column, .. } => Some(column),
+            Self::CaseExpression { .. } => None,
         }
     }
 
     pub(crate) fn label(&self) -> String {
         match self {
             Self::Truthy(column) => column.clone(),
+            Self::CaseExpression { condition, .. } => {
+                crate::multi_aggregate::render_expr(condition)
+            }
             Self::CaseElseZeroCombined {
                 column,
                 comparisons,
@@ -234,6 +264,9 @@ impl GroupedFilter {
                     _ => "?",
                 };
                 format!("{column} {symbol} {literal}")
+            }
+            Self::CaseNull { column, negated } => {
+                format!("{column} IS {}NULL", if *negated { "NOT " } else { "" })
             }
         }
     }
@@ -339,6 +372,14 @@ pub enum Predicate {
         column: String,
         values: Vec<String>,
     },
+    SubstringIn {
+        column: String,
+        start: usize,
+        length: usize,
+        values: Vec<String>,
+        has_null: bool,
+        negated: bool,
+    },
     NotBetween {
         column: String,
         lower: String,
@@ -360,6 +401,8 @@ pub enum Predicate {
         case_insensitive: bool,
         negated: bool,
     },
+    /// A bounded numeric scalar expression used as a JOIN row predicate.
+    Expression(ScalarExpr),
 }
 
 impl Predicate {
@@ -376,10 +419,12 @@ impl Predicate {
             | Self::Comparison { column, .. }
             | Self::In { column, .. }
             | Self::NotIn { column, .. }
+            | Self::SubstringIn { column, .. }
             | Self::NotBetween { column, .. }
             | Self::IsNull { column, .. }
             | Self::DistinctFrom { column, .. }
             | Self::Like { column, .. } => column,
+            Self::Expression(_) => "",
         }
     }
 }
@@ -522,7 +567,10 @@ impl Parser {
                 self.index += 1;
                 Ok(value.clone())
             }
-            _ => Err(ParseError("expected an identifier".into())),
+            token => Err(ParseError(format!(
+                "expected an identifier at token {} (found {token:?})",
+                self.index
+            ))),
         }
     }
 
@@ -546,7 +594,7 @@ impl Parser {
 
     /// Only output positions can consume an alias without AS. Keep clause
     /// keywords out so a missing comma cannot swallow FROM, GROUP BY, etc.
-    fn select_output_alias(&mut self) -> Result<Option<String>, ParseError> {
+    pub(crate) fn select_output_alias(&mut self) -> Result<Option<String>, ParseError> {
         if self.keyword("AS") {
             return Ok(Some(self.output_alias_word()?));
         }
@@ -1285,26 +1333,276 @@ fn grouped_metric_with_expression(
         }
         parser.index = start;
     }
-    let (column, filter) = grouped_metric_value(parser, function)?;
-    Ok((column, filter, None))
+    let (metric, filter) = grouped_metric_value(parser, function)?;
+    Ok(match metric {
+        GroupedMetricValue::Count => ("*".into(), filter, None),
+        GroupedMetricValue::Column(column) => (column, filter, None),
+        GroupedMetricValue::Expression(expression) => (
+            multi_aggregate::render_expr(&expression),
+            filter,
+            Some(expression),
+        ),
+    })
+}
+
+fn grouped_join_column(parser: &mut Parser) -> Result<String, ParseError> {
+    let first = parser.bounded_word()?;
+    if parser.take(Token::Dot) {
+        Ok(format!("{first}\0{}", parser.bounded_word()?))
+    } else {
+        Ok(first)
+    }
 }
 
 // SUM(CASE WHEN ... THEN metric ELSE 0 END) is equivalent to a
 // conditional SUM of that metric. Reject other CASE shapes rather than
 // silently dropping a nonzero ELSE branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum GroupedMetricValue {
+    Count,
+    Column(String),
+    Expression(ScalarExpr),
+}
+
+fn numeric_grouped_case_value(expression: &ScalarExpr) -> bool {
+    match expression {
+        ScalarExpr::Column(_)
+        | ScalarExpr::TextLength(_)
+        | ScalarExpr::Integer(_)
+        | ScalarExpr::Decimal(_) => true,
+        ScalarExpr::Add(left, right)
+        | ScalarExpr::Subtract(left, right)
+        | ScalarExpr::Multiply(left, right)
+        | ScalarExpr::Divide(left, right)
+        | ScalarExpr::Modulo(left, right) => {
+            numeric_grouped_case_value(left) && numeric_grouped_case_value(right)
+        }
+        ScalarExpr::Case {
+            branches,
+            else_expr,
+        } => {
+            branches
+                .iter()
+                .all(|(_, value)| numeric_grouped_case_value(value))
+                && else_expr
+                    .as_ref()
+                    .is_none_or(|value| numeric_grouped_case_value(value))
+        }
+        ScalarExpr::Compare(..)
+        | ScalarExpr::IsNull { .. }
+        | ScalarExpr::TextCompare { .. }
+        | ScalarExpr::TextLike { .. }
+        | ScalarExpr::And(..)
+        | ScalarExpr::Or(..) => false,
+    }
+}
+
+fn grouped_case_value(parser: &mut Parser) -> Result<GroupedMetricValue, ParseError> {
+    if matches!(parser.tokens.get(parser.index), Some(Token::Number(value)) if value == "1") {
+        parser.index += 1;
+        return Ok(GroupedMetricValue::Count);
+    }
+    let start = parser.index;
+    let mut depth = 0usize;
+    let mut end = None;
+    for index in start..parser.tokens.len() {
+        match &parser.tokens[index] {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(word)
+                if depth == 0
+                    && (word.eq_ignore_ascii_case("ELSE") || word.eq_ignore_ascii_case("END")) =>
+            {
+                end = Some(index);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let end = end.ok_or_else(|| ParseError("grouped CASE requires ELSE or END".into()))?;
+    if end == start {
+        return Err(ParseError("grouped CASE requires a numeric value".into()));
+    }
+    let (tokens, _) = join::encode_qualified_expression_tokens(&parser.tokens[start..end]);
+    let mut expression_parser = Parser { tokens, index: 0 };
+    let expression = expression::parse_expression_tokens(&mut expression_parser)?;
+    if expression_parser.index != expression_parser.tokens.len() {
+        return Err(ParseError(
+            "unsupported grouped CASE value expression".into(),
+        ));
+    }
+    if !numeric_grouped_case_value(&expression) {
+        return Err(ParseError("grouped CASE requires a numeric value".into()));
+    }
+    parser.index = end;
+    match expression {
+        ScalarExpr::Column(column) => Ok(GroupedMetricValue::Column(column)),
+        expression => Ok(GroupedMetricValue::Expression(expression)),
+    }
+}
+
 fn grouped_metric_value(
     parser: &mut Parser,
     function: AggregateFunction,
-) -> Result<(String, Option<GroupedFilter>), ParseError> {
+) -> Result<(GroupedMetricValue, Option<GroupedFilter>), ParseError> {
     if !parser.keyword("CASE") {
-        return Ok((grouped_metric_column(parser, function)?, None));
+        let column = grouped_metric_column(parser, function)?;
+        return Ok((
+            if column == "*" {
+                GroupedMetricValue::Count
+            } else {
+                GroupedMetricValue::Column(column)
+            },
+            None,
+        ));
     }
     if function != AggregateFunction::Sum || !parser.keyword("WHEN") {
         return Err(ParseError(
             "grouped CASE requires SUM(CASE WHEN ...)".into(),
         ));
     }
-    let column = parser.bounded_word()?;
+    let mut depth = 0usize;
+    let mut has_boolean_chain = false;
+    let mut condition_end = None;
+    for index in parser.index..parser.tokens.len() {
+        match &parser.tokens[index] {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("THEN") => {
+                condition_end = Some(index);
+                break;
+            }
+            Token::Word(word)
+                if depth == 0
+                    && (word.eq_ignore_ascii_case("AND") || word.eq_ignore_ascii_case("OR")) =>
+            {
+                has_boolean_chain = true;
+            }
+            _ => {}
+        }
+    }
+    if has_boolean_chain {
+        let end = condition_end.ok_or_else(|| ParseError("grouped CASE requires THEN".into()))?;
+        let source = &parser.tokens[parser.index..end];
+        let (tokens, _) = join::encode_qualified_expression_tokens(source);
+        let mut condition_parser = Parser { tokens, index: 0 };
+        let condition = expression::parse_expression_tokens(&mut condition_parser)?;
+        if condition_parser.index != condition_parser.tokens.len() {
+            return Err(ParseError("unsupported grouped CASE condition".into()));
+        }
+        if !matches!(
+            condition,
+            ScalarExpr::Compare(..)
+                | ScalarExpr::TextCompare { .. }
+                | ScalarExpr::TextLike { .. }
+                | ScalarExpr::IsNull { .. }
+                | ScalarExpr::And(..)
+                | ScalarExpr::Or(..)
+        ) {
+            return Err(ParseError(
+                "grouped CASE requires a comparison condition".into(),
+            ));
+        }
+        parser.index = end + 1;
+        let metric = grouped_case_value(parser)?;
+        let unit_count = matches!(metric, GroupedMetricValue::Count);
+        let mut else_zero = false;
+        if parser.keyword("ELSE") && !parser.keyword("NULL") {
+            let else_value = parser.literal()?;
+            if else_value != "0" && else_value != "0.0" {
+                return Err(ParseError(
+                    "grouped SUM(CASE ...) requires ELSE 0 or NULL".into(),
+                ));
+            }
+            else_zero = true;
+        }
+        if !parser.keyword("END") {
+            return Err(ParseError("grouped CASE requires END".into()));
+        }
+        if unit_count && !else_zero {
+            return Err(ParseError("SUM(CASE ... THEN 1) requires ELSE 0".into()));
+        }
+        return Ok((
+            metric,
+            Some(GroupedFilter::CaseExpression {
+                condition,
+                else_zero,
+            }),
+        ));
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::LParen)) {
+        let condition = expression::parse_expression_tokens(parser)?;
+        if !matches!(
+            condition,
+            ScalarExpr::Compare(..)
+                | ScalarExpr::TextCompare { .. }
+                | ScalarExpr::TextLike { .. }
+                | ScalarExpr::IsNull { .. }
+                | ScalarExpr::And(..)
+                | ScalarExpr::Or(..)
+        ) {
+            return Err(ParseError(
+                "grouped CASE requires a comparison condition".into(),
+            ));
+        }
+        if !parser.keyword("THEN") {
+            return Err(ParseError("grouped CASE requires THEN".into()));
+        }
+        let metric = grouped_case_value(parser)?;
+        let unit_count = matches!(metric, GroupedMetricValue::Count);
+        let mut else_zero = false;
+        if parser.keyword("ELSE") && !parser.keyword("NULL") {
+            let else_value = parser.literal()?;
+            if else_value != "0" && else_value != "0.0" {
+                return Err(ParseError(
+                    "grouped SUM(CASE ...) requires ELSE 0 or NULL".into(),
+                ));
+            }
+            else_zero = true;
+        }
+        if !parser.keyword("END") {
+            return Err(ParseError("grouped CASE requires END".into()));
+        }
+        if unit_count && !else_zero {
+            return Err(ParseError("SUM(CASE ... THEN 1) requires ELSE 0".into()));
+        }
+        return Ok((
+            metric,
+            Some(GroupedFilter::CaseExpression {
+                condition,
+                else_zero,
+            }),
+        ));
+    }
+    let column = grouped_join_column(parser)?;
+    if parser.keyword("IS") {
+        let negated = parser.keyword("NOT");
+        if !parser.keyword("NULL") {
+            return Err(ParseError("grouped CASE IS requires NULL".into()));
+        }
+        if !parser.keyword("THEN") {
+            return Err(ParseError("grouped CASE requires THEN".into()));
+        }
+        let metric = grouped_case_value(parser)?;
+        let unit_count = matches!(metric, GroupedMetricValue::Count);
+        let mut else_zero = false;
+        if parser.keyword("ELSE") && !parser.keyword("NULL") {
+            let else_value = parser.literal()?;
+            if else_value != "0" && else_value != "0.0" {
+                return Err(ParseError(
+                    "grouped SUM(CASE ...) requires ELSE 0 or NULL".into(),
+                ));
+            }
+            else_zero = true;
+        }
+        if !parser.keyword("END") {
+            return Err(ParseError("grouped CASE requires END".into()));
+        }
+        if unit_count && !else_zero {
+            return Err(ParseError("SUM(CASE ... THEN 1) requires ELSE 0".into()));
+        }
+        return Ok((metric, Some(GroupedFilter::CaseNull { column, negated })));
+    }
     let operator = parser.operator()?;
     if !matches!(
         operator,
@@ -1336,7 +1634,7 @@ fn grouped_metric_value(
                 "grouped CASE supports at most 8 comparisons".into(),
             ));
         }
-        let next_column = parser.bounded_word()?;
+        let next_column = grouped_join_column(parser)?;
         if next_column != column {
             return Err(ParseError(
                 "grouped CASE comparisons must use the same column".into(),
@@ -1358,14 +1656,8 @@ fn grouped_metric_value(
     }
     // SUM(CASE ... THEN 1 ELSE 0 END) counts matching rows, including
     // groups with zero matches. Reuse the filtered COUNT(*) state.
-    let unit_count =
-        matches!(parser.tokens.get(parser.index), Some(Token::Number(value)) if value == "1");
-    let metric = if unit_count {
-        parser.index += 1;
-        "*".to_string()
-    } else {
-        parser.bounded_word()?
-    };
+    let metric = grouped_case_value(parser)?;
+    let unit_count = matches!(metric, GroupedMetricValue::Count);
     let mut else_zero = false;
     if parser.keyword("ELSE") && !parser.keyword("NULL") {
         let else_value = parser.literal()?;
@@ -1782,9 +2074,9 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
                     let mut filters = vec![filter];
                     let mut aliases = vec![parser.select_output_alias()?];
                     while parser.take(Token::Comma) {
-                        if items.len() >= 16 {
+                        if items.len() >= 64 {
                             return Err(ParseError(
-                                "grouped SELECT supports at most 16 numeric aggregates".into(),
+                                "grouped SELECT supports at most 64 numeric aggregates".into(),
                             ));
                         }
                         let name = parser.word()?;
@@ -1953,7 +2245,11 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     if distinct
         && !matches!(
             projection,
-            Projection::All | Projection::Columns(_) | Projection::StringLength { .. }
+            Projection::All
+                | Projection::Columns(_)
+                | Projection::StringLength { .. }
+                | Projection::Literal(_)
+                | Projection::Constants(_)
         )
     {
         return Err(ParseError(
@@ -2193,15 +2489,6 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     {
         return Err(ParseError("a table source is required".into()));
     }
-    if source.is_some()
-        && matches!(
-            projection,
-            Projection::Literal(_) | Projection::Constants(_)
-        )
-    {
-        return Err(ParseError("literal SELECT does not support FROM".into()));
-    }
-
     // ClickHouse evaluates PREWHERE as an additional filtering stage. Lowering
     // PREWHERE AND WHERE into the shared bounded DNF preserves OR precedence
     // and uses the same typed predicate executor for all table sources.

@@ -6,14 +6,15 @@ pub(super) fn plan(query: &JoinSelect, sizes: &[u64]) -> Option<(JoinSelect, Vec
         || query.kind != JoinType::Inner
         || query.any
         || !query.using_keys.is_empty()
-        || query.columns.is_none()
+        || (query.columns.is_none() && query.scalar_aggregates.is_empty())
         || query.aggregate.is_some()
         || query.on_right_like.is_some()
         || query.grouped_count_column.is_some()
         || !query.grouped_case_counts.is_empty()
         || (query.grouped_count.is_none()
             && query.scalar_sum.is_none()
-            && query.scalar_formula.is_none())
+            && query.scalar_formula.is_none()
+            && query.scalar_aggregates.is_empty())
         || query
             .steps
             .iter()

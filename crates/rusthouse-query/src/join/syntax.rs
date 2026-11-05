@@ -5,20 +5,19 @@ const RESERVED_ALIAS_KEYWORDS: &[&str] = &[
     "ORDER", "LIMIT", "OFFSET", "ANY", "ALL",
 ];
 
-fn qualified_relation(parser: &mut Parser) -> Result<String, ParseError> {
-    let relation = parser.bounded_word()?;
-    if !parser.take(Token::Dot) {
-        return Err(ParseError(
-            "JOIN columns must be qualified (alias.column)".into(),
-        ));
-    }
-    Ok(relation)
-}
-
 pub(super) fn qualified(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
-    let relation = qualified_relation(parser)?;
-    let name = parser.bounded_word()?;
-    Ok(JoinColumn { relation, name })
+    let first = parser.bounded_word()?;
+    if parser.take(Token::Dot) {
+        Ok(JoinColumn {
+            relation: first,
+            name: parser.bounded_word()?,
+        })
+    } else {
+        Ok(JoinColumn {
+            relation: String::new(),
+            name: first,
+        })
+    }
 }
 
 pub(super) fn projected(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
@@ -168,5 +167,23 @@ mod bounded_join_column_tests {
         ] {
             assert!(parse_join(&query).is_err(), "{query}");
         }
+    }
+
+    #[test]
+    fn supports_tpcds_sized_join_chains_with_a_bounded_table_count() {
+        let query_for_tables = |table_count: usize| {
+            let mut query = String::from("SELECT t0.id FROM t0");
+            for index in 1..table_count {
+                query.push_str(&format!(
+                    " JOIN t{index} ON t{}.id = t{index}.id",
+                    index - 1
+                ));
+            }
+            query
+        };
+
+        let query = parse_join(&query_for_tables(16)).unwrap().unwrap();
+        assert_eq!(query.steps.len(), 14);
+        assert!(parse_join(&query_for_tables(17)).is_err());
     }
 }

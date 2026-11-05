@@ -44,6 +44,16 @@ pub(super) fn compile_predicate_test(
                 "LIKE requires a String column".into(),
             ));
         }
+        Predicate::SubstringIn { .. } => {
+            return Err(ExecutionError::Invalid(
+                "SUBSTRING filters require typed JOIN execution".into(),
+            ));
+        }
+        Predicate::Expression(_) => {
+            return Err(ExecutionError::Invalid(
+                "scalar expression filters require typed JOIN execution".into(),
+            ));
+        }
         Predicate::NotBetween { lower, upper, .. } => CompiledTest::NotBetween {
             lower: convert(column, lower)?,
             upper: convert(column, upper)?,

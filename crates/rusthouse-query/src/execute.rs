@@ -77,8 +77,9 @@ pub use derived_join_count::execute_derived_join_count;
 pub use join::execute_join;
 pub use multi_join::{
     bind_join_having_subquery, bind_join_in_subquery, execute_correlated_avg,
-    execute_correlated_join, execute_correlated_min, execute_correlated_sum, execute_multi_join,
-    execute_nested_join_sum,
+    execute_correlated_avg_with_paths, execute_correlated_join, execute_correlated_min,
+    execute_correlated_sum, execute_derived_grouped_join, execute_derived_grouped_select,
+    execute_derived_union_join, execute_multi_join, execute_nested_join_sum,
 };
 use sort::{MAX_SORTED_ROWS, SortedRows};
 mod multi_aggregate;
@@ -1292,51 +1293,102 @@ fn parallel_integer_sum(
     Ok(Some(sum))
 }
 
+fn constant_cell(value: &crate::ConstantValue) -> Result<typed::Cell, ExecutionError> {
+    Ok(match value {
+        crate::ConstantValue::Integer(value) => {
+            typed::Cell::Numeric(Number::Signed(i128::from(*value)))
+        }
+        crate::ConstantValue::Decimal(value) => {
+            let number = value
+                .parse::<f64>()
+                .map_err(|_| ExecutionError::Invalid("invalid decimal SELECT literal".into()))?;
+            if !number.is_finite() {
+                return Err(ExecutionError::Invalid(
+                    "SELECT decimal literal must be finite".into(),
+                ));
+            }
+            typed::Cell::Numeric(Number::Float(number))
+        }
+        crate::ConstantValue::Text(value) => typed::Cell::Text(value.as_bytes().to_vec()),
+        crate::ConstantValue::Null => typed::Cell::Null,
+    })
+}
+
+fn execute_constant_projection<W: Write>(
+    query: &Select,
+    part: Option<&Path>,
+    headers: &[String],
+    values: &[typed::Cell],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let source_rows = if query.source.is_none() {
+        1
+    } else {
+        let mut count_query = query.clone();
+        count_query.projection = Projection::Count;
+        count_query.alias = None;
+        count_query.rename = None;
+        count_query.distinct = false;
+        count_query.order_by = None;
+        count_query.order_by_extra.clear();
+        count_query.having = None;
+        count_query.limit = None;
+        count_query.offset = None;
+        let mut count_output = Vec::new();
+        execute_into(&count_query, part, &mut count_output)?;
+        let text = std::str::from_utf8(&count_output)
+            .map_err(|_| ExecutionError::Invalid("invalid constant source count".into()))?;
+        text.split_terminator('\n')
+            .nth(1)
+            .and_then(|value| value.parse::<u64>().ok())
+            .ok_or_else(|| ExecutionError::Invalid("invalid constant source count".into()))?
+    };
+    let source_rows = if query.distinct {
+        u64::from(source_rows != 0)
+    } else {
+        source_rows
+    };
+    let after_offset = source_rows.saturating_sub(query.offset.unwrap_or(0) as u64);
+    let rows = query
+        .limit
+        .map_or(after_offset, |limit| after_offset.min(limit as u64));
+    write_header(query, output, &headers.join("\t"))?;
+    for _ in 0..rows {
+        for (index, value) in values.iter().enumerate() {
+            if index != 0 {
+                output.write_all(b"\t")?;
+            }
+            typed::write_value(output, value)?;
+        }
+        writeln!(output)?;
+    }
+    Ok(())
+}
+
 fn execute_into<W: Write>(
     query: &Select,
     part: Option<&Path>,
     output: &mut W,
 ) -> Result<(), ExecutionError> {
     if let Projection::Constants(columns) = &query.projection {
-        let headers: Vec<_> = columns.iter().map(crate::Constant::header).collect();
-        write_header(query, output, &headers.join("\t"))?;
-        if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
-            for (index, column) in columns.iter().enumerate() {
-                if index != 0 {
-                    output.write_all(b"\t")?;
-                }
-                let value = match &column.value {
-                    crate::ConstantValue::Integer(value) => {
-                        typed::Cell::Numeric(Number::Signed(i128::from(*value)))
-                    }
-                    crate::ConstantValue::Decimal(value) => {
-                        let number = value.parse::<f64>().map_err(|_| {
-                            ExecutionError::Invalid("invalid decimal SELECT literal".into())
-                        })?;
-                        if !number.is_finite() {
-                            return Err(ExecutionError::Invalid(
-                                "SELECT decimal literal must be finite".into(),
-                            ));
-                        }
-                        typed::Cell::Numeric(Number::Float(number))
-                    }
-                    crate::ConstantValue::Text(value) => {
-                        typed::Cell::Text(value.as_bytes().to_vec())
-                    }
-                    crate::ConstantValue::Null => typed::Cell::Null,
-                };
-                typed::write_value(output, &value)?;
-            }
-            writeln!(output)?;
-        }
-        return Ok(());
+        let headers = columns
+            .iter()
+            .map(crate::Constant::header)
+            .collect::<Vec<_>>();
+        let values = columns
+            .iter()
+            .map(|column| constant_cell(&column.value))
+            .collect::<Result<Vec<_>, _>>()?;
+        return execute_constant_projection(query, part, &headers, &values, output);
     }
     if let Projection::Literal(value) = query.projection {
-        write_header(query, output, &value.to_string())?;
-        if query.limit != Some(0) && query.offset.unwrap_or(0) == 0 {
-            writeln!(output, "{value}")?;
-        }
-        return Ok(());
+        return execute_constant_projection(
+            query,
+            part,
+            &[value.to_string()],
+            &[typed::Cell::Numeric(Number::Signed(i128::from(value)))],
+            output,
+        );
     }
 
     match query.source.as_ref() {

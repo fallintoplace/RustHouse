@@ -319,7 +319,7 @@ pub(super) fn parse_tokens(
         }
     }
     outer.extend_from_slice(&tokens[end..]);
-    let outer = parse_join_resolved(outer, Some(resolve))?
+    let outer = parse_join_resolved(outer, Some(resolve), false)?
         .ok_or_else(|| ParseError("correlated SUM requires an outer JOIN".into()))?;
     if outer.kind != JoinType::Inner
         || outer.steps.iter().any(|step| step.kind != JoinType::Inner)

@@ -594,15 +594,30 @@ pub(super) fn try_correlated(
         Ok(paths) => paths,
         Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
     };
-    let inner_paths = match plan
-        .filters
-        .iter()
-        .map(|filter| resolve_database_table(database, &filter.table))
-        .collect::<Result<Vec<_>, _>>()
-    {
-        Ok(paths) => paths,
-        Err(error) => return Some(Response::text("400 Bad Request", &format!("{error}\n"))),
-    };
+    let mut inner_paths = Vec::with_capacity(
+        plan.filters.len()
+            + plan
+                .filters
+                .iter()
+                .filter(|filter| filter.date_filter.is_some())
+                .count(),
+    );
+    for filter in &plan.filters {
+        match resolve_database_table(database, &filter.table) {
+            Ok(path) => inner_paths.push(path),
+            Err(error) => {
+                return Some(Response::text("400 Bad Request", &format!("{error}\n")));
+            }
+        }
+        if let Some(date) = &filter.date_filter {
+            match resolve_database_table(database, &date.table) {
+                Ok(path) => inner_paths.push(path),
+                Err(error) => {
+                    return Some(Response::text("400 Bad Request", &format!("{error}\n")));
+                }
+            }
+        }
+    }
     Some(format_response(format, |mut output| {
         execute_correlated_join(&plan, &paths, &inner_paths, &mut output)
     }))

@@ -2,19 +2,86 @@
 //! The executor consumes one conjunctive branch plus optional OR branches.
 
 use crate::lexer::Token;
-use crate::{Operator, ParseError, Parser, Predicate};
+use crate::{Operator, ParseError, Parser, Predicate, ScalarExpr};
 
 type Branches = Vec<Vec<Predicate>>;
-// TPC-H Q19 has three OR branches with more than sixteen predicates total.
-// The 64-branch / 256-expanded-predicate budgets below still cap DNF work.
+// The branch and expanded-predicate budgets keep DNF work bounded, including
+// the larger nested filter groups used by TPC-DS.
 const MAX_CONDITIONS: usize = 64;
 const MAX_BRANCHES: usize = 64;
-const MAX_EXPANDED_CONDITIONS: usize = 256;
+const MAX_EXPANDED_CONDITIONS: usize = 512;
 const MAX_DEPTH: usize = 16;
 const MAX_IN_LIST_VALUES: usize = 4_096;
 
 fn bad_expansion() -> ParseError {
     ParseError("WHERE boolean expression expands beyond bounded predicate limits".into())
+}
+
+fn integer_expression_value(expression: &ScalarExpr) -> Option<i64> {
+    match expression {
+        ScalarExpr::Integer(value) => Some(*value),
+        ScalarExpr::Add(left, right) => {
+            integer_expression_value(left)?.checked_add(integer_expression_value(right)?)
+        }
+        ScalarExpr::Subtract(left, right) => {
+            integer_expression_value(left)?.checked_sub(integer_expression_value(right)?)
+        }
+        ScalarExpr::Multiply(left, right) => {
+            integer_expression_value(left)?.checked_mul(integer_expression_value(right)?)
+        }
+        ScalarExpr::Divide(left, right) => {
+            integer_expression_value(left)?.checked_div(integer_expression_value(right)?)
+        }
+        ScalarExpr::Modulo(left, right) => {
+            integer_expression_value(left)?.checked_rem(integer_expression_value(right)?)
+        }
+        _ => None,
+    }
+}
+
+fn numeric_or_literal(parser: &mut Parser) -> Result<String, ParseError> {
+    let arithmetic_follows = matches!(parser.tokens.get(parser.index), Some(Token::Number(_)))
+        && matches!(
+            parser.tokens.get(parser.index + 1),
+            Some(Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Percent)
+        );
+    if arithmetic_follows {
+        // Expression parsing also understands boolean AND/OR. Bound this
+        // constant expression at the current predicate delimiter so a later
+        // WHERE conjunction is not consumed as part of a BETWEEN bound.
+        let start = parser.index;
+        let mut end = start;
+        let mut depth = 0usize;
+        while let Some(token) = parser.tokens.get(end) {
+            if depth == 0
+                && (matches!(token, Token::Comma | Token::RParen)
+                    || matches!(token, Token::Word(word) if ["AND", "OR", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "UNION", "INTERSECT", "EXCEPT"].iter().any(|keyword| word.eq_ignore_ascii_case(keyword))))
+            {
+                break;
+            }
+            match token {
+                Token::LParen => depth += 1,
+                Token::RParen => depth = depth.saturating_sub(1),
+                _ => {}
+            }
+            end += 1;
+        }
+        let mut expression_parser = Parser {
+            tokens: parser.tokens[start..end].to_vec(),
+            index: 0,
+        };
+        let expression = crate::expression::parse_expression_tokens(&mut expression_parser)?;
+        if expression_parser.index != expression_parser.tokens.len() {
+            return Err(ParseError(
+                "integer expression must be a bounded constant".into(),
+            ));
+        }
+        parser.index = end;
+        return integer_expression_value(&expression)
+            .map(|value| value.to_string())
+            .ok_or_else(|| ParseError("IN arithmetic must be a bounded integer constant".into()));
+    }
+    parser.literal()
 }
 
 /// Normalize structurally identical predicates before execution. SQL filters
@@ -142,6 +209,21 @@ fn inverse(predicate: &Predicate) -> Branches {
             column: column.clone(),
             values: values.clone(),
         },
+        Predicate::SubstringIn {
+            column,
+            start,
+            length,
+            values,
+            has_null,
+            negated,
+        } => Predicate::SubstringIn {
+            column: column.clone(),
+            start: *start,
+            length: *length,
+            values: values.clone(),
+            has_null: *has_null,
+            negated: !*negated,
+        },
         Predicate::IsNull { column, negated } => Predicate::IsNull {
             column: column.clone(),
             negated: !*negated,
@@ -166,6 +248,34 @@ fn inverse(predicate: &Predicate) -> Branches {
             case_insensitive: *case_insensitive,
             negated: !*negated,
         },
+        Predicate::Expression(ScalarExpr::Compare(left, operator, right)) => {
+            Predicate::Expression(ScalarExpr::Compare(
+                left.clone(),
+                inverse_comparison_operator(operator),
+                right.clone(),
+            ))
+        }
+        Predicate::Expression(ScalarExpr::TextCompare {
+            column,
+            operator,
+            value,
+        }) => Predicate::Expression(ScalarExpr::TextCompare {
+            column: column.clone(),
+            operator: inverse_comparison_operator(operator),
+            value: value.clone(),
+        }),
+        Predicate::Expression(ScalarExpr::TextLike {
+            column,
+            pattern,
+            negated,
+            case_insensitive,
+        }) => Predicate::Expression(ScalarExpr::TextLike {
+            column: column.clone(),
+            pattern: pattern.clone(),
+            negated: !negated,
+            case_insensitive: *case_insensitive,
+        }),
+        Predicate::Expression(_) => return Vec::new(),
         Predicate::NotBetween {
             column,
             lower,
@@ -218,13 +328,63 @@ fn parse_atom(
     parser: &mut Parser,
     conditions: &mut usize,
     depth: usize,
+    allow_expression: bool,
 ) -> Result<Branches, ParseError> {
+    let expression_starts_here = matches!(
+        parser.tokens.get(parser.index),
+        Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE")
+    ) || (parser.tokens.get(parser.index) == Some(&Token::LParen)
+        && matches!(parser.tokens.get(parser.index + 1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE")));
+    let mut expression_index = parser.index;
+    let mut expression_depth = 0usize;
+    let mut arithmetic_starts_here = false;
+    let mut case_starts_here = false;
+    while let Some(token) = parser.tokens.get(expression_index) {
+        if expression_depth == 0
+            && matches!(token, Token::Word(word) if ["AND", "OR", "GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))
+        {
+            break;
+        }
+        match token {
+            Token::LParen => expression_depth += 1,
+            Token::RParen if expression_depth == 0 => break,
+            Token::RParen => expression_depth -= 1,
+            Token::Word(word) if word.eq_ignore_ascii_case("CASE") => {
+                case_starts_here = true;
+            }
+            Token::Plus | Token::Minus | Token::Star | Token::Slash | Token::Percent
+                if expression_depth == 0 =>
+            {
+                arithmetic_starts_here = true;
+            }
+            _ => {}
+        }
+        expression_index += 1;
+    }
+    if allow_expression && (expression_starts_here || case_starts_here || arithmetic_starts_here) {
+        let expression = crate::expression::parse_comparison_tokens(parser)?;
+        if !matches!(
+            expression,
+            crate::ScalarExpr::Compare(..)
+                | crate::ScalarExpr::TextCompare { .. }
+                | crate::ScalarExpr::TextLike { .. }
+        ) {
+            return Err(ParseError(
+                "JOIN CASE filter requires a comparison expression".into(),
+            ));
+        }
+        *conditions = conditions.checked_add(1).ok_or_else(bad_expansion)?;
+        if *conditions > MAX_CONDITIONS {
+            return Err(ParseError("WHERE supports at most 16 conditions".into()));
+        }
+        return Ok(vec![vec![Predicate::Expression(expression)]]);
+    }
     // Parenthesized negations are different from NOT applied to one predicate:
     // invert every AND/OR branch using De Morgan's laws before execution.
     if parser.keyword("NOT") {
         if parser.take(Token::LParen) {
             check_parenthesis_depth(depth)?;
-            let expression = parse_or(parser, conditions, depth + 1)?;
+            let expression = parse_or(parser, conditions, depth + 1, allow_expression)?;
             if !parser.take(Token::RParen) {
                 return Err(ParseError("NOT group requires closing ')'".into()));
             }
@@ -235,7 +395,7 @@ fn parse_atom(
     }
     if parser.take(Token::LParen) {
         check_parenthesis_depth(depth)?;
-        let branches = parse_or(parser, conditions, depth + 1)?;
+        let branches = parse_or(parser, conditions, depth + 1, allow_expression)?;
         if !parser.take(Token::RParen) {
             return Err(ParseError("WHERE requires closing ')'".into()));
         }
@@ -247,6 +407,71 @@ fn parse_atom(
         return Err(ParseError(
             "EXISTS and NOT EXISTS subqueries are not yet supported".into(),
         ));
+    }
+    if parser.keyword("SUBSTRING") || parser.keyword("SUBSTR") {
+        if !parser.take(Token::LParen) {
+            return Err(ParseError("SUBSTRING requires '('".into()));
+        }
+        let column = parser.word()?;
+        if !parser.take(Token::Comma) {
+            return Err(ParseError(
+                "SUBSTRING requires comma-separated bounds".into(),
+            ));
+        }
+        let start = parser
+            .number()?
+            .parse::<usize>()
+            .map_err(|_| ParseError("SUBSTRING start must be a positive integer".into()))?;
+        if !parser.take(Token::Comma) {
+            return Err(ParseError("SUBSTRING requires a length".into()));
+        }
+        let length = parser
+            .number()?
+            .parse::<usize>()
+            .map_err(|_| ParseError("SUBSTRING length must be a positive integer".into()))?;
+        if !(1..=64).contains(&start) || !(1..=64).contains(&length) || !parser.take(Token::RParen)
+        {
+            return Err(ParseError(
+                "SUBSTRING bounds must be in 1..64 with closing ')'".into(),
+            ));
+        }
+        let postfix_not = parser.keyword("NOT");
+        if !parser.keyword("IN") || !parser.take(Token::LParen) {
+            return Err(ParseError("SUBSTRING filter requires IN or NOT IN".into()));
+        }
+        let mut values = Vec::new();
+        let mut has_null = false;
+        let mut item_count = 0usize;
+        loop {
+            if item_count == MAX_IN_LIST_VALUES {
+                return Err(ParseError("IN supports at most 4096 values".into()));
+            }
+            item_count += 1;
+            if parser.keyword("NULL") {
+                has_null = true;
+            } else {
+                values.push(parser.literal()?);
+            }
+            if !parser.take(Token::Comma) {
+                break;
+            }
+        }
+        if !parser.take(Token::RParen) {
+            return Err(ParseError("expected ')' after IN list".into()));
+        }
+        predicates.push(Predicate::SubstringIn {
+            column,
+            start,
+            length,
+            values,
+            has_null,
+            negated: prefix_not ^ postfix_not,
+        });
+        *conditions = conditions.checked_add(1).ok_or_else(bad_expansion)?;
+        if *conditions > MAX_CONDITIONS {
+            return Err(ParseError("WHERE supports at most 16 conditions".into()));
+        }
+        return Ok(vec![predicates]);
     }
     let column = parser.word()?;
     let postfix_not = parser.keyword("NOT");
@@ -342,11 +567,11 @@ fn parse_atom(
     } else if parser.keyword("BETWEEN") {
         // ASYMMETRIC is the SQL default and uses the existing ordered bounds.
         parser.keyword("ASYMMETRIC");
-        let lower = parser.literal()?;
+        let lower = numeric_or_literal(parser)?;
         if !parser.keyword("AND") {
             return Err(ParseError("BETWEEN requires AND".into()));
         }
-        let upper = parser.literal()?;
+        let upper = numeric_or_literal(parser)?;
         if negate_in {
             predicates.push(Predicate::NotBetween {
                 column,
@@ -380,7 +605,7 @@ fn parse_atom(
             if values.len() == MAX_IN_LIST_VALUES {
                 return Err(ParseError("IN supports at most 4096 values".into()));
             }
-            values.push(parser.literal()?);
+            values.push(numeric_or_literal(parser)?);
             if !parser.take(Token::Comma) {
                 break;
             }
@@ -475,10 +700,14 @@ fn parse_and(
     parser: &mut Parser,
     conditions: &mut usize,
     depth: usize,
+    allow_expression: bool,
 ) -> Result<Branches, ParseError> {
-    let mut branches = parse_atom(parser, conditions, depth)?;
+    let mut branches = parse_atom(parser, conditions, depth, allow_expression)?;
     while parser.keyword("AND") {
-        branches = combine_and(branches, parse_atom(parser, conditions, depth)?)?;
+        branches = combine_and(
+            branches,
+            parse_atom(parser, conditions, depth, allow_expression)?,
+        )?;
     }
     Ok(branches)
 }
@@ -487,10 +716,11 @@ fn parse_or(
     parser: &mut Parser,
     conditions: &mut usize,
     depth: usize,
+    allow_expression: bool,
 ) -> Result<Branches, ParseError> {
-    let mut branches = parse_and(parser, conditions, depth)?;
+    let mut branches = parse_and(parser, conditions, depth, allow_expression)?;
     while parser.keyword("OR") {
-        let next = parse_and(parser, conditions, depth)?;
+        let next = parse_and(parser, conditions, depth, allow_expression)?;
         // Both sides were individually bounded. Let equivalent or absorbed
         // branches collapse before rejecting the 64-branch final limit.
         branches.extend(next);
@@ -527,15 +757,27 @@ pub(crate) fn parse_join_where(parser: &mut Parser) -> Result<Branches, ParseErr
         positions.push(index);
     }
     let mut local = Parser { tokens, index: 0 };
-    let branches = parse_where(&mut local)?;
+    let branches = parse_where_with_expression(&mut local, true)?;
     parser.index = positions[local.index];
     Ok(branches)
 }
 
 /// Parse a WHERE clause already past the WHERE keyword.
 pub(crate) fn parse_where(parser: &mut Parser) -> Result<Branches, ParseError> {
+    parse_where_with_expression(parser, false)
+}
+
+fn parse_where_with_expression(
+    parser: &mut Parser,
+    allow_expression: bool,
+) -> Result<Branches, ParseError> {
     let mut conditions = 0;
-    Ok(unique_branches(parse_or(parser, &mut conditions, 0)?))
+    Ok(unique_branches(parse_or(
+        parser,
+        &mut conditions,
+        0,
+        allow_expression,
+    )?))
 }
 
 #[cfg(test)]
@@ -570,6 +812,45 @@ mod tests {
                 "SELECT number FROM numbers(8) WHERE number = 1 OR number = 2 AND number > 2 ORDER BY number"
             ),
             "number\n1\n"
+        );
+    }
+
+    #[test]
+    fn integer_arithmetic_is_folded_in_in_lists() {
+        assert_eq!(
+            run("SELECT number FROM numbers(4) WHERE number IN (1, 1 + 1) ORDER BY number"),
+            "number\n1\n2\n"
+        );
+    }
+
+    #[test]
+    fn integer_arithmetic_without_spaces_is_folded_in_in_lists() {
+        assert_eq!(
+            run(
+                "SELECT number FROM numbers(2002) WHERE number IN (1999,1999+1,1999+2) ORDER BY number"
+            ),
+            "number\n1999\n2000\n2001\n"
+        );
+    }
+
+    #[test]
+    fn integer_bound_stops_before_a_set_operator() {
+        let mut parser = crate::Parser {
+            tokens: crate::tokenize("1200 + 11 INTERSECT SELECT").unwrap(),
+            index: 0,
+        };
+        assert_eq!(super::numeric_or_literal(&mut parser).unwrap(), "1211");
+        assert!(matches!(
+            parser.tokens.get(parser.index),
+            Some(crate::Token::Word(word)) if word.eq_ignore_ascii_case("INTERSECT")
+        ));
+    }
+
+    #[test]
+    fn integer_arithmetic_is_folded_in_between_bounds() {
+        assert_eq!(
+            run("SELECT number FROM numbers(5) WHERE number BETWEEN 1 AND 1 + 2 ORDER BY number"),
+            "number\n1\n2\n3\n"
         );
     }
 
@@ -834,6 +1115,36 @@ mod streaming_dnf_absorption_tests {
         let lhs = (0..9).map(|n| vec![equals("a", &n.to_string())]).collect();
         let rhs = (0..9).map(|n| vec![equals("b", &n.to_string())]).collect();
         assert!(combine_and(lhs, rhs).is_err());
+    }
+}
+
+#[cfg(test)]
+mod tpcds_large_dnf_tests {
+    use crate::parse_select;
+
+    fn arm(key: usize, prefix: &str) -> String {
+        let categories = (0..4)
+            .map(|category| {
+                format!(
+                    "category = '{prefix}{category}' AND (color = 'a' OR color = 'b') AND (units = 'x' OR units = 'y') AND (size = 'm' OR size = 'l')"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        format!("(key = {key} AND ({categories}))")
+    }
+
+    #[test]
+    fn accepts_64_nested_branches_with_320_expanded_conditions() {
+        let sql = format!(
+            "SELECT count(*) FROM items WHERE {} OR {}",
+            arm(1, "a"),
+            arm(2, "b")
+        );
+        let select = parse_select(&sql).unwrap();
+        assert_eq!(select.or_predicates.len() + 1, 64);
+        assert_eq!(select.predicates.len(), 5);
+        assert!(select.or_predicates.iter().all(|branch| branch.len() == 5));
     }
 }
 

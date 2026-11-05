@@ -96,7 +96,9 @@ pub fn parse_derived_join_count_with_schema(
     let left = parser.bounded_word()?;
     let left_alias = alias(&mut parser, &left)?;
     if parse_join_kind(&mut parser) != JoinType::Left || !parser.keyword("JOIN") {
-        return Err(ParseError("derived count requires LEFT JOIN".into()));
+        // This parser is also tried for other derived SELECT shapes. Leave
+        // those to the parser that owns their query family.
+        return Ok(None);
     }
     let right = parser.bounded_word()?;
     let right_alias = alias(&mut parser, &right)?;
@@ -268,4 +270,19 @@ pub fn parse_derived_join_count_with_schema(
         limit: outer.limit,
         offset: outer.offset.unwrap_or(0),
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_derived_join_count_with_schema;
+
+    #[test]
+    fn leaves_non_left_derived_sources_for_their_own_parser() {
+        let query =
+            parse_derived_join_count_with_schema("SELECT x.k FROM (SELECT k FROM t) x", |_| {
+                Ok(vec!["k".into()])
+            })
+            .unwrap();
+        assert!(query.is_none());
+    }
 }

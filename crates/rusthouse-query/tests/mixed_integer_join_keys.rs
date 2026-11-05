@@ -49,7 +49,7 @@ fn signed_unsigned_join_keys_match_by_value_without_reinterpreting_negatives() {
         .unwrap();
     let mut result = Vec::new();
     execute_join(&query, &a, &b, &mut result).unwrap();
-    assert_eq!(String::from_utf8(result).unwrap(), "a.id\n0\n1\n");
+    assert_eq!(String::from_utf8(result).unwrap(), "id\n0\n1\n");
 
     let query =
         parse_join("SELECT a.id FROM a JOIN b ON a.id = b.id JOIN c ON b.id = c.id ORDER BY a.id")
@@ -57,6 +57,6 @@ fn signed_unsigned_join_keys_match_by_value_without_reinterpreting_negatives() {
             .unwrap();
     let mut result = Vec::new();
     execute_multi_join(&query, &[a, b, c], &mut result).unwrap();
-    assert_eq!(String::from_utf8(result).unwrap(), "a.id\n0\n1\n");
+    assert_eq!(String::from_utf8(result).unwrap(), "id\n0\n1\n");
     fs::remove_dir_all(root).unwrap();
 }

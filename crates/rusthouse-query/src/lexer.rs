@@ -289,7 +289,21 @@ mod tests {
                 Token::QuotedAlias("order count".into()),
             ]
         );
+        assert_eq!(
+            tokenize("SELECT 1 AS \"31-60 days\", 2 AS \">120 days\"").unwrap(),
+            vec![
+                Token::Word("SELECT".into()),
+                Token::Number("1".into()),
+                Token::Word("AS".into()),
+                Token::QuotedAlias("31-60 days".into()),
+                Token::Comma,
+                Token::Number("2".into()),
+                Token::Word("AS".into()),
+                Token::QuotedAlias(">120 days".into()),
+            ]
+        );
         assert!(crate::parse_select("SELECT \"order count\" FROM numbers(1)").is_err());
+        assert!(crate::parse_select("SELECT number AS \">120 days\" FROM numbers(1)").is_ok());
         for sql in [
             "SELECT `unterminated",
             "SELECT \"unterminated",
