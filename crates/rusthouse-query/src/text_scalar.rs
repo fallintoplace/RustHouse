@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "QUOTE_LITERAL"
                 | "FROMUNIXTIMESTAMP64SECOND"
                 | "FROMUNIXTIMESTAMP64MILLI"
+                | "COUNTMATCHES"
                 | "CUTQUERYSTRINGANDFRAGMENT"
                 | "THROWIF"
                 | "MULTIIF"
@@ -1271,6 +1272,30 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 (Some(left), Some(right)) => left
                     .checked_rem(right)
                     .map_or(ConstantValue::Null, ConstantValue::Integer),
+                _ => ConstantValue::Null,
+            }
+        }
+        "COUNTMATCHES" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "countmatches requires a pattern")?;
+            let pattern = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "countmatches requires two arguments")?;
+            match (input, pattern) {
+                (Some(input), Some(pattern)) => {
+                    if pattern.len() > 4096 {
+                        return Err(ParseError("countmatches pattern exceeds 4096 bytes".into()));
+                    }
+                    let regex = regex::RegexBuilder::new(&pattern)
+                        .dot_matches_new_line(true)
+                        .case_insensitive(false)
+                        .size_limit(2 * 1024 * 1024)
+                        .build()
+                        .map_err(|error| ParseError(format!("invalid countmatches regex: {error}")))?;
+                    ConstantValue::Integer(
+                        i64::try_from(regex.find_iter(&input).count())
+                            .map_err(|_| ParseError("countmatches match count exceeds Int64".into()))?,
+                    )
+                }
                 _ => ConstantValue::Null,
             }
         }
