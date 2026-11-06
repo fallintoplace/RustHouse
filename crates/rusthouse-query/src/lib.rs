@@ -1371,6 +1371,9 @@ fn numeric_grouped_case_value(expression: &ScalarExpr) -> bool {
         | ScalarExpr::TextLength(_)
         | ScalarExpr::Integer(_)
         | ScalarExpr::Decimal(_) => true,
+        ScalarExpr::TextLiteral(_)
+        | ScalarExpr::TextConcat(_)
+        | ScalarExpr::TextSubstring { .. } => false,
         ScalarExpr::Add(left, right)
         | ScalarExpr::Subtract(left, right)
         | ScalarExpr::Multiply(left, right)

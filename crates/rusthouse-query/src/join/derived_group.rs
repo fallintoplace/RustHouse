@@ -1105,7 +1105,7 @@ pub fn parse_derived_grouped_join_with_schema(
     else {
         return Ok(None);
     };
-    let Some(columns) = grouped_count_columns(&inner, &mut resolve)? else {
+    let Some(columns) = grouped_select_columns(&inner, &mut resolve)? else {
         return Ok(None);
     };
 

@@ -937,6 +937,9 @@ fn constant_value(expression: &ScalarExpr) -> Option<Option<String>> {
         Expr::Decimal(value) => Some(value.clone()),
         Expr::Column(_)
         | Expr::TextLength(_)
+        | Expr::TextLiteral(_)
+        | Expr::TextConcat(_)
+        | Expr::TextSubstring { .. }
         | Expr::IsNull { .. }
         | Expr::TextCompare { .. }
         | Expr::TextLike { .. } => {

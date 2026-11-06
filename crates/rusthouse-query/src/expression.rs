@@ -10,6 +10,13 @@ use std::collections::HashSet;
 pub enum ScalarExpr {
     Column(String),
     TextLength(String),
+    TextLiteral(String),
+    TextConcat(Vec<ScalarExpr>),
+    TextSubstring {
+        value: Box<ScalarExpr>,
+        start: usize,
+        length: Option<usize>,
+    },
     Integer(i64),
     /// Parsed exact lexeme for a decimal literal; converted once when bound.
     Decimal(String),
@@ -73,7 +80,15 @@ impl ScalarExpr {
                     }
                 }
             }
-            Self::Integer(_) | Self::Decimal(_) => {}
+            Self::TextSubstring { value, .. } => {
+                value.collect_unique_referenced_columns(out, seen);
+            }
+            Self::TextLiteral(_) | Self::Integer(_) | Self::Decimal(_) => {}
+            Self::TextConcat(arguments) => {
+                for argument in arguments {
+                    argument.collect_unique_referenced_columns(out, seen);
+                }
+            }
             Self::Case {
                 branches,
                 else_expr,
@@ -184,8 +199,15 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
             | ScalarExpr::TextLike { .. }
             | ScalarExpr::IsNull { .. }
             | ScalarExpr::TextLength(_)
+            | ScalarExpr::TextLiteral(_)
             | ScalarExpr::Integer(_)
             | ScalarExpr::Decimal(_) => {}
+            ScalarExpr::TextConcat(arguments) => {
+                for argument in arguments {
+                    pending.push((argument, depth + 1));
+                }
+            }
+            ScalarExpr::TextSubstring { value, .. } => pending.push((value, depth + 1)),
         }
     }
     Ok(())

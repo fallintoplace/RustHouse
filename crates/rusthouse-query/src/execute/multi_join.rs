@@ -289,6 +289,9 @@ fn validate_sum_expression(
         BoundExpr::TextLength(index)
         | BoundExpr::TextCompare { index, .. }
         | BoundExpr::TextLike { index, .. } => check(*index, true),
+        BoundExpr::TextLiteral(_) | BoundExpr::TextConcat(_) | BoundExpr::TextSubstring { .. } => {
+            Err(invalid("SUM expression cannot use a text projection"))
+        }
         BoundExpr::IsNull { .. } => Ok(()),
         BoundExpr::Integer(_) | BoundExpr::Float(_) => Ok(()),
         BoundExpr::Add(a, b)
@@ -913,6 +916,7 @@ fn required_physical_columns(
             && (query.aggregate == Some(crate::JoinAggregate::CountStar)
                 || !query.scalar_aggregates.is_empty()
                 || query.scalar_sum.is_some()))
+            && column.scalar_order_index().is_none()
         {
             retain_absolute(column_index(relations, column)?);
         }
@@ -1902,6 +1906,7 @@ fn execute_multi_join_inner<W: Write>(
                     || query.aggregate == Some(crate::JoinAggregate::CountStar)
                     || !query.scalar_aggregates.is_empty()
                     || query.scalar_sum.is_some()))
+                && column.scalar_order_index().is_none()
             {
                 column_index(&relations, column)?;
             }
@@ -2238,13 +2243,35 @@ fn execute_multi_join_inner<W: Write>(
     }
 
     if !query.order_by.is_empty() && query.aggregate != Some(crate::JoinAggregate::CountStar) {
+        let scalar_projections = bind_scalar_projections(query, &relations)?;
+        let sort_base = relations
+            .iter()
+            .map(|relation| relation.names.len())
+            .sum::<usize>();
         let ordering_columns = query
             .order_by
             .iter()
             .map(|(column, descending, nulls_first)| {
-                column_index(&relations, column).map(|index| (index, *descending, *nulls_first))
+                let index = column
+                    .scalar_order_index()
+                    .map(|index| sort_base + index)
+                    .map_or_else(|| column_index(&relations, column), Ok)?;
+                Ok((index, *descending, *nulls_first))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, ExecutionError>>()?;
+        if query
+            .order_by
+            .iter()
+            .any(|(column, _, _)| column.scalar_order_index().is_some())
+        {
+            for row in &mut rows {
+                let values = scalar_projections
+                    .iter()
+                    .map(|expression| super::multi_aggregate::eval_row_value(expression, row))
+                    .collect::<Result<Vec<_>, _>>()?;
+                row.extend(values);
+            }
+        }
         rows.sort_by(|left, right| {
             for (index, descending, nulls_first) in &ordering_columns {
                 let ordering = typed::compare_order_cells(
@@ -2295,14 +2322,9 @@ fn execute_multi_join_inner<W: Write>(
                 output.write_all(b"\t")?;
             }
             if let Some(expression) = scalar_output_index(*index, scalar_projections.len()) {
-                let value = super::multi_aggregate::eval_row_arithmetic(
-                    &scalar_projections[expression],
-                    row,
-                )?;
-                typed::write_value(
-                    output,
-                    &value.map_or(typed::Cell::Null, typed::Cell::Numeric),
-                )?;
+                let value =
+                    super::multi_aggregate::eval_row_value(&scalar_projections[expression], row)?;
+                typed::write_value(output, &value)?;
                 continue;
             }
             let source = if matches!(row[*index], typed::Cell::Null) {

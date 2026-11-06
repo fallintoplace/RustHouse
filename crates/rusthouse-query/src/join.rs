@@ -105,6 +105,13 @@ impl JoinColumn {
         }
     }
 
+    fn scalar_order(index: usize) -> Self {
+        Self {
+            relation: String::new(),
+            name: format!("#scalar:{index}"),
+        }
+    }
+
     pub(crate) fn is_count_order(&self) -> bool {
         self.relation.is_empty() && self.name == "#count"
     }
@@ -132,6 +139,13 @@ impl JoinColumn {
 
     pub(crate) fn is_window_ratio_order(&self) -> bool {
         self.relation.is_empty() && self.name == "#window_ratio"
+    }
+
+    pub(crate) fn scalar_order_index(&self) -> Option<usize> {
+        self.relation
+            .is_empty()
+            .then(|| self.name.strip_prefix("#scalar:")?.parse().ok())
+            .flatten()
     }
 }
 
@@ -412,9 +426,35 @@ fn grouped_output_alias_exists(
 }
 
 fn scalar_projection_ahead(parser: &Parser) -> bool {
+    if matches!(
+        (
+            parser.tokens.get(parser.index),
+            parser.tokens.get(parser.index + 1),
+            parser.tokens.get(parser.index + 2)
+        ),
+        (
+            Some(Token::Word(_) | Token::QuotedWord(_)),
+            Some(Token::Dot),
+            Some(Token::Star)
+        )
+    ) {
+        return false;
+    }
     match parser.tokens.get(parser.index) {
         Some(Token::LParen | Token::Plus | Token::Minus) => return true,
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE") => return true,
+        Some(Token::Word(word))
+            if word.eq_ignore_ascii_case("CONCAT")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            return true;
+        }
+        Some(Token::Word(word))
+            if word.eq_ignore_ascii_case("SUBSTRING")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            return true;
+        }
         _ => {}
     }
 
@@ -434,6 +474,27 @@ fn scalar_projection_ahead(parser: &Parser) -> bool {
         }
     }
     false
+}
+
+fn implicit_scalar_projection_alias(expression: &crate::ScalarExpr) -> String {
+    match expression {
+        crate::ScalarExpr::TextSubstring {
+            value,
+            start,
+            length,
+        } => {
+            let mut alias = format!(
+                "\"substring\"({}, {start}",
+                crate::multi_aggregate::render_expr(value)
+            );
+            if let Some(length) = length {
+                alias.push_str(&format!(", {length}"));
+            }
+            alias.push(')');
+            alias
+        }
+        _ => crate::multi_aggregate::render_expr(expression),
+    }
 }
 
 pub(crate) fn encode_qualified_expression_tokens(tokens: &[Token]) -> (Vec<Token>, Vec<usize>) {
@@ -861,6 +922,9 @@ fn numeric_join_expression(expression: &crate::ScalarExpr) -> bool {
         | crate::ScalarExpr::TextCompare { .. }
         | crate::ScalarExpr::TextLike { .. }
         | crate::ScalarExpr::IsNull { .. } => true,
+        crate::ScalarExpr::TextLiteral(_)
+        | crate::ScalarExpr::TextConcat(_)
+        | crate::ScalarExpr::TextSubstring { .. } => false,
         crate::ScalarExpr::Case {
             branches,
             else_expr,
@@ -1954,7 +2018,7 @@ fn parse_join_tokens_internal(
                 parser.index += consumed;
                 let alias = parser
                     .select_output_alias()?
-                    .ok_or_else(|| ParseError("JOIN scalar projection requires an alias".into()))?;
+                    .unwrap_or_else(|| implicit_scalar_projection_alias(&expression));
                 let index = scalar_projections.len();
                 scalar_projections.push(JoinScalarProjection { expression, alias });
                 projection_order.push(JoinProjectionOrder::Scalar(index));
@@ -2982,6 +3046,25 @@ fn parse_join_tokens_internal(
                 ))
                 && matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("SUM"))
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen);
+            let next_scalar_expression_order = scalar_projection_ahead(&parser).then(|| {
+                let (encoded, original_ends) =
+                    encode_qualified_expression_tokens(&parser.tokens[parser.index..]);
+                let mut expression_parser = Parser {
+                    tokens: encoded,
+                    index: 0,
+                };
+                let expression =
+                    crate::expression::parse_expression_tokens(&mut expression_parser).ok()?;
+                if expression_parser.index == 0 {
+                    return None;
+                }
+                let scalar_index = scalar_projections
+                    .iter()
+                    .position(|projection| projection.expression == expression)?;
+                let consumed = original_ends.get(expression_parser.index - 1).copied()?;
+                Some((scalar_index, consumed))
+            });
+            let next_scalar_expression_order = next_scalar_expression_order.flatten();
             let scalar_count_distinct_order =
                 !scalar_aggregates.is_empty() && parser.keyword("COUNT");
             let key = if scalar_count_distinct_order {
@@ -3126,6 +3209,9 @@ fn parse_join_tokens_internal(
                     .and_then(|columns| columns.get(position - 1))
                     .cloned()
                     .ok_or_else(|| ParseError("JOIN ORDER BY position is out of range".into()))?
+            } else if let Some((index, consumed)) = next_scalar_expression_order {
+                parser.index += consumed;
+                JoinColumn::scalar_order(index)
             } else {
                 let mut key = projected(&mut parser)?;
                 if key.name == "*" {
@@ -3713,11 +3799,19 @@ fn parse_join_tokens_internal(
             ));
         }
     }
-    let grouped_execution_keys = if grouped_window_average.is_some() {
-        group_by.clone().unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let groups_include_unprojected_keys = grouped_sum.is_some()
+        && !steps.is_empty()
+        && group_by.as_ref().is_some_and(|groups| {
+            columns
+                .as_ref()
+                .is_some_and(|projected| groups.iter().any(|key| !projected.contains(key)))
+        });
+    let grouped_execution_keys =
+        if grouped_window_average.is_some() || groups_include_unprojected_keys {
+            group_by.clone().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
     let grouped_count = if grouped_count_projection {
         let projected_keys = columns
             .as_ref()
@@ -5074,5 +5168,146 @@ mod nested_implicit_join_tests {
             .unwrap()
         );
         assert!(has_implicit_join("SELECT a.id, SUM(a.v) FROM a JOIN b ON a.id = b.id GROUP BY a.id HAVING SUM(a.v) > (SELECT SUM(v * 1) FROM c, d").is_err());
+    }
+}
+
+#[cfg(test)]
+mod scalar_order_projection_tests {
+    use super::*;
+
+    #[test]
+    fn orders_by_a_selected_substring_expression() {
+        let query = parse_join(
+            "SELECT a.id, SUBSTRING(a.name, 1, 3) AS short_name FROM a JOIN b ON a.id = b.id ORDER BY SUBSTRING(a.name, 1, 3) DESC",
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(query.scalar_projections[0].alias, "short_name");
+        assert_eq!(query.order_by[0].0.scalar_order_index(), Some(0));
+        assert!(query.order_by[0].1);
+    }
+
+    #[test]
+    fn parses_tpcds_q79_outer_projection_and_ordering() {
+        let query = parse_join_with_schema(
+            "SELECT c_last_name, c_first_name, SUBSTRING(s_city, 1, 30), ss_ticket_number, amt, profit FROM dn, customer, customer_address current_addr WHERE ss_customer_sk = c_customer_sk AND customer.c_current_addr_sk = current_addr.ca_address_sk AND current_addr.ca_city <> bought_city ORDER BY c_last_name NULLS FIRST, c_first_name NULLS FIRST, SUBSTRING(s_city, 1, 30) NULLS FIRST, profit NULLS FIRST, ss_ticket_number LIMIT 100",
+            |table| {
+                let columns: &[&str] = match table {
+                    "dn" => &[
+                        "ss_customer_sk",
+                        "ss_ticket_number",
+                        "amt",
+                        "profit",
+                        "bought_city",
+                        "s_city",
+                    ],
+                    "customer" => &["c_customer_sk", "c_current_addr_sk", "c_last_name", "c_first_name"],
+                    "customer_address" => &["ca_address_sk", "ca_city"],
+                    _ => return Err(ParseError(format!("unknown test table {table}"))),
+                };
+                Ok(columns.iter().map(|column| (*column).to_owned()).collect())
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(query.scalar_projections.len(), 1);
+        assert_eq!(query.order_by[2].0.scalar_order_index(), Some(0));
+    }
+}
+
+#[cfg(test)]
+mod tpcds_derived_query_tests {
+    use super::*;
+
+    fn q79_schema(table: &str) -> Result<Vec<DerivedColumn>, ParseError> {
+        let names: &[&str] = match table {
+            "store_sales" => &[
+                "ss_ticket_number",
+                "ss_customer_sk",
+                "ss_addr_sk",
+                "ss_sold_date_sk",
+                "ss_store_sk",
+                "ss_hdemo_sk",
+                "ss_coupon_amt",
+                "ss_net_profit",
+            ],
+            "date_dim" => &["d_date_sk", "d_dow", "d_year"],
+            "store" => &["s_store_sk", "s_city", "s_number_employees"],
+            "household_demographics" => &["hd_demo_sk", "hd_dep_count", "hd_vehicle_count"],
+            "customer" => &[
+                "c_customer_sk",
+                "c_last_name",
+                "c_first_name",
+                "c_current_addr_sk",
+            ],
+            "customer_address" => &["ca_address_sk", "ca_city"],
+            _ => return Err(ParseError(format!("unknown test table {table}"))),
+        };
+        Ok(names
+            .iter()
+            .map(|name| DerivedColumn {
+                name: (*name).into(),
+                data_type: "String".into(),
+            })
+            .collect())
+    }
+
+    #[test]
+    fn parses_tpcds_q79_derived_aggregate_and_substring_order() {
+        let sql = r#"
+            SELECT c_last_name, c_first_name, SUBSTRING(s_city, 1, 30),
+                   ss_ticket_number, amt, profit
+            FROM (
+                SELECT ss_ticket_number, ss_customer_sk, store.s_city,
+                       SUM(ss_coupon_amt) AS amt, SUM(ss_net_profit) AS profit
+                FROM store_sales, date_dim, store, household_demographics
+                WHERE store_sales.ss_sold_date_sk = date_dim.d_date_sk
+                  AND store_sales.ss_store_sk = store.s_store_sk
+                  AND store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk
+                  AND (household_demographics.hd_dep_count = 6
+                       OR household_demographics.hd_vehicle_count > 2)
+                  AND date_dim.d_dow = 1
+                  AND date_dim.d_year IN (1999, 1999 + 1, 1999 + 2)
+                  AND store.s_number_employees BETWEEN 200 AND 295
+                GROUP BY ss_ticket_number, ss_customer_sk, ss_addr_sk, store.s_city
+            ) ms, customer
+            WHERE ss_customer_sk = c_customer_sk
+            ORDER BY c_last_name NULLS FIRST, c_first_name NULLS FIRST,
+                     SUBSTRING(s_city, 1, 30) NULLS FIRST, profit NULLS FIRST,
+                     ss_ticket_number
+            LIMIT 100
+        "#;
+
+        let sum = parse_derived_join_sum_with_schema(sql, |table| {
+            q79_schema(table).map(|columns| columns.into_iter().map(|column| column.name).collect())
+        });
+        assert!(matches!(sum, Ok(None)), "{sum:?}");
+
+        let count = parse_derived_join_count_with_schema(sql, |table| {
+            q79_schema(table).map(|columns| columns.into_iter().map(|column| column.name).collect())
+        });
+        assert!(matches!(count, Ok(None)), "{count:?}");
+
+        let grouped = parse_derived_grouped_join_with_schema(sql, q79_schema);
+        assert!(grouped.is_ok(), "{grouped:?}");
+        let grouped = grouped.unwrap();
+        assert!(grouped.is_some());
+        let grouped = grouped.unwrap();
+        assert_eq!(grouped.outer().scalar_projections.len(), 1);
+        assert_eq!(grouped.inner().grouped_execution_keys.len(), 4);
+        assert!(
+            grouped
+                .inner()
+                .grouped_execution_keys
+                .iter()
+                .any(|column| column.name == "ss_addr_sk")
+        );
+        assert_eq!(
+            grouped.outer().scalar_projections[0].alias,
+            "\"substring\"(s_city, 1, 30)"
+        );
+        assert_eq!(grouped.outer().order_by[2].0.scalar_order_index(), Some(0));
     }
 }

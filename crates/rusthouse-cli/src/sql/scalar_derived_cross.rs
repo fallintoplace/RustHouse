@@ -819,7 +819,12 @@ fn eval_scalar(
             }
             result
         }
-        Expr::TextLength(_) | Expr::TextCompare { .. } | Expr::TextLike { .. } => {
+        Expr::TextLength(_)
+        | Expr::TextLiteral(_)
+        | Expr::TextConcat(_)
+        | Expr::TextSubstring { .. }
+        | Expr::TextCompare { .. }
+        | Expr::TextLike { .. } => {
             return Err("scalar derived expressions must be numeric".into());
         }
     };

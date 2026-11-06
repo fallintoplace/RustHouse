@@ -9,6 +9,66 @@ fn parse_length_column(parser: &mut Parser) -> Result<ScalarExpr, ParseError> {
     Ok(ScalarExpr::TextLength(column))
 }
 
+fn parse_concat(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+    parser.index += 1;
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("CONCAT requires '('".into()));
+    }
+    let mut arguments = Vec::new();
+    loop {
+        if arguments.len() == 16 {
+            return Err(ParseError("CONCAT supports at most 16 arguments".into()));
+        }
+        arguments.push(parse_expression_tokens_at_depth(parser, depth + 1)?);
+        if !parser.take(Token::Comma) {
+            break;
+        }
+    }
+    if arguments.len() < 2 || !parser.take(Token::RParen) {
+        return Err(ParseError(
+            "CONCAT requires at least two arguments and ')'".into(),
+        ));
+    }
+    Ok(ScalarExpr::TextConcat(arguments))
+}
+
+fn parse_substring(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+    parser.index += 1;
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("SUBSTRING requires '('".into()));
+    }
+    let value = Box::new(parse_expression_tokens_at_depth(parser, depth + 1)?);
+    if !parser.take(Token::Comma) {
+        return Err(ParseError("SUBSTRING requires a start position".into()));
+    }
+    let start = parser
+        .number()?
+        .parse::<usize>()
+        .ok()
+        .filter(|value| (1..=1_000_000_000).contains(value))
+        .ok_or_else(|| ParseError("SUBSTRING start must be a positive integer".into()))?;
+    let length = if parser.take(Token::Comma) {
+        Some(
+            parser
+                .number()?
+                .parse::<usize>()
+                .ok()
+                .filter(|value| *value <= 1_000_000)
+                .ok_or_else(|| ParseError("SUBSTRING length must be a bounded integer".into()))?,
+        )
+    } else {
+        None
+    };
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("SUBSTRING requires ')'".into()));
+    }
+    Ok(ScalarExpr::TextSubstring {
+        value,
+        start,
+        length,
+    })
+}
+
 fn parse_coalesce(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     parser.index += 1;
     if !parser.take(Token::LParen) {
@@ -231,6 +291,18 @@ pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
             parse_length_column(parser)
         }
         Some(Token::Word(name))
+            if name.eq_ignore_ascii_case("concat")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            parse_concat(parser, depth)
+        }
+        Some(Token::Word(name))
+            if name.eq_ignore_ascii_case("substring")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            parse_substring(parser, depth)
+        }
+        Some(Token::Word(name))
             if name.eq_ignore_ascii_case("coalesce")
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
         {
@@ -244,6 +316,11 @@ pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
         }
         Some(Token::Word(name)) if name.eq_ignore_ascii_case("CASE") => parse_case(parser, depth),
         Some(Token::Word(_) | Token::QuotedWord(_)) => Ok(ScalarExpr::Column(parser.word()?)),
+        Some(Token::String(value)) => {
+            let value = value.clone();
+            parser.index += 1;
+            Ok(ScalarExpr::TextLiteral(value))
+        }
         Some(Token::Number(number)) => {
             let literal = parse_numeric_literal(number)?;
             parser.index += 1;
@@ -443,6 +520,56 @@ mod simple_case_expression_tests {
             "CASE amount WHEN NULL THEN 1 END",
             "CASE amount WHEN 'x' THEN 1 END extra",
         ] {
+            assert!(parse_scalar_expression(input).is_err(), "{input}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod text_concat_expression_tests {
+    use crate::expression::{ScalarExpr, parse_scalar_expression};
+
+    #[test]
+    fn parses_nested_concat_with_coalesced_string_columns() {
+        let expression = parse_scalar_expression(
+            "concat(concat(coalesce(last_name, ''), ', '), coalesce(first_name, ''))",
+        )
+        .unwrap();
+        let mut columns = Vec::new();
+        expression.referenced_columns(&mut columns);
+
+        assert!(matches!(expression, ScalarExpr::TextConcat(arguments) if arguments.len() == 2));
+        assert_eq!(columns, ["last_name", "first_name"]);
+    }
+
+    #[test]
+    fn rejects_concat_with_too_few_or_too_many_arguments() {
+        assert!(parse_scalar_expression("concat(last_name)").is_err());
+        let arguments = std::iter::repeat_n("last_name", 17)
+            .collect::<Vec<_>>()
+            .join(", ");
+        assert!(parse_scalar_expression(&format!("concat({arguments})")).is_err());
+    }
+
+    #[test]
+    fn parses_bounded_substring_positions_and_lengths() {
+        assert_eq!(
+            parse_scalar_expression("substring(city, 2, 5)").unwrap(),
+            ScalarExpr::TextSubstring {
+                value: Box::new(ScalarExpr::Column("city".into())),
+                start: 2,
+                length: Some(5),
+            }
+        );
+        assert!(matches!(
+            parse_scalar_expression("substring(city, 3)").unwrap(),
+            ScalarExpr::TextSubstring {
+                start: 3,
+                length: None,
+                ..
+            }
+        ));
+        for input in ["substring(city, 0, 1)", "substring(city, 1, 1000001)"] {
             assert!(parse_scalar_expression(input).is_err(), "{input}");
         }
     }

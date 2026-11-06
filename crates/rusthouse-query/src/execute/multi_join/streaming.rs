@@ -1144,7 +1144,19 @@ fn visit<W: Write>(
             if state.ordered_rows.len() >= super::MAX_RESULT_ROWS {
                 return Err(invalid("JOIN produces more than 131072 rows"));
             }
-            state.ordered_rows.push(row.clone());
+            let mut ordered = row.clone();
+            if spec
+                .order_by
+                .iter()
+                .any(|(index, _, _)| *index >= spec.types.len())
+            {
+                for expression in &spec.scalar_projections {
+                    ordered.push(super::super::multi_aggregate::eval_row_value(
+                        expression, row,
+                    )?);
+                }
+            }
+            state.ordered_rows.push(ordered);
             return Ok(());
         }
         // Output is written directly to the caller, not kept in an
@@ -1159,14 +1171,11 @@ fn visit<W: Write>(
             if let Some(expression) =
                 super::scalar_output_index(*index, spec.scalar_projections.len())
             {
-                let value = super::super::multi_aggregate::eval_row_arithmetic(
+                let value = super::super::multi_aggregate::eval_row_value(
                     &spec.scalar_projections[expression],
                     row,
                 )?;
-                typed::write_value(
-                    output,
-                    &value.map_or(typed::Cell::Null, typed::Cell::Numeric),
-                )?;
+                typed::write_value(output, &value)?;
                 continue;
             }
             let source = if matches!(row[*index], typed::Cell::Null) {
@@ -1429,6 +1438,10 @@ pub(super) fn execute<W: Write>(
         })
         .collect::<Result<Vec<_>, ExecutionError>>()?;
     let scalar_projections = super::bind_scalar_projections(query, relations)?;
+    let scalar_order_base = relations
+        .iter()
+        .map(|relation| relation.names.len())
+        .sum::<usize>();
     let order_by = if query.scalar_projections.is_empty() {
         Vec::new()
     } else {
@@ -1436,9 +1449,13 @@ pub(super) fn execute<W: Write>(
             .order_by
             .iter()
             .map(|(column, descending, nulls_first)| {
-                column_index(relations, column).map(|index| (index, *descending, *nulls_first))
+                let index = column
+                    .scalar_order_index()
+                    .map(|index| scalar_order_base + index)
+                    .map_or_else(|| column_index(relations, column), Ok)?;
+                Ok((index, *descending, *nulls_first))
             })
-            .collect::<Result<Vec<_>, _>>()?
+            .collect::<Result<Vec<_>, ExecutionError>>()?
     };
     let fact_prefiltered_exists =
         super::exists::fact_prefilters(exists, exists_expression, relations[0].names.len())?;
@@ -1888,14 +1905,11 @@ pub(super) fn execute<W: Write>(
                 if let Some(expression) =
                     super::scalar_output_index(*index, spec.scalar_projections.len())
                 {
-                    let value = super::super::multi_aggregate::eval_row_arithmetic(
+                    let value = super::super::multi_aggregate::eval_row_value(
                         &spec.scalar_projections[expression],
                         row,
                     )?;
-                    typed::write_value(
-                        output,
-                        &value.map_or(typed::Cell::Null, typed::Cell::Numeric),
-                    )?;
+                    typed::write_value(output, &value)?;
                     continue;
                 }
                 let source = if matches!(row[*index], typed::Cell::Null) {
