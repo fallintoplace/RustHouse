@@ -9,6 +9,19 @@ pub struct GroupedCaseKey {
     pub case_label: String,
     pub destination_label: String,
 }
+fn matches_case_projection(projection: &Projection, expected: &[&str]) -> bool {
+    match projection {
+        Projection::GroupedMultiCount { columns } => {
+            columns.iter().map(String::as_str).eq(expected.iter().copied())
+        }
+        Projection::GroupedMultiAggregates { columns, items, .. } => {
+            columns.iter().map(String::as_str).eq(expected.iter().copied())
+                && matches!(items.as_slice(), [(AggregateFunction::Count, value)] if value == "*")
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError> {
     let (first, flag1, flag2, source, case_label, destination, destination_label) =
         match tokens.as_slice() {
@@ -110,23 +123,10 @@ pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError
     tokens.drain(27..29);
     tokens.splice(7..25, [Token::Word(source.clone())]);
     let mut select = parse_select_tokens(tokens)?;
-    let valid = match &select.projection {
-        Projection::GroupedMultiCount { columns } => {
-            columns
-                == &[
-                    first.clone(),
-                    flag1.clone(),
-                    flag2.clone(),
-                    source.clone(),
-                    destination.clone(),
-                ]
-        }
-        Projection::GroupedMultiAggregates { columns, items, .. } => {
-            columns == &[first, flag1.clone(), flag2.clone(), source, destination]
-                && matches!(items.as_slice(), [(AggregateFunction::Count, value)] if value == "*")
-        }
-        _ => false,
-    };
+    let valid = matches_case_projection(
+        &select.projection,
+        &[&first, &flag1, &flag2, &source, &destination],
+    );
     if case_label.eq_ignore_ascii_case("count")
         || destination_label.eq_ignore_ascii_case("count")
         || matches!(&select.projection, Projection::GroupedMultiAggregates { aliases, .. } if aliases.iter().flatten().any(|alias| alias.eq_ignore_ascii_case(&case_label) || alias.eq_ignore_ascii_case(&destination_label)))
