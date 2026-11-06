@@ -15,6 +15,13 @@ struct Parser<'a> {
 }
 
 impl Parser<'_> {
+    fn finish(&self) -> io::Result<()> {
+        if self.offset != self.input.len() {
+            return Err(invalid());
+        }
+        Ok(())
+    }
+
     fn whitespace(&mut self) {
         while self
             .input
@@ -217,10 +224,7 @@ pub(crate) fn validate_json_value(row: &[u8]) -> io::Result<()> {
     };
     parser.value(0)?;
     parser.whitespace();
-    if parser.offset != row.len() {
-        return Err(invalid());
-    }
-    Ok(())
+    parser.finish()
 }
 
 /// Accept exactly one complete UTF-8 JSON object, with bounded nesting.
@@ -233,10 +237,7 @@ pub fn validate_json_object(row: &[u8]) -> io::Result<()> {
         offset: 0,
     };
     parser.object(1)?;
-    if parser.offset != row.len() {
-        return Err(invalid());
-    }
-    Ok(())
+    parser.finish()
 }
 
 #[cfg(test)]
