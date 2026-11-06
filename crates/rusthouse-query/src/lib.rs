@@ -31,10 +31,10 @@ mod literal;
 mod multi_aggregate;
 mod scalar;
 mod select_parser;
-use select_parser::parse_select_tokens;
 mod text_scalar;
 mod update;
 mod where_parser;
+use select_parser::parse_select_tokens;
 pub use bounded_except::{
     DerivedSetCount, DerivedSetOperation, ExceptSelect, execute_bounded_except,
     execute_derived_set_count, parse_bounded_except, parse_derived_set_count_with_schema,
