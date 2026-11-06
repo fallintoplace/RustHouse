@@ -33,7 +33,7 @@ fn acknowledged_weights(
     proposed: SnapshotVersion,
     acknowledgements: &[SnapshotAck<'_>],
 ) -> Result<(u64, u64), &'static str> {
-let mut old_weight = 0u64;
+    let mut old_weight = 0u64;
     let mut new_weight = 0u64;
     let mut seen = HashSet::new();
     for ack in acknowledgements {
