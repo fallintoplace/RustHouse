@@ -10,6 +10,20 @@ pub struct SnapshotObservation<'a> {
     pub version: SnapshotVersion,
 }
 
+fn record_fingerprint(
+    fingerprints: &mut HashMap<u64, u128>,
+    version: SnapshotVersion,
+) -> Result<(), &'static str> {
+    if let Some(&existing) = fingerprints.get(&version.generation) {
+        if existing != version.fingerprint {
+            return Err("conflicting snapshot generation fingerprints");
+        }
+    } else {
+        fingerprints.insert(version.generation, version.fingerprint);
+    }
+    Ok(())
+}
+
 /// An observed read quorum may be stale. Callers still require a separate
 /// authoritative commit certificate and snapshot ancestry checks.
 pub fn newest_weighted_observed_snapshot(
@@ -42,13 +56,7 @@ pub fn newest_weighted_observed_snapshot(
             return Err("invalid or conflicting snapshot epoch");
         }
         epoch = Some(version.epoch);
-        if let Some(&existing) = fingerprints.get(&version.generation) {
-            if existing != version.fingerprint {
-                return Err("conflicting snapshot generation fingerprints");
-            }
-        } else {
-            fingerprints.insert(version.generation, version.fingerprint);
-        }
+        record_fingerprint(&mut fingerprints, version)?;
         *totals
             .entry((version.generation, version.fingerprint))
             .or_insert(0) += u64::from(member.weight);
