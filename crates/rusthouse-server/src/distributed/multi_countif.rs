@@ -4,6 +4,17 @@
 use super::{MAX_RESPONSE_BYTES, MergeError, NormalizedGroupKey, normalized_group_key};
 use std::collections::HashMap;
 
+fn parse_canonical_count(bytes: &[u8]) -> Result<u128, MergeError> {
+    let value = std::str::from_utf8(bytes).map_err(|_| MergeError::InvalidGroupedSum)?;
+    let partial = value
+        .parse::<u128>()
+        .map_err(|_| MergeError::InvalidGroupedSum)?;
+    if partial.to_string() != value {
+        return Err(MergeError::InvalidGroupedSum);
+    }
+    Ok(partial)
+}
+
 pub(super) fn merge_multi_key_countif(
     shards: &[(usize, Vec<u8>)],
     columns: &[String],
@@ -37,14 +48,8 @@ pub(super) fn merge_multi_key_countif(
             if fields.len() != columns.len() + 1 {
                 return Err(MergeError::InvalidGroupedSum);
             }
-            let value = std::str::from_utf8(fields[columns.len()])
-                .map_err(|_| MergeError::InvalidGroupedSum)?;
-            let partial = value
-                .parse::<u128>()
-                .map_err(|_| MergeError::InvalidGroupedSum)?;
-            if partial.to_string() != value {
-                return Err(MergeError::InvalidGroupedSum);
-            }
+            let value = fields[columns.len()];
+            let partial = parse_canonical_count(value)?;
             let normalized = fields[..columns.len()]
                 .iter()
                 .map(|field| normalized_group_key(field).map_err(|_| MergeError::InvalidGroupedSum))
