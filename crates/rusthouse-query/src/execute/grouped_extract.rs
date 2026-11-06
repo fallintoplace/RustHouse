@@ -49,6 +49,17 @@ fn sort_group_page<K: Ord>(
     rows.sort_unstable_by(compare);
 }
 
+fn minute_group_key(raw_time: &[u8]) -> Result<Vec<u8>, ExecutionError> {
+    if raw_time == b"\\N" {
+        return Ok(b"\\N".to_vec());
+    }
+    let timestamp = std::str::from_utf8(raw_time)
+        .map_err(|_| ExecutionError::Invalid("invalid EXTRACT timestamp".into()))?;
+    let seconds = rusthouse_storage::parse_datetime(timestamp)
+        .ok_or_else(|| ExecutionError::Invalid("invalid EXTRACT timestamp".into()))?;
+    Ok(((seconds / 60) % 60).to_string().into_bytes())
+}
+
 pub(super) fn execute<W: Write>(
     query: &Select,
     path: Option<&Path>,
@@ -151,15 +162,7 @@ pub(super) fn execute<W: Write>(
                 "invalid EXTRACT grouping row".into(),
             ));
         }
-        let minute = if raw_time == b"\\N" {
-            b"\\N".to_vec()
-        } else {
-            let timestamp = std::str::from_utf8(raw_time)
-                .map_err(|_| ExecutionError::Invalid("invalid EXTRACT timestamp".into()))?;
-            let seconds = rusthouse_storage::parse_datetime(timestamp)
-                .ok_or_else(|| ExecutionError::Invalid("invalid EXTRACT timestamp".into()))?;
-            ((seconds / 60) % 60).to_string().into_bytes()
-        };
+        let minute = minute_group_key(raw_time)?;
         let key = [first.to_vec(), minute, last.to_vec()];
         let count = std::str::from_utf8(raw_count)
             .ok()
