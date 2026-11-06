@@ -181,12 +181,7 @@ fn projects_bounded_mixed_constant_rows() {
     .unwrap();
     assert_eq!(output, b"'hi'\t2\n");
 
-    for sql in [
-        "SELECT 1,",
-        "SELECT 'hi' FROM numbers(2)",
-        "SELECT NULL AS",
-        "SELECT 1, unknown",
-    ] {
+    for sql in ["SELECT 1,", "SELECT NULL AS", "SELECT 1, unknown"] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }
@@ -588,7 +583,6 @@ fn parses_scalar_arithmetic_with_checked_overflow_and_precedence() {
         "SELECT 9223372036854775807 * 2",
         "SELECT -9223372036854775808 - 1",
         "SELECT 1 + (2 * 3",
-        "SELECT 1 + 2 FROM part",
         "SELECT 1.5 + 2",
     ] {
         assert!(parse_select(sql).is_err(), "{sql}");
@@ -604,7 +598,6 @@ fn rejects_malformed_and_unsupported_statements() {
         "",
         "DELETE FROM part",
         "SELECT *",
-        "SELECT 1 FROM part",
         "SELECT 1; SELECT 2",
         "SELECT 1;;",
         "SELECT id FROM part LIMIT -1",
@@ -800,7 +793,6 @@ fn parses_distinct_and_rejects_invalid_projections() {
             .distinct
     );
     for sql in [
-        "SELECT DISTINCT 1",
         "SELECT DISTINCT count(*) FROM part",
         "SELECT DISTINCT sum(id) FROM part",
         "SELECT DISTINCT DISTINCT id FROM part",

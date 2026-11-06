@@ -81,9 +81,15 @@ pub fn read_decimal_column<R: Read>(
     let unscaled = read_numeric_column(reader, storage, rows).map_err(DecimalReadError::Numeric)?;
     let limit = 10i128.pow(u32::from(precision));
     let invalid_row = match &unscaled {
-        NumericColumn::Int32(values) => values.iter().position(|&v| outside_decimal_precision(i128::from(v), limit)),
-        NumericColumn::Int64(values) => values.iter().position(|&v| outside_decimal_precision(i128::from(v), limit)),
-        NumericColumn::Int128(values) => values.iter().position(|&v| outside_decimal_precision(v, limit)),
+        NumericColumn::Int32(values) => values
+            .iter()
+            .position(|&v| outside_decimal_precision(i128::from(v), limit)),
+        NumericColumn::Int64(values) => values
+            .iter()
+            .position(|&v| outside_decimal_precision(i128::from(v), limit)),
+        NumericColumn::Int128(values) => values
+            .iter()
+            .position(|&v| outside_decimal_precision(v, limit)),
         _ => None,
     };
     if let Some(row) = invalid_row {

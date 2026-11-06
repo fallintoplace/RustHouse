@@ -5,13 +5,14 @@ use crate::{
     sql_values, vertical,
 };
 use rusthouse_query::{
-    CteCorrelatedAvg, CteMaxJoin, DerivedGroupedJoin, DerivedGroupedSelect, DerivedJoinCount,
-    DerivedUnionJoin, JoinCorrelatedAvg, JoinCorrelatedExists, JoinCorrelatedMin,
-    JoinCorrelatedSum, JoinSelect, NestedJoinSum, Source, bind_join_having_subquery,
-    bind_join_in_subquery, execute_correlated_avg_with_paths, execute_correlated_join,
-    execute_correlated_min, execute_correlated_sum, execute_cte_max_join,
+    CteCorrelatedAvg, CteMaxJoin, CteSourceQuery, DerivedGroupedJoin, DerivedGroupedSelect,
+    DerivedJoinCount, DerivedUnionJoin, DerivedUnionSelect, JoinCorrelatedAvg,
+    JoinCorrelatedExists, JoinCorrelatedMin, JoinCorrelatedSum, JoinSelect, NestedJoinSum, Source,
+    bind_join_having_subquery, bind_join_in_subquery, execute_correlated_avg_with_paths,
+    execute_correlated_join, execute_correlated_min, execute_correlated_sum, execute_cte_max_join,
     execute_derived_grouped_join, execute_derived_grouped_select, execute_derived_join_count,
-    execute_derived_union_join, execute_join, execute_multi_join, execute_nested_join_sum,
+    execute_derived_union_join, execute_derived_union_select, execute_join, execute_multi_join,
+    execute_nested_join_sum,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -110,7 +111,12 @@ fn execute_selected_join<W: std::io::Write>(
     paths: &[PathBuf],
     output: &mut W,
 ) -> Result<(), rusthouse_query::ExecutionError> {
-    if paths.len() == 2 {
+    let needs_multi_join = query
+        .grouped_case_counts
+        .iter()
+        .any(|(_, value, _)| !matches!(value, rusthouse_query::GroupedCaseValue::Count))
+        || !query.scalar_projections.is_empty();
+    if paths.len() == 2 && !needs_multi_join {
         execute_join(query, &paths[0], &paths[1], output)
     } else {
         execute_multi_join(query, paths, output)
@@ -314,21 +320,48 @@ pub(super) fn run_cte_multi_join(
     let mut temporary_parts = Vec::with_capacity(plan.sources().len());
 
     for source in plan.sources() {
-        let query = source.query();
-        let tables = [&query.left, &query.right]
-            .into_iter()
-            .chain(query.steps.iter().map(|step| &step.table));
-        let paths = tables
-            .map(|table| {
-                cte_paths
-                    .get(&table.to_ascii_lowercase())
-                    .cloned()
-                    .map(Ok)
-                    .unwrap_or_else(|| crate::database::select_source(database, table))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
         let mut cte_output = Vec::new();
-        execute_selected_join(query, &paths, &mut cte_output).map_err(|error| error.to_string())?;
+        match source.query() {
+            CteSourceQuery::Join(query) => {
+                let tables = [&query.left, &query.right]
+                    .into_iter()
+                    .chain(query.steps.iter().map(|step| &step.table));
+                let paths = tables
+                    .map(|table| {
+                        cte_paths
+                            .get(&table.to_ascii_lowercase())
+                            .cloned()
+                            .map(Ok)
+                            .unwrap_or_else(|| crate::database::select_source(database, table))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                execute_selected_join(query, &paths, &mut cte_output)
+                    .map_err(|error| error.to_string())?;
+            }
+            CteSourceQuery::Union(query) => {
+                let branch_paths = query
+                    .branches()
+                    .iter()
+                    .map(|branch| {
+                        branch
+                            .source_tables()
+                            .into_iter()
+                            .map(|table| {
+                                cte_paths
+                                    .get(&table.to_ascii_lowercase())
+                                    .cloned()
+                                    .map(Ok)
+                                    .unwrap_or_else(|| {
+                                        crate::database::select_source(database, table)
+                                    })
+                            })
+                            .collect::<Result<Vec<_>, String>>()
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                execute_derived_union_select(query, &branch_paths, &mut cte_output)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
         let temporary = materialize_cte_part(&cte_output, source.columns())?;
         cte_paths.insert(source.name().to_ascii_lowercase(), temporary.path.clone());
         temporary_parts.push(temporary);
@@ -490,6 +523,54 @@ pub(super) fn run_derived_grouped_select(
     let mut output = open_output(output_path.as_deref())?;
     let result = execute_formatted_join(
         |mut writer| execute_derived_grouped_select(plan, &inner_paths, &mut writer),
+        format,
+        output.as_mut(),
+    );
+    if time {
+        eprintln!(
+            "Elapsed: {:.3} ms",
+            started.elapsed().as_secs_f64() * 1000.0
+        );
+    }
+    if result.is_err() {
+        drop(output);
+        if let Some(path) = output_path {
+            let _ = std::fs::remove_file(path);
+        }
+    }
+    result.map_err(|error| error.to_string())
+}
+
+pub(super) fn run_derived_union_select(
+    database: &Path,
+    plan: &DerivedUnionSelect,
+    format: SqlOutputFormat,
+    output_path: Option<PathBuf>,
+    time: bool,
+    read_lock: Option<rusthouse_storage::DatabaseLock>,
+) -> Result<(), String> {
+    let _lock = if read_lock.is_some() {
+        read_lock
+    } else if database.is_dir() {
+        Some(crate::database::read_lock(database)?)
+    } else {
+        None
+    };
+    let branch_paths = plan
+        .branches()
+        .iter()
+        .map(|branch| {
+            branch
+                .source_tables()
+                .into_iter()
+                .map(|table| crate::database::select_source(database, table))
+                .collect::<Result<Vec<_>, _>>()
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let started = std::time::Instant::now();
+    let mut output = open_output(output_path.as_deref())?;
+    let result = execute_formatted_join(
+        |mut writer| execute_derived_union_select(plan, &branch_paths, &mut writer),
         format,
         output.as_mut(),
     );
