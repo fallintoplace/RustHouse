@@ -14,6 +14,17 @@ const MAX_OUTPUT_ROWS: usize = 131_072;
 fn invalid(message: &str) -> ExecutionError {
     ExecutionError::Invalid(message.into())
 }
+fn column_position(
+    columns: &[rusthouse_storage::Column],
+    name: &str,
+    error: &str,
+) -> Result<usize, ExecutionError> {
+    columns
+        .iter()
+        .position(|column| column.name == name)
+        .ok_or_else(|| invalid(error))
+}
+
 struct LimitedRows(Vec<u8>);
 impl Write for LimitedRows {
     fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
@@ -98,21 +109,13 @@ pub fn execute_cte_max_join<W: Write>(
 ) -> Result<(), ExecutionError> {
     let inner = inspect_query_source(inner_path)?;
     let outer = inspect_query_source(outer_path)?;
-    let inner_key = inner
-        .columns
-        .iter()
-        .position(|column| column.name == plan.group_column)
-        .ok_or_else(|| invalid("unknown CTE group key"))?;
+    let inner_key = column_position(&inner.columns, &plan.group_column, "unknown CTE group key")?;
     if inner.columns.iter().any(|column| {
         column.name != plan.group_column && column.name.eq_ignore_ascii_case(&plan.group_alias)
     }) {
         return Err(invalid("CTE group alias conflicts with an input column"));
     }
-    let outer_key = outer
-        .columns
-        .iter()
-        .position(|column| column.name == plan.outer_key)
-        .ok_or_else(|| invalid("unknown CTE JOIN key"))?;
+    let outer_key = column_position(&outer.columns, &plan.outer_key, "unknown CTE JOIN key")?;
     let kind = typed::base_type(&inner.columns[inner_key].data_type);
     if !integer(kind) || kind != typed::base_type(&outer.columns[outer_key].data_type) {
         return Err(invalid("CTE JOIN requires matching integer keys"));
@@ -138,11 +141,7 @@ pub fn execute_cte_max_join<W: Write>(
         if name == &plan.metric_alias {
             selected.push(None);
         } else {
-            let index = outer
-                .columns
-                .iter()
-                .position(|column| column.name == *name)
-                .ok_or_else(|| invalid("unknown CTE JOIN output column"))?;
+            let index = column_position(&outer.columns, name, "unknown CTE JOIN output column")?;
             projected.push(index);
             selected.push(Some(index));
         }
@@ -151,11 +150,7 @@ pub fn execute_cte_max_join<W: Write>(
         .order
         .as_ref()
         .map(|(name, desc, nulls)| {
-            let index = outer
-                .columns
-                .iter()
-                .position(|column| column.name == *name)
-                .ok_or_else(|| invalid("unknown CTE JOIN ORDER BY column"))?;
+            let index = column_position(&outer.columns, name, "unknown CTE JOIN ORDER BY column")?;
             projected.push(index);
             Ok::<_, ExecutionError>((index, *desc, *nulls))
         })
