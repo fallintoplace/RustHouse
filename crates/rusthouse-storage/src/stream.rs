@@ -25,25 +25,35 @@ impl<R: Read + Seek> UInt64ColumnReader<R> {
             finished: false,
         }
     }
+    fn advance_block(&mut self) -> Option<Result<(), PartError>> {
+        // Recycle the consumed block allocation between decompressions.
+        let scratch = std::mem::take(&mut self.current);
+        match self.blocks.next_decoded_reusing(scratch) {
+            Some(Ok(decoded)) => {
+                self.current = decoded.data;
+                self.position = 0;
+                Some(Ok(()))
+            }
+            Some(Err(error)) => {
+                self.finished = true;
+                Some(Err(error))
+            }
+            None => {
+                self.finished = true;
+                None
+            }
+        }
+    }
+
     fn next_cross_block_value(&mut self) -> Option<Result<u64, PartError>> {
         let mut value = [0u8; 8];
         let mut filled = 0;
         while filled < value.len() {
             if self.position == self.current.len() {
-                // The previous block is fully consumed. Recycle its capacity
-                // instead of allocating a fresh decoded Vec for each block.
-                let scratch = std::mem::take(&mut self.current);
-                match self.blocks.next_decoded_reusing(scratch) {
-                    Some(Ok(decoded)) => {
-                        self.current = decoded.data;
-                        self.position = 0;
-                    }
-                    Some(Err(error)) => {
-                        self.finished = true;
-                        return Some(Err(error));
-                    }
+                match self.advance_block() {
+                    Some(Ok(())) => {}
+                    Some(Err(error)) => return Some(Err(error)),
                     None => {
-                        self.finished = true;
                         return if filled == 0 {
                             None
                         } else {
