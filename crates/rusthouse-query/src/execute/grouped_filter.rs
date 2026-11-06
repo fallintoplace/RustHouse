@@ -28,9 +28,9 @@ fn bind_literal(
     types: &HashMap<String, String>,
     literal: &str,
 ) -> Result<typed::Cell, ExecutionError> {
-    let data_type = types.get(name).ok_or_else(|| {
-        ExecutionError::Invalid(format!("unknown grouped filter column: {name}"))
-    })?;
+    let data_type = types
+        .get(name)
+        .ok_or_else(|| ExecutionError::Invalid(format!("unknown grouped filter column: {name}")))?;
     typed::parse_literal(data_type, literal)
 }
 
