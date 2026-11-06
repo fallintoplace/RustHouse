@@ -4,6 +4,7 @@
 mod avg_merge;
 mod dispatch;
 mod distinct_merge;
+mod handler;
 mod multi_bitwise;
 mod multi_count_column;
 mod multi_countif;
@@ -17,7 +18,6 @@ mod rms_merge;
 mod sorted_merge;
 mod text_merge;
 mod uuid_extrema;
-mod handler;
 pub use handler::handle;
 use self::distinct_merge::*;
 
