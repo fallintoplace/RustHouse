@@ -71,27 +71,26 @@ pub struct Cluster {
     peers: Vec<Peer>,
 }
 
+fn has_duplicate_peers(peers: &[Peer]) -> bool {
+    if peers.len() <= 8 {
+        peers.iter().enumerate().any(|(index, peer)| {
+            peers[..index]
+                .iter()
+                .any(|other| other.address() == peer.address())
+        })
+    } else {
+        let mut seen = HashSet::with_capacity(peers.len());
+        peers.iter().any(|peer| !seen.insert(peer.address()))
+    }
+}
+
 impl Cluster {
     pub fn new(peers: Vec<Peer>) -> Result<Self, &'static str> {
         if peers.len() > MAX_PEERS {
             return Err("too many peers (maximum 32)");
         }
-        if peers.len() <= 8 {
-            for (index, peer) in peers.iter().enumerate() {
-                if peers[..index]
-                    .iter()
-                    .any(|other| other.address() == peer.address())
-                {
-                    return Err("duplicate peer");
-                }
-            }
-        } else {
-            let mut seen_addresses = HashSet::with_capacity(peers.len());
-            for peer in &peers {
-                if !seen_addresses.insert(peer.address()) {
-                    return Err("duplicate peer");
-                }
-            }
+        if has_duplicate_peers(&peers) {
+            return Err("duplicate peer");
         }
         Ok(Self { peers })
     }
