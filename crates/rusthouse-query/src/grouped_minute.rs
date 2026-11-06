@@ -10,6 +10,11 @@ pub struct GroupedMinute {
 fn expression(tokens: &[Token], i: usize, column: &str) -> bool {
     matches!(tokens.get(i..i+6), Some([Token::Word(name), Token::LParen, Token::String(unit), Token::Comma, Token::Word(col), Token::RParen]) if name.eq_ignore_ascii_case("DATE_TRUNC") && unit.eq_ignore_ascii_case("minute") && col == column)
 }
+fn clause_by_at(tokens: &[Token], index: usize, keyword: &str) -> bool {
+    matches!(tokens.get(index), Some(Token::Word(word)) if word.eq_ignore_ascii_case(keyword))
+        && matches!(tokens.get(index + 1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY"))
+}
+
 pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError> {
     let (column, label) = match tokens.as_slice() {
         [
@@ -42,18 +47,10 @@ pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError
         match token {
             Token::LParen => depth += 1,
             Token::RParen => depth = depth.saturating_sub(1),
-            Token::Word(word)
-                if depth == 0
-                    && word.eq_ignore_ascii_case("GROUP")
-                    && matches!(tokens.get(i+1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
-            {
+            Token::Word(_) if depth == 0 && clause_by_at(&tokens, i, "GROUP") => {
                 group = Some(i + 2)
             }
-            Token::Word(word)
-                if depth == 0
-                    && word.eq_ignore_ascii_case("ORDER")
-                    && matches!(tokens.get(i+1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
-            {
+            Token::Word(_) if depth == 0 && clause_by_at(&tokens, i, "ORDER") => {
                 order = Some(i + 2)
             }
             _ => {}
