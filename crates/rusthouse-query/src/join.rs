@@ -20,6 +20,7 @@ pub(crate) const MAX_STREAM_JOIN_BUILD_ROWS: u64 = 262_144;
 pub(crate) const MAX_JOIN_RESULT_ROWS: usize = 131_072;
 pub(crate) const MAX_JOIN_BUILD_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_JOIN_CHAIN_BYTES: usize = 128 * 1024 * 1024;
+const MAX_JOIN_GROUPED_CASE_METRICS: usize = 32;
 
 use self::syntax::*;
 pub use correlated::{
@@ -41,9 +42,10 @@ pub use derived_count::{
 pub(crate) use derived_group::DerivedGroupedFilter;
 pub(crate) use derived_group::DerivedGroupedOrderKey;
 pub use derived_group::{
-    DerivedColumn, DerivedGroupedJoin, DerivedGroupedSelect, DerivedUnionJoin, has_derived_union,
-    parse_derived_grouped_join_with_schema, parse_derived_grouped_select_with_schema,
-    parse_derived_union_join_with_schema,
+    DerivedColumn, DerivedGroupedJoin, DerivedGroupedSelect, DerivedUnionJoin, DerivedUnionSelect,
+    DerivedUnionSelectBranch, has_derived_union, parse_derived_grouped_join_with_schema,
+    parse_derived_grouped_select_with_schema, parse_derived_union_join_with_schema,
+    parse_derived_union_select_with_schema,
 };
 pub use derived_sum::parse_derived_join_sum_with_schema;
 pub(crate) use exists_lookup::JoinExistsLookupPair;
@@ -105,6 +107,13 @@ impl JoinColumn {
         }
     }
 
+    fn scalar_order(index: usize) -> Self {
+        Self {
+            relation: String::new(),
+            name: format!("#scalar:{index}"),
+        }
+    }
+
     pub(crate) fn is_count_order(&self) -> bool {
         self.relation.is_empty() && self.name == "#count"
     }
@@ -132,6 +141,13 @@ impl JoinColumn {
 
     pub(crate) fn is_window_ratio_order(&self) -> bool {
         self.relation.is_empty() && self.name == "#window_ratio"
+    }
+
+    pub(crate) fn scalar_order_index(&self) -> Option<usize> {
+        self.relation
+            .is_empty()
+            .then(|| self.name.strip_prefix("#scalar:")?.parse().ok())
+            .flatten()
     }
 }
 
@@ -412,9 +428,41 @@ fn grouped_output_alias_exists(
 }
 
 fn scalar_projection_ahead(parser: &Parser) -> bool {
+    if matches!(
+        (
+            parser.tokens.get(parser.index),
+            parser.tokens.get(parser.index + 1),
+            parser.tokens.get(parser.index + 2)
+        ),
+        (
+            Some(Token::Word(_) | Token::QuotedWord(_)),
+            Some(Token::Dot),
+            Some(Token::Star)
+        )
+    ) {
+        return false;
+    }
     match parser.tokens.get(parser.index) {
-        Some(Token::LParen | Token::Plus | Token::Minus) => return true,
+        Some(Token::LParen | Token::Plus | Token::Minus | Token::String(_)) => return true,
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE") => return true,
+        Some(Token::Word(word))
+            if word.eq_ignore_ascii_case("CONCAT")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            return true;
+        }
+        Some(Token::Word(word))
+            if word.eq_ignore_ascii_case("SUBSTRING")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            return true;
+        }
+        Some(Token::Word(word))
+            if word.eq_ignore_ascii_case("ROUND")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            return true;
+        }
         _ => {}
     }
 
@@ -434,6 +482,36 @@ fn scalar_projection_ahead(parser: &Parser) -> bool {
         }
     }
     false
+}
+
+fn implicit_scalar_projection_alias(expression: &crate::ScalarExpr) -> String {
+    match expression {
+        crate::ScalarExpr::Round { value, precision }
+            if let crate::ScalarExpr::Divide(left, right) = value.as_ref() =>
+        {
+            format!(
+                "round(({} / {}), {precision})",
+                crate::multi_aggregate::render_expr(left),
+                crate::multi_aggregate::render_expr(right)
+            )
+        }
+        crate::ScalarExpr::TextSubstring {
+            value,
+            start,
+            length,
+        } => {
+            let mut alias = format!(
+                "\"substring\"({}, {start}",
+                crate::multi_aggregate::render_expr(value)
+            );
+            if let Some(length) = length {
+                alias.push_str(&format!(", {length}"));
+            }
+            alias.push(')');
+            alias
+        }
+        _ => crate::multi_aggregate::render_expr(expression),
+    }
 }
 
 pub(crate) fn encode_qualified_expression_tokens(tokens: &[Token]) -> (Vec<Token>, Vec<usize>) {
@@ -861,6 +939,10 @@ fn numeric_join_expression(expression: &crate::ScalarExpr) -> bool {
         | crate::ScalarExpr::TextCompare { .. }
         | crate::ScalarExpr::TextLike { .. }
         | crate::ScalarExpr::IsNull { .. } => true,
+        crate::ScalarExpr::TextLiteral(_)
+        | crate::ScalarExpr::TextConcat(_)
+        | crate::ScalarExpr::TextSubstring { .. } => false,
+        crate::ScalarExpr::Round { value, .. } => numeric_join_expression(value),
         crate::ScalarExpr::Case {
             branches,
             else_expr,
@@ -1393,10 +1475,10 @@ fn parse_global_case_metrics(
     metrics: &mut Vec<(crate::GroupedFilter, GroupedCaseValue, String)>,
 ) -> Result<(), ParseError> {
     loop {
-        if metrics.len() == 8 {
-            return Err(ParseError(
-                "JOIN supports at most 8 grouped CASE metrics".into(),
-            ));
+        if metrics.len() >= MAX_JOIN_GROUPED_CASE_METRICS {
+            return Err(ParseError(format!(
+                "JOIN supports at most {MAX_JOIN_GROUPED_CASE_METRICS} grouped CASE metrics"
+            )));
         }
         if !parser.keyword("SUM") || !parser.take(Token::LParen) {
             return Err(ParseError("global JOIN CASE expects SUM(CASE ...)".into()));
@@ -1954,7 +2036,7 @@ fn parse_join_tokens_internal(
                 parser.index += consumed;
                 let alias = parser
                     .select_output_alias()?
-                    .ok_or_else(|| ParseError("JOIN scalar projection requires an alias".into()))?;
+                    .unwrap_or_else(|| implicit_scalar_projection_alias(&expression));
                 let index = scalar_projections.len();
                 scalar_projections.push(JoinScalarProjection { expression, alias });
                 projection_order.push(JoinProjectionOrder::Scalar(index));
@@ -2086,10 +2168,10 @@ fn parse_join_tokens_internal(
                     break;
                 }
                 loop {
-                    if grouped_case_counts.len() == 8 {
-                        return Err(ParseError(
-                            "JOIN supports at most 8 grouped CASE metrics".into(),
-                        ));
+                    if grouped_case_counts.len() >= MAX_JOIN_GROUPED_CASE_METRICS {
+                        return Err(ParseError(format!(
+                            "JOIN supports at most {MAX_JOIN_GROUPED_CASE_METRICS} grouped CASE metrics"
+                        )));
                     }
                     if !parser.take(Token::LParen) {
                         return Err(ParseError("JOIN SUM requires '('".into()));
@@ -2545,9 +2627,9 @@ fn parse_join_tokens_internal(
     let mut in_subquery = None;
     if parser.keyword("WHERE") {
         let where_tokens = parser.tokens[parser.index..].iter().take_while(|token| !matches!(token, Token::Word(word) if ["GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))).collect::<Vec<_>>();
-        let chained_boolean = kind == JoinType::Inner
-            && steps.iter().all(|step| step.kind == JoinType::Inner)
-            && where_tokens.iter().any(|token| matches!(token, Token::Word(word) if ["LIKE", "ILIKE", "OR", "BETWEEN", "IN", "CASE"].iter().any(|keyword| word.eq_ignore_ascii_case(keyword))))
+        let boolean_filter = where_tokens
+            .iter()
+            .any(|token| matches!(token, Token::Word(word) if ["LIKE", "ILIKE", "OR", "BETWEEN", "IN", "CASE"].iter().any(|keyword| word.eq_ignore_ascii_case(keyword))))
             && !where_tokens.iter().any(|token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("SELECT")));
         let scalar_expression_filter = where_tokens
             .iter()
@@ -2571,7 +2653,7 @@ fn parse_join_tokens_internal(
             };
         let complex = scalar_expression_filter
             || grouped_distinct.is_some()
-            || chained_boolean
+            || boolean_filter
             || where_tokens.iter().any(|token| {
                 matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("BETWEEN"))
             })
@@ -2669,7 +2751,20 @@ fn parse_join_tokens_internal(
                             let inner = crate::parse_select_tokens(
                                 parser.tokens[start..parser.index - 1].to_vec(),
                             )?;
-                            if !inner.hidden_aggregate
+                            let supported_projection = inner.hidden_aggregate
+                                && matches!(
+                                    &inner.projection,
+                                    crate::Projection::GroupedAggregate {
+                                        function: crate::AggregateFunction::Sum,
+                                        ..
+                                    }
+                                )
+                                || !inner.hidden_aggregate
+                                    && matches!(
+                                        &inner.projection,
+                                        crate::Projection::Columns(columns) if columns.len() == 1
+                                    );
+                            if !supported_projection
                                 || !matches!(inner.source, Some(crate::Source::Table(_)))
                                 || inner
                                     .predicates
@@ -2982,6 +3077,30 @@ fn parse_join_tokens_internal(
                 ))
                 && matches!(parser.tokens.get(parser.index), Some(Token::Word(name)) if name.eq_ignore_ascii_case("SUM"))
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen);
+            let next_scalar_expression_order = scalar_projection_ahead(&parser).then(|| {
+                let (encoded, original_ends) =
+                    encode_qualified_expression_tokens(&parser.tokens[parser.index..]);
+                let mut expression_parser = Parser {
+                    tokens: encoded,
+                    index: 0,
+                };
+                let expression =
+                    crate::expression::parse_expression_tokens(&mut expression_parser).ok()?;
+                if expression_parser.index == 0 {
+                    return None;
+                }
+                let scalar_index = scalar_projections
+                    .iter()
+                    .position(|projection| projection.expression == expression)?;
+                let consumed = original_ends.get(expression_parser.index - 1).copied()?;
+                Some((scalar_index, consumed))
+            });
+            let next_scalar_expression_order = next_scalar_expression_order.flatten();
+            let next_scalar_alias_order = scalar_projections.iter().position(|projection| {
+                matches!(parser.tokens.get(parser.index), Some(Token::Word(name) | Token::QuotedAlias(name))
+                    if name.eq_ignore_ascii_case(&projection.alias))
+                    && !matches!(parser.tokens.get(parser.index + 1), Some(Token::Dot | Token::LParen))
+            });
             let scalar_count_distinct_order =
                 !scalar_aggregates.is_empty() && parser.keyword("COUNT");
             let key = if scalar_count_distinct_order {
@@ -3033,6 +3152,9 @@ fn parse_join_tokens_internal(
             } else if next_is_window_ratio_alias {
                 parser.index += 1;
                 JoinColumn::window_ratio_order()
+            } else if let Some(index) = next_scalar_alias_order {
+                parser.index += 1;
+                JoinColumn::scalar_order(index)
             } else if next_is_count_alias {
                 parser.index += 1;
                 JoinColumn::count_order()
@@ -3126,6 +3248,36 @@ fn parse_join_tokens_internal(
                     .and_then(|columns| columns.get(position - 1))
                     .cloned()
                     .ok_or_else(|| ParseError("JOIN ORDER BY position is out of range".into()))?
+            } else if aggregate.is_none()
+                && !grouped_count_projection
+                && grouped_sum.is_none()
+                && grouped_case_counts.is_empty()
+                && !grouped_rollup
+                && matches!(parser.tokens.get(parser.index), Some(Token::Number(_)))
+            {
+                let position = parser
+                    .number()?
+                    .parse::<usize>()
+                    .map_err(|_| ParseError("JOIN ORDER BY position is too large".into()))?;
+                if position == 0 {
+                    return Err(ParseError("JOIN ORDER BY positions start at 1".into()));
+                }
+                match projection_order.get(position - 1) {
+                    Some(JoinProjectionOrder::Column(index)) => columns
+                        .as_ref()
+                        .and_then(|columns| columns.get(*index))
+                        .cloned()
+                        .ok_or_else(|| {
+                            ParseError("JOIN ORDER BY position is out of range".into())
+                        })?,
+                    Some(JoinProjectionOrder::Scalar(index)) => JoinColumn::scalar_order(*index),
+                    None => {
+                        return Err(ParseError("JOIN ORDER BY position is out of range".into()));
+                    }
+                }
+            } else if let Some((index, consumed)) = next_scalar_expression_order {
+                parser.index += consumed;
+                JoinColumn::scalar_order(index)
             } else {
                 let mut key = projected(&mut parser)?;
                 if key.name == "*" {
@@ -3490,6 +3642,7 @@ fn parse_join_tokens_internal(
         .iter()
         .any(|(_, value, _)| !matches!(value, GroupedCaseValue::Count))
         && steps.is_empty()
+        && kind != JoinType::Inner
     {
         return Err(ParseError(
             "conditional numeric SUM requires an INNER join chain".into(),
@@ -3552,13 +3705,30 @@ fn parse_join_tokens_internal(
             "JOIN ON LIKE requires grouped LEFT JOIN COUNT(column)".into(),
         ));
     }
-    if (grouped_sum.is_some()
-        || grouped_min.is_some()
+    let grouped_sum_outer_chain = grouped_sum.is_some()
+        && grouped_count_projection
+        && columns.as_ref().is_some_and(|keys| !keys.is_empty())
+        && group_by.is_some()
+        && matches!(kind, JoinType::Inner | JoinType::Left)
+        && steps
+            .iter()
+            .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left));
+    let grouped_case_inner_chain = !grouped_case_counts.is_empty()
+        && grouped_count_projection
+        && columns.as_ref().is_some_and(|keys| !keys.is_empty())
+        && group_by.is_some()
+        && kind == JoinType::Inner
+        && steps.iter().all(|step| step.kind == JoinType::Inner);
+    if (grouped_min.is_some()
         || !grouped_max_metrics.is_empty()
-        || grouped_formula.is_some())
+        || grouped_formula.is_some()
+        || (grouped_sum.is_some() && !grouped_sum_outer_chain))
         && (kind != JoinType::Inner || steps.iter().any(|step| step.kind != JoinType::Inner))
     {
-        return Err(ParseError("grouped SUM or MIN requires INNER joins".into()));
+        return Err(ParseError(
+            "grouped SUM requires a keyed INNER or LEFT join chain; grouped MIN/MAX requires INNER joins"
+                .into(),
+        ));
     }
     if !grouped_key_aliases.is_empty() {
         let simple_projection = !grouped_count_projection
@@ -3570,11 +3740,17 @@ fn parse_join_tokens_internal(
             && grouped_min.is_none()
             && !grouped_keys_only
             && group_by.is_none();
+        let simple_projection_outer_chain = simple_projection
+            && matches!(kind, JoinType::Inner | JoinType::Left)
+            && steps
+                .iter()
+                .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left));
         if !(grouped_count_projection || simple_projection)
-            || kind != JoinType::Inner
-            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || (!(grouped_sum_outer_chain || simple_projection_outer_chain)
+                && (kind != JoinType::Inner
+                    || steps.iter().any(|step| step.kind != JoinType::Inner)))
             || grouped_count_column.is_some()
-            || !grouped_case_counts.is_empty()
+            || (!grouped_case_counts.is_empty() && !grouped_case_inner_chain)
         {
             return Err(ParseError(
                 "JOIN key aliases require a simple or grouped INNER join".into(),
@@ -3713,11 +3889,19 @@ fn parse_join_tokens_internal(
             ));
         }
     }
-    let grouped_execution_keys = if grouped_window_average.is_some() {
-        group_by.clone().unwrap_or_default()
-    } else {
-        Vec::new()
-    };
+    let groups_include_unprojected_keys = grouped_sum.is_some()
+        && !steps.is_empty()
+        && group_by.as_ref().is_some_and(|groups| {
+            columns
+                .as_ref()
+                .is_some_and(|projected| groups.iter().any(|key| !projected.contains(key)))
+        });
+    let grouped_execution_keys =
+        if grouped_window_average.is_some() || groups_include_unprojected_keys {
+            group_by.clone().unwrap_or_default()
+        } else {
+            Vec::new()
+        };
     let grouped_count = if grouped_count_projection {
         let projected_keys = columns
             .as_ref()
@@ -3774,7 +3958,7 @@ fn parse_join_tokens_internal(
                 || (global_case_aggregate && kind == JoinType::Full && steps.is_empty()));
         if (!matches!(kind, JoinType::Inner | JoinType::Left | JoinType::Full)
             || (kind == JoinType::Full && !grouped_case_outer_join))
-            || (!grouped_case_outer_join
+            || (!(grouped_case_outer_join || grouped_sum_outer_chain)
                 && ((projected_keys.len() > 1 && kind != JoinType::Inner)
                     || (!steps.is_empty()
                         && (kind != JoinType::Inner
@@ -3816,7 +4000,10 @@ fn parse_join_tokens_internal(
         let supported = if subquery.negated {
             grouped_distinct.is_some() && scalar_where.is_some()
         } else {
-            !steps.is_empty() && grouped_sum.is_some() && scalar_where.is_none()
+            !steps.is_empty()
+                && grouped_sum.is_some()
+                && scalar_where.is_none()
+                && grouped_count_projection
         };
         if !supported
             || kind != JoinType::Inner
@@ -3868,7 +4055,11 @@ fn parse_join_tokens_internal(
         let projected_columns = columns
             .as_ref()
             .ok_or_else(|| ParseError("JOIN scalar projections require row output".into()))?;
-        if grouped_count_projection
+        let grouped_case_literals = grouped_case_inner_chain
+            && scalar_projections.iter().all(|projection| {
+                matches!(projection.expression, crate::ScalarExpr::TextLiteral(_))
+            });
+        if (grouped_count_projection && !grouped_case_literals)
             || aggregate.is_some()
             || !scalar_aggregates.is_empty()
             || scalar_sum.is_some()
@@ -5074,5 +5265,160 @@ mod nested_implicit_join_tests {
             .unwrap()
         );
         assert!(has_implicit_join("SELECT a.id, SUM(a.v) FROM a JOIN b ON a.id = b.id GROUP BY a.id HAVING SUM(a.v) > (SELECT SUM(v * 1) FROM c, d").is_err());
+    }
+}
+
+#[cfg(test)]
+mod scalar_order_projection_tests {
+    use super::*;
+
+    #[test]
+    fn names_unaliased_rounded_divisions_like_sql_expressions() {
+        let query = parse_join(
+            "SELECT round(sat_sales1 / sat_sales2, 2) FROM weekly a JOIN weekly b ON a.week = b.week",
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            query.scalar_projections[0].alias,
+            "round((sat_sales1 / sat_sales2), 2)"
+        );
+    }
+
+    #[test]
+    fn orders_by_a_selected_substring_expression() {
+        let query = parse_join(
+            "SELECT a.id, SUBSTRING(a.name, 1, 3) AS short_name FROM a JOIN b ON a.id = b.id ORDER BY SUBSTRING(a.name, 1, 3) DESC",
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(query.scalar_projections[0].alias, "short_name");
+        assert_eq!(query.order_by[0].0.scalar_order_index(), Some(0));
+        assert!(query.order_by[0].1);
+    }
+
+    #[test]
+    fn parses_tpcds_q79_outer_projection_and_ordering() {
+        let query = parse_join_with_schema(
+            "SELECT c_last_name, c_first_name, SUBSTRING(s_city, 1, 30), ss_ticket_number, amt, profit FROM dn, customer, customer_address current_addr WHERE ss_customer_sk = c_customer_sk AND customer.c_current_addr_sk = current_addr.ca_address_sk AND current_addr.ca_city <> bought_city ORDER BY c_last_name NULLS FIRST, c_first_name NULLS FIRST, SUBSTRING(s_city, 1, 30) NULLS FIRST, profit NULLS FIRST, ss_ticket_number LIMIT 100",
+            |table| {
+                let columns: &[&str] = match table {
+                    "dn" => &[
+                        "ss_customer_sk",
+                        "ss_ticket_number",
+                        "amt",
+                        "profit",
+                        "bought_city",
+                        "s_city",
+                    ],
+                    "customer" => &["c_customer_sk", "c_current_addr_sk", "c_last_name", "c_first_name"],
+                    "customer_address" => &["ca_address_sk", "ca_city"],
+                    _ => return Err(ParseError(format!("unknown test table {table}"))),
+                };
+                Ok(columns.iter().map(|column| (*column).to_owned()).collect())
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(query.scalar_projections.len(), 1);
+        assert_eq!(query.order_by[2].0.scalar_order_index(), Some(0));
+    }
+}
+
+#[cfg(test)]
+mod tpcds_derived_query_tests {
+    use super::*;
+
+    fn q79_schema(table: &str) -> Result<Vec<DerivedColumn>, ParseError> {
+        let names: &[&str] = match table {
+            "store_sales" => &[
+                "ss_ticket_number",
+                "ss_customer_sk",
+                "ss_addr_sk",
+                "ss_sold_date_sk",
+                "ss_store_sk",
+                "ss_hdemo_sk",
+                "ss_coupon_amt",
+                "ss_net_profit",
+            ],
+            "date_dim" => &["d_date_sk", "d_dow", "d_year"],
+            "store" => &["s_store_sk", "s_city", "s_number_employees"],
+            "household_demographics" => &["hd_demo_sk", "hd_dep_count", "hd_vehicle_count"],
+            "customer" => &[
+                "c_customer_sk",
+                "c_last_name",
+                "c_first_name",
+                "c_current_addr_sk",
+            ],
+            "customer_address" => &["ca_address_sk", "ca_city"],
+            _ => return Err(ParseError(format!("unknown test table {table}"))),
+        };
+        Ok(names
+            .iter()
+            .map(|name| DerivedColumn {
+                name: (*name).into(),
+                data_type: "String".into(),
+            })
+            .collect())
+    }
+
+    #[test]
+    fn parses_tpcds_q79_derived_aggregate_and_substring_order() {
+        let sql = r#"
+            SELECT c_last_name, c_first_name, SUBSTRING(s_city, 1, 30),
+                   ss_ticket_number, amt, profit
+            FROM (
+                SELECT ss_ticket_number, ss_customer_sk, store.s_city,
+                       SUM(ss_coupon_amt) AS amt, SUM(ss_net_profit) AS profit
+                FROM store_sales, date_dim, store, household_demographics
+                WHERE store_sales.ss_sold_date_sk = date_dim.d_date_sk
+                  AND store_sales.ss_store_sk = store.s_store_sk
+                  AND store_sales.ss_hdemo_sk = household_demographics.hd_demo_sk
+                  AND (household_demographics.hd_dep_count = 6
+                       OR household_demographics.hd_vehicle_count > 2)
+                  AND date_dim.d_dow = 1
+                  AND date_dim.d_year IN (1999, 1999 + 1, 1999 + 2)
+                  AND store.s_number_employees BETWEEN 200 AND 295
+                GROUP BY ss_ticket_number, ss_customer_sk, ss_addr_sk, store.s_city
+            ) ms, customer
+            WHERE ss_customer_sk = c_customer_sk
+            ORDER BY c_last_name NULLS FIRST, c_first_name NULLS FIRST,
+                     SUBSTRING(s_city, 1, 30) NULLS FIRST, profit NULLS FIRST,
+                     ss_ticket_number
+            LIMIT 100
+        "#;
+
+        let sum = parse_derived_join_sum_with_schema(sql, |table| {
+            q79_schema(table).map(|columns| columns.into_iter().map(|column| column.name).collect())
+        });
+        assert!(matches!(sum, Ok(None)), "{sum:?}");
+
+        let count = parse_derived_join_count_with_schema(sql, |table| {
+            q79_schema(table).map(|columns| columns.into_iter().map(|column| column.name).collect())
+        });
+        assert!(matches!(count, Ok(None)), "{count:?}");
+
+        let grouped = parse_derived_grouped_join_with_schema(sql, q79_schema);
+        assert!(grouped.is_ok(), "{grouped:?}");
+        let grouped = grouped.unwrap();
+        assert!(grouped.is_some());
+        let grouped = grouped.unwrap();
+        assert_eq!(grouped.outer().scalar_projections.len(), 1);
+        assert_eq!(grouped.inner().grouped_execution_keys.len(), 4);
+        assert!(
+            grouped
+                .inner()
+                .grouped_execution_keys
+                .iter()
+                .any(|column| column.name == "ss_addr_sk")
+        );
+        assert_eq!(
+            grouped.outer().scalar_projections[0].alias,
+            "\"substring\"(s_city, 1, 30)"
+        );
+        assert_eq!(grouped.outer().order_by[2].0.scalar_order_index(), Some(0));
     }
 }
