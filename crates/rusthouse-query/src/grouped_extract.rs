@@ -7,12 +7,7 @@ pub struct GroupedExtractMinute {
     pub column: String,
     pub label: String,
 }
-fn valid_grouped_count(
-    projection: &Projection,
-    first: &str,
-    column: &str,
-    third: &str,
-) -> bool {
+fn valid_grouped_count(projection: &Projection, first: &str, column: &str, third: &str) -> bool {
     let expected = [first, column, third];
     match projection {
         Projection::GroupedMultiCount { columns } => {
