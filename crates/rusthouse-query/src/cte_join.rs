@@ -9,16 +9,24 @@ use super::cte_correlated_avg::CteOutputColumn;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CteMultiJoinSource {
     name: String,
-    query: JoinSelect,
+    query: CteSourceQuery,
     columns: Vec<CteOutputColumn>,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CteSourceQuery {
+    Join(Box<JoinSelect>),
+    Union(Box<crate::DerivedUnionSelect>),
+}
+
+type CteDefinitions = Vec<(String, String)>;
 
 impl CteMultiJoinSource {
     pub fn name(&self) -> &str {
         &self.name
     }
 
-    pub fn query(&self) -> &JoinSelect {
+    pub fn query(&self) -> &CteSourceQuery {
         &self.query
     }
 
@@ -88,7 +96,101 @@ fn render_tokens(tokens: &[Token]) -> String {
         .join(" ")
 }
 
-fn split_ctes(sql: &str) -> Result<Option<(Vec<(String, String)>, String)>, ParseError> {
+fn identifier_token(token: &Token) -> bool {
+    matches!(token, Token::Word(_) | Token::QuotedWord(_))
+}
+
+fn is_column_tokens(tokens: &[Token]) -> bool {
+    matches!(tokens, [name] if identifier_token(name))
+        || matches!(tokens, [relation, Token::Dot, name] if identifier_token(relation) && identifier_token(name))
+}
+
+fn has_column_offset_equality(tokens: &[Token]) -> bool {
+    for left_len in [1, 3] {
+        for right_len in [1, 3] {
+            let width = left_len + 1 + right_len + 2;
+            for comparison in tokens.windows(width) {
+                let right_start = left_len + 1;
+                if is_column_tokens(&comparison[..left_len])
+                    && comparison[left_len] == Token::Operator(crate::Operator::Eq)
+                    && is_column_tokens(&comparison[right_start..right_start + right_len])
+                    && matches!(
+                        comparison[right_start + right_len],
+                        Token::Plus | Token::Minus
+                    )
+                    && matches!(&comparison[right_start + right_len + 1], Token::Number(value) if value.bytes().all(|byte| byte.is_ascii_digit()))
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Use a bounded CROSS JOIN for a two-source offset equality that the key
+/// planner cannot normalize into a hash key. The WHERE expression still checks
+/// every candidate pair, and normal JOIN result limits remain in force.
+fn rewrite_offset_comma_join(sql: &str) -> Result<Option<String>, ParseError> {
+    let tokens = tokenize(sql)?;
+    let mut depth = 0usize;
+    let mut from = None;
+    let mut where_clause = None;
+    for (index, token) in tokens.iter().enumerate() {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("FROM") => {
+                from = Some(index);
+            }
+            Token::Word(word)
+                if depth == 0 && from.is_some() && word.eq_ignore_ascii_case("WHERE") =>
+            {
+                where_clause = Some(index);
+                break;
+            }
+            _ => {}
+        }
+    }
+    let (Some(from), Some(where_clause)) = (from, where_clause) else {
+        return Ok(None);
+    };
+    if !has_column_offset_equality(&tokens[where_clause + 1..]) {
+        return Ok(None);
+    }
+
+    depth = 0;
+    let mut comma = None;
+    for (index, token) in tokens.iter().enumerate().take(where_clause).skip(from + 1) {
+        match token {
+            Token::LParen => return Ok(None),
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Comma if depth == 0 => {
+                if comma.replace(index).is_some() {
+                    return Ok(None);
+                }
+            }
+            Token::Word(word)
+                if depth == 0
+                    && ["JOIN", "CROSS", "LEFT", "RIGHT", "FULL"]
+                        .iter()
+                        .any(|keyword| word.eq_ignore_ascii_case(keyword)) =>
+            {
+                return Ok(None);
+            }
+            _ => {}
+        }
+    }
+    let Some(comma) = comma else {
+        return Ok(None);
+    };
+    let mut rewritten = tokens[..comma].to_vec();
+    rewritten.extend([Token::Word("CROSS".into()), Token::Word("JOIN".into())]);
+    rewritten.extend_from_slice(&tokens[comma + 1..]);
+    Ok(Some(render_tokens(&rewritten)))
+}
+
+fn split_ctes(sql: &str) -> Result<Option<(CteDefinitions, String)>, ParseError> {
     let tokens = tokenize(sql)?;
     let mut parser = Parser { tokens, index: 0 };
     if !parser.keyword("WITH") {
@@ -638,6 +740,67 @@ fn output_schema(
     Ok(Some(columns))
 }
 
+fn union_output_schema(query: &crate::DerivedUnionSelect) -> Option<Vec<CteOutputColumn>> {
+    let input_columns = query.columns();
+    let selected = match &query.outer().projection {
+        crate::Projection::All => input_columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>(),
+        crate::Projection::Columns(selected) => selected.clone(),
+        _ => return None,
+    };
+    if selected.len() != input_columns.len()
+        || query.outer().rename.is_some()
+        || selected
+            .iter()
+            .zip(input_columns)
+            .any(|(selected, input)| !selected.eq_ignore_ascii_case(&input.name))
+    {
+        return None;
+    }
+    Some(
+        selected
+            .iter()
+            .zip(input_columns)
+            .map(|(name, input)| CteOutputColumn {
+                name: name.clone(),
+                data_type: input.data_type.clone(),
+            })
+            .collect(),
+    )
+}
+
+fn resolve_derived_columns(
+    table: &str,
+    sources: &[CteMultiJoinSource],
+    resolve: &mut impl FnMut(&str) -> Result<Vec<CteOutputColumn>, ParseError>,
+) -> Result<Vec<crate::DerivedColumn>, ParseError> {
+    if let Some(source) = sources
+        .iter()
+        .find(|source| source.name.eq_ignore_ascii_case(table))
+    {
+        Ok(source
+            .columns
+            .iter()
+            .map(|column| crate::DerivedColumn {
+                name: column.name.clone(),
+                data_type: column.data_type.clone(),
+            })
+            .collect())
+    } else {
+        resolve(table).map(|columns| {
+            columns
+                .into_iter()
+                .map(|column| crate::DerivedColumn {
+                    name: column.name,
+                    data_type: column.data_type,
+                })
+                .collect()
+        })
+    }
+}
+
 /// Parse one or more CTE JOIN plans followed by a supported JOIN query.
 pub fn parse_cte_multi_join_with_schema(
     sql: &str,
@@ -663,25 +826,48 @@ pub fn parse_cte_multi_join_with_schema(
                     .map(|columns| columns.into_iter().map(|column| column.name).collect())
             }
         });
-        let Ok(Some(query)) = parse_result else {
-            return Ok(None);
-        };
-        let schema_result = output_schema(&query, |table| {
-            if let Some(source) = sources
-                .iter()
-                .find(|source| source.name.eq_ignore_ascii_case(table))
-            {
-                Ok(source.columns.clone())
-            } else {
-                resolve(table)
+        if let Ok(Some(query)) = parse_result {
+            let schema_result = output_schema(&query, |table| {
+                if let Some(source) = sources
+                    .iter()
+                    .find(|source| source.name.eq_ignore_ascii_case(table))
+                {
+                    Ok(source.columns.clone())
+                } else {
+                    resolve(table)
+                }
+            });
+            if let Ok(Some(columns)) = schema_result {
+                sources.push(CteMultiJoinSource {
+                    name,
+                    query: CteSourceQuery::Join(Box::new(query)),
+                    columns,
+                });
+                continue;
             }
-        });
-        let Ok(Some(columns)) = schema_result else {
+        }
+
+        let direct_union = crate::parse_derived_union_select_with_schema(&body, |table| {
+            resolve_derived_columns(table, &sources, &mut resolve)
+        })?;
+        let query = if let Some(query) = direct_union {
+            query
+        } else {
+            let wrapped = format!("SELECT * FROM ({body}) __cte_union");
+            let union_result = crate::parse_derived_union_select_with_schema(&wrapped, |table| {
+                resolve_derived_columns(table, &sources, &mut resolve)
+            })?;
+            let Some(query) = union_result else {
+                return Ok(None);
+            };
+            query
+        };
+        let Some(columns) = union_output_schema(&query) else {
             return Ok(None);
         };
         sources.push(CteMultiJoinSource {
             name,
-            query,
+            query: CteSourceQuery::Union(Box::new(query)),
             columns,
         });
     }
@@ -729,7 +915,7 @@ pub fn parse_cte_multi_join_with_schema(
             };
             sources.push(CteMultiJoinSource {
                 name,
-                query,
+                query: CteSourceQuery::Join(Box::new(query)),
                 columns,
             });
         }
@@ -750,12 +936,98 @@ pub fn parse_cte_multi_join_with_schema(
             resolve(table).map(|columns| columns.into_iter().map(|column| column.name).collect())
         }
     });
-    let Ok(Some(outer)) = parse_result else {
-        return Ok(None);
+    let outer = match parse_result {
+        Ok(Some(outer)) => outer,
+        Err(error) if error.0.contains("comma joins require a connected graph") => {
+            let Some(rewritten) = rewrite_offset_comma_join(&outer_sql)? else {
+                return Ok(None);
+            };
+            let Ok(Some(outer)) = parse_join_with_schema(&rewritten, |table| {
+                if let Some(source) = sources
+                    .iter()
+                    .find(|source| source.name.eq_ignore_ascii_case(table))
+                {
+                    Ok(source
+                        .columns
+                        .iter()
+                        .map(|column| column.name.clone())
+                        .collect())
+                } else {
+                    resolve(table)
+                        .map(|columns| columns.into_iter().map(|column| column.name).collect())
+                }
+            }) else {
+                return Ok(None);
+            };
+            outer
+        }
+        _ => return Ok(None),
     };
     if outer.limit.is_none() && outer.offset != 0 {
         return Ok(None);
     }
+
+    let mut needed = Vec::new();
+    for table in [&outer.left, &outer.right]
+        .into_iter()
+        .chain(outer.steps.iter().map(|step| &step.table))
+    {
+        if sources
+            .iter()
+            .any(|source| source.name.eq_ignore_ascii_case(table))
+            && !needed
+                .iter()
+                .any(|name: &String| name.eq_ignore_ascii_case(table))
+        {
+            needed.push(table.clone());
+        }
+    }
+    loop {
+        let before = needed.len();
+        for source in &sources {
+            if !needed
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&source.name))
+            {
+                continue;
+            }
+            let mut add = |table: &str| {
+                if sources.iter().any(|candidate| {
+                    candidate.name.eq_ignore_ascii_case(table)
+                        && !needed.iter().any(|name| name.eq_ignore_ascii_case(table))
+                }) {
+                    needed.push(table.to_owned());
+                }
+            };
+            match &source.query {
+                CteSourceQuery::Join(query) => {
+                    for table in [&query.left, &query.right]
+                        .into_iter()
+                        .chain(query.steps.iter().map(|step| &step.table))
+                    {
+                        add(table);
+                    }
+                }
+                CteSourceQuery::Union(query) => {
+                    for table in query
+                        .branches()
+                        .iter()
+                        .flat_map(|branch| branch.source_tables())
+                    {
+                        add(table);
+                    }
+                }
+            }
+        }
+        if needed.len() == before {
+            break;
+        }
+    }
+    sources.retain(|source| {
+        needed
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&source.name))
+    });
     Ok(Some(CteMultiJoin { sources, outer }))
 }
 
@@ -802,6 +1074,7 @@ mod tests {
                 ("cs_order_number", "Nullable(Int64)"),
                 ("cs_quantity", "Nullable(Int64)"),
                 ("cs_sold_date_sk", "Nullable(Int64)"),
+                ("cs_ext_sales_price", "Nullable(Float64)"),
                 ("cs_sales_price", "Nullable(Float64)"),
                 ("cs_wholesale_cost", "Nullable(Float64)"),
             ],
@@ -885,6 +1158,80 @@ mod tests {
         assert_eq!(
             plan.sources()[0].columns()[3].data_type,
             "Nullable(Float64)"
+        );
+    }
+
+    #[test]
+    fn materializes_union_all_cte_before_grouped_cte() {
+        let sql = "WITH combined AS (SELECT ws_sold_date_sk AS sold_date_sk, ws_ext_sales_price AS amount FROM web_sales UNION ALL SELECT cs_sold_date_sk AS sold_date_sk, cs_sales_price AS amount FROM catalog_sales), weekly AS (SELECT d_week_seq, SUM(combined.amount) AS total FROM combined, date_dim WHERE combined.sold_date_sk = d_date_sk GROUP BY d_week_seq) SELECT weekly.d_week_seq, weekly.total FROM weekly, date_dim WHERE weekly.d_week_seq = date_dim.d_week_seq LIMIT 5";
+        let plan = parse_cte_multi_join_with_schema(sql, schema)
+            .unwrap()
+            .expect("union CTE followed by grouped CTE");
+
+        assert_eq!(plan.sources().len(), 2);
+        let CteSourceQuery::Union(union) = plan.sources()[0].query() else {
+            panic!("first CTE is a materialized UNION ALL");
+        };
+        assert_eq!(union.branches().len(), 2);
+        assert_eq!(
+            plan.sources()[0]
+                .columns()
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            ["sold_date_sk", "amount"]
+        );
+        assert_eq!(
+            plan.sources()[0].columns()[1].data_type,
+            "Nullable(Float64)"
+        );
+        assert!(matches!(plan.sources()[1].query(), CteSourceQuery::Join(_)));
+    }
+
+    #[test]
+    fn materializes_union_cte_used_by_grouped_cte_and_two_offset_inputs() {
+        let sql = "WITH combined AS (SELECT ws_sold_date_sk AS sold_date_sk, ws_ext_sales_price AS sales_price FROM web_sales UNION ALL SELECT cs_sold_date_sk AS sold_date_sk, cs_ext_sales_price AS sales_price FROM catalog_sales), weekly AS (SELECT d_week_seq, SUM(CASE WHEN d_day_name = 'Sunday' THEN sales_price ELSE NULL END) AS sunday FROM combined, date_dim WHERE sold_date_sk = d_date_sk GROUP BY d_week_seq) SELECT first_week.d_week_seq, first_week.sunday / next_week.sunday AS ratio FROM (SELECT weekly.d_week_seq, weekly.sunday FROM weekly, date_dim WHERE date_dim.d_week_seq = weekly.d_week_seq AND d_year = 2001) first_week, (SELECT weekly.d_week_seq, weekly.sunday FROM weekly, date_dim WHERE date_dim.d_week_seq = weekly.d_week_seq AND d_year = 2002) next_week WHERE first_week.d_week_seq = next_week.d_week_seq - 53 ORDER BY first_week.d_week_seq";
+        let plan = parse_cte_multi_join_with_schema(sql, schema)
+            .unwrap()
+            .expect("offset-key derived CTE query");
+
+        assert_eq!(plan.sources().len(), 4);
+        assert_eq!(plan.sources()[0].name(), "combined");
+        assert_eq!(plan.sources()[1].name(), "weekly");
+        assert_eq!(plan.sources()[2].name(), "first_week");
+        assert_eq!(plan.sources()[3].name(), "next_week");
+        assert_eq!(plan.outer().kind, crate::JoinType::Inner);
+        assert!(plan.outer().keys.is_empty());
+    }
+
+    #[test]
+    fn materializes_grouped_union_cte_with_trailing_text_literal() {
+        let sql = "WITH yearly AS (SELECT d_year AS year_, SUM(ws_ext_sales_price) AS sales, 'w' AS channel FROM web_sales, date_dim WHERE ws_sold_date_sk = d_date_sk GROUP BY d_year UNION ALL SELECT d_year AS year_, SUM(cs_ext_sales_price) AS sales, 'c' AS channel FROM catalog_sales, date_dim WHERE cs_sold_date_sk = d_date_sk GROUP BY d_year) SELECT yearly.year_, yearly.sales, yearly.channel FROM yearly, date_dim WHERE yearly.year_ = date_dim.d_year ORDER BY 1 NULLS FIRST LIMIT 5";
+        let plan = parse_cte_multi_join_with_schema(sql, schema)
+            .unwrap()
+            .expect("grouped UNION ALL CTE with a trailing label");
+
+        let CteSourceQuery::Union(union) = plan.sources()[0].query() else {
+            panic!("grouped CTE is a materialized union");
+        };
+        assert_eq!(union.branches().len(), 2);
+        assert_eq!(plan.sources()[0].columns().len(), 3);
+        assert_eq!(plan.sources()[0].columns()[2].name, "channel");
+        assert_eq!(plan.sources()[0].columns()[2].data_type, "Nullable(String)");
+        assert!(matches!(
+            union.branches()[0],
+            crate::DerivedUnionSelectBranch::JoinWithTextLiterals { .. }
+        ));
+        assert_eq!(plan.outer().order_by[0].0.name, "year_");
+    }
+
+    #[test]
+    fn rejects_union_cte_that_projects_only_part_of_union_schema() {
+        let sql = "WITH combined AS (SELECT sold_date_sk FROM (SELECT ws_sold_date_sk AS sold_date_sk, ws_ext_sales_price AS amount FROM web_sales UNION ALL SELECT cs_sold_date_sk AS sold_date_sk, cs_sales_price AS amount FROM catalog_sales) u) SELECT combined.sold_date_sk, date_dim.d_week_seq FROM combined, date_dim WHERE combined.sold_date_sk = date_dim.d_date_sk LIMIT 5";
+        assert!(
+            parse_cte_multi_join_with_schema(sql, schema)
+                .unwrap()
+                .is_none()
         );
     }
 
@@ -979,12 +1326,12 @@ mod tests {
             plan.sources()[0].columns()[4].data_type,
             "Nullable(Float64)"
         );
-        assert_eq!(plan.sources()[0].query().kind, crate::JoinType::Left);
-        assert_eq!(plan.sources()[0].query().steps.len(), 1);
-        assert_eq!(
-            plan.sources()[0].query().steps[0].kind,
-            crate::JoinType::Inner
-        );
+        let CteSourceQuery::Join(query) = plan.sources()[0].query() else {
+            panic!("CTE uses a joined source");
+        };
+        assert_eq!(query.kind, crate::JoinType::Left);
+        assert_eq!(query.steps.len(), 1);
+        assert_eq!(query.steps[0].kind, crate::JoinType::Inner);
     }
 
     #[test]
@@ -1036,13 +1383,12 @@ mod tests {
     }
 
     #[test]
-    fn leaves_union_ctes_for_a_union_plan() {
+    fn does_not_materialize_an_unused_union_cte() {
         let sql = "WITH combined AS (SELECT ca_county FROM customer_address UNION ALL SELECT ca_county FROM customer_address) SELECT a.ca_county, b.ca_county FROM customer_address a, customer_address b WHERE a.ca_county = b.ca_county";
-        assert!(
-            parse_cte_multi_join_with_schema(sql, schema)
-                .unwrap()
-                .is_none()
-        );
+        let plan = parse_cte_multi_join_with_schema(sql, schema)
+            .unwrap()
+            .expect("outer join remains supported");
+        assert!(plan.sources().is_empty());
     }
 
     #[test]
@@ -1061,6 +1407,9 @@ mod tests {
                 .collect::<Vec<_>>(),
             ["customer_sk", "item_sk"]
         );
-        assert!(plan.sources()[0].query().grouped_keys_only);
+        assert!(matches!(
+            plan.sources()[0].query(),
+            CteSourceQuery::Join(query) if query.grouped_keys_only
+        ));
     }
 }

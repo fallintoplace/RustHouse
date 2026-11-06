@@ -43,7 +43,7 @@ pub(crate) use derived_group::DerivedGroupedFilter;
 pub(crate) use derived_group::DerivedGroupedOrderKey;
 pub use derived_group::{
     DerivedColumn, DerivedGroupedJoin, DerivedGroupedSelect, DerivedUnionJoin, DerivedUnionSelect,
-    has_derived_union, parse_derived_grouped_join_with_schema,
+    DerivedUnionSelectBranch, has_derived_union, parse_derived_grouped_join_with_schema,
     parse_derived_grouped_select_with_schema, parse_derived_union_join_with_schema,
     parse_derived_union_select_with_schema,
 };
@@ -486,6 +486,15 @@ fn scalar_projection_ahead(parser: &Parser) -> bool {
 
 fn implicit_scalar_projection_alias(expression: &crate::ScalarExpr) -> String {
     match expression {
+        crate::ScalarExpr::Round { value, precision }
+            if let crate::ScalarExpr::Divide(left, right) = value.as_ref() =>
+        {
+            format!(
+                "round(({} / {}), {precision})",
+                crate::multi_aggregate::render_expr(left),
+                crate::multi_aggregate::render_expr(right)
+            )
+        }
         crate::ScalarExpr::TextSubstring {
             value,
             start,
@@ -3239,6 +3248,33 @@ fn parse_join_tokens_internal(
                     .and_then(|columns| columns.get(position - 1))
                     .cloned()
                     .ok_or_else(|| ParseError("JOIN ORDER BY position is out of range".into()))?
+            } else if aggregate.is_none()
+                && !grouped_count_projection
+                && grouped_sum.is_none()
+                && grouped_case_counts.is_empty()
+                && !grouped_rollup
+                && matches!(parser.tokens.get(parser.index), Some(Token::Number(_)))
+            {
+                let position = parser
+                    .number()?
+                    .parse::<usize>()
+                    .map_err(|_| ParseError("JOIN ORDER BY position is too large".into()))?;
+                if position == 0 {
+                    return Err(ParseError("JOIN ORDER BY positions start at 1".into()));
+                }
+                match projection_order.get(position - 1) {
+                    Some(JoinProjectionOrder::Column(index)) => columns
+                        .as_ref()
+                        .and_then(|columns| columns.get(*index))
+                        .cloned()
+                        .ok_or_else(|| {
+                            ParseError("JOIN ORDER BY position is out of range".into())
+                        })?,
+                    Some(JoinProjectionOrder::Scalar(index)) => JoinColumn::scalar_order(*index),
+                    None => {
+                        return Err(ParseError("JOIN ORDER BY position is out of range".into()));
+                    }
+                }
             } else if let Some((index, consumed)) = next_scalar_expression_order {
                 parser.index += consumed;
                 JoinColumn::scalar_order(index)
@@ -5235,6 +5271,20 @@ mod nested_implicit_join_tests {
 #[cfg(test)]
 mod scalar_order_projection_tests {
     use super::*;
+
+    #[test]
+    fn names_unaliased_rounded_divisions_like_sql_expressions() {
+        let query = parse_join(
+            "SELECT round(sat_sales1 / sat_sales2, 2) FROM weekly a JOIN weekly b ON a.week = b.week",
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(
+            query.scalar_projections[0].alias,
+            "round((sat_sales1 / sat_sales2), 2)"
+        );
+    }
 
     #[test]
     fn orders_by_a_selected_substring_expression() {

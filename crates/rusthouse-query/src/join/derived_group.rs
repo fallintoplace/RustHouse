@@ -1185,14 +1185,41 @@ pub struct DerivedUnionJoin {
 /// A single-table aggregate over a bounded UNION ALL of joined projections.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DerivedUnionSelect {
-    pub(crate) branches: Vec<JoinSelect>,
+    pub(crate) branches: Vec<DerivedUnionSelectBranch>,
     pub(crate) outer: crate::Select,
     pub(crate) table: String,
     pub(crate) columns: Vec<DerivedColumn>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DerivedUnionSelectBranch {
+    Join(JoinSelect),
+    JoinWithTextLiterals {
+        query: JoinSelect,
+        literals: Vec<(String, String)>,
+    },
+    Select(crate::Select),
+}
+
+impl DerivedUnionSelectBranch {
+    pub fn source_tables(&self) -> Vec<&str> {
+        match self {
+            Self::Join(query) | Self::JoinWithTextLiterals { query, .. } => {
+                std::iter::once(query.left.as_str())
+                    .chain(std::iter::once(query.right.as_str()))
+                    .chain(query.steps.iter().map(|step| step.table.as_str()))
+                    .collect()
+            }
+            Self::Select(query) => match &query.source {
+                Some(crate::Source::Table(table)) => vec![table.as_str()],
+                _ => Vec::new(),
+            },
+        }
+    }
+}
+
 impl DerivedUnionSelect {
-    pub fn branches(&self) -> &[JoinSelect] {
+    pub fn branches(&self) -> &[DerivedUnionSelectBranch] {
         &self.branches
     }
 
@@ -1245,6 +1272,8 @@ pub fn has_derived_union(sql: &str) -> Result<bool, ParseError> {
 }
 
 type ParsedUnionBranches = (Vec<JoinSelect>, Vec<DerivedColumn>);
+type ParsedUnionSelectBranches = (Vec<DerivedUnionSelectBranch>, Vec<DerivedColumn>);
+type StrippedTextLiterals = (Vec<Token>, Vec<(String, String)>);
 
 fn parse_union_branches(
     branch_tokens: Vec<&[Token]>,
@@ -1432,6 +1461,241 @@ fn parse_union_branches(
     Ok(output_columns.map(|columns| (branches, columns)))
 }
 
+fn projection_column(tokens: &[Token]) -> Option<(String, String)> {
+    let (column_tokens, alias) = match tokens {
+        [column] => (std::slice::from_ref(column), None),
+        [column, Token::Word(as_word), alias] if as_word.eq_ignore_ascii_case("AS") => {
+            (std::slice::from_ref(column), Some(alias))
+        }
+        [column, alias] => (std::slice::from_ref(column), Some(alias)),
+        [_, Token::Dot, column] => (std::slice::from_ref(column), None),
+        [_, Token::Dot, column, Token::Word(as_word), alias]
+            if as_word.eq_ignore_ascii_case("AS") =>
+        {
+            (std::slice::from_ref(column), Some(alias))
+        }
+        [_, Token::Dot, column, alias] => (std::slice::from_ref(column), Some(alias)),
+        _ => return None,
+    };
+    let column = token_name(column_tokens.first()?)?.to_owned();
+    let output = alias
+        .and_then(token_name)
+        .map(str::to_owned)
+        .unwrap_or_else(|| column.clone());
+    Some((column, output))
+}
+
+fn parse_single_table_union_branch(
+    branch: &[Token],
+    resolve: &mut impl FnMut(&str) -> Result<Vec<DerivedColumn>, ParseError>,
+) -> Result<Option<(crate::Select, Vec<DerivedColumn>)>, ParseError> {
+    let Some(from) = find_top_level_clause(branch, 1, "FROM") else {
+        return Ok(None);
+    };
+    let projection_start = if matches!(branch.get(1), Some(Token::Word(word)) if ["DISTINCT", "ALL"].iter().any(|modifier| word.eq_ignore_ascii_case(modifier)))
+    {
+        2
+    } else {
+        1
+    };
+    let mut expressions = Vec::new();
+    let mut start = projection_start;
+    let mut depth = 0usize;
+    for (index, token) in branch.iter().enumerate().take(from).skip(projection_start) {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Comma if depth == 0 => {
+                if start == index {
+                    return Ok(None);
+                }
+                expressions.push(&branch[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if start >= from {
+        return Ok(None);
+    }
+    expressions.push(&branch[start..from]);
+
+    let Some(projections) = expressions
+        .iter()
+        .map(|expression| projection_column(expression))
+        .collect::<Option<Vec<_>>>()
+    else {
+        return Ok(None);
+    };
+
+    let mut rewritten = branch[..projection_start].to_vec();
+    for (index, (column, _)) in projections.iter().enumerate() {
+        if index > 0 {
+            rewritten.push(Token::Comma);
+        }
+        rewritten.push(Token::Word(column.clone()));
+    }
+    rewritten.extend_from_slice(&branch[from..]);
+    let query = match crate::parse_select(&render_tokens(&rewritten)) {
+        Ok(query) => query,
+        Err(_) => return Ok(None),
+    };
+    let crate::Projection::Columns(selected) = &query.projection else {
+        return Ok(None);
+    };
+    if selected.len() != projections.len() {
+        return Ok(None);
+    }
+    let Some(crate::Source::Table(table)) = query.source.as_ref() else {
+        return Ok(None);
+    };
+    let schema = resolve(table)?;
+    let mut output = Vec::with_capacity(projections.len());
+    for ((column, alias), selected) in projections.iter().zip(selected) {
+        if !column.eq_ignore_ascii_case(selected)
+            || output
+                .iter()
+                .any(|previous: &DerivedColumn| previous.name.eq_ignore_ascii_case(alias))
+        {
+            return Ok(None);
+        }
+        let Some(input) = schema
+            .iter()
+            .find(|input| input.name.eq_ignore_ascii_case(column))
+        else {
+            return Ok(None);
+        };
+        output.push(DerivedColumn {
+            name: alias.clone(),
+            data_type: input.data_type.clone(),
+        });
+    }
+    Ok(Some((query, output)))
+}
+
+fn parse_union_select_branches(
+    branch_tokens: Vec<&[Token]>,
+    mut resolve: impl FnMut(&str) -> Result<Vec<DerivedColumn>, ParseError>,
+) -> Result<Option<ParsedUnionSelectBranches>, ParseError> {
+    let mut branches = Vec::with_capacity(branch_tokens.len());
+    let mut output_columns: Option<Vec<DerivedColumn>> = None;
+    for branch in branch_tokens {
+        let trailing_literals = strip_trailing_text_literals(branch);
+        let cleaned_branch = trailing_literals
+            .as_ref()
+            .map(|(tokens, _)| tokens.as_slice())
+            .unwrap_or(branch);
+        if let Some((mut joined, mut columns)) =
+            parse_union_branches(vec![cleaned_branch], &mut resolve)?
+        {
+            if let Some((_, literals)) = &trailing_literals {
+                columns.extend(literals.iter().map(|(_, alias)| DerivedColumn {
+                    name: alias.clone(),
+                    data_type: "Nullable(String)".into(),
+                }));
+            }
+            if let Some(expected) = &output_columns {
+                if expected.len() != columns.len()
+                    || expected.iter().zip(&columns).any(|(left, right)| {
+                        left.data_type != right.data_type
+                            || !left.name.eq_ignore_ascii_case(&right.name)
+                    })
+                {
+                    return Ok(None);
+                }
+            } else {
+                output_columns = Some(columns);
+            }
+            let Some(query) = joined.pop() else {
+                return Ok(None);
+            };
+            if let Some((_, literals)) = trailing_literals {
+                branches.push(DerivedUnionSelectBranch::JoinWithTextLiterals { query, literals });
+            } else {
+                branches.push(DerivedUnionSelectBranch::Join(query));
+            }
+            continue;
+        }
+
+        let Some((query, columns)) = parse_single_table_union_branch(branch, &mut resolve)? else {
+            return Ok(None);
+        };
+        if let Some(expected) = &output_columns {
+            if expected.len() != columns.len()
+                || expected.iter().zip(&columns).any(|(left, right)| {
+                    left.data_type != right.data_type
+                        || !left.name.eq_ignore_ascii_case(&right.name)
+                })
+            {
+                return Ok(None);
+            }
+        } else {
+            output_columns = Some(columns);
+        }
+        branches.push(DerivedUnionSelectBranch::Select(query));
+    }
+    Ok(output_columns.map(|columns| (branches, columns)))
+}
+
+fn strip_trailing_text_literals(tokens: &[Token]) -> Option<StrippedTextLiterals> {
+    let from = find_top_level_clause(tokens, 1, "FROM")?;
+    let projection_start = if matches!(tokens.get(1), Some(Token::Word(word)) if ["DISTINCT", "ALL"].iter().any(|modifier| word.eq_ignore_ascii_case(modifier)))
+    {
+        2
+    } else {
+        1
+    };
+    let mut projections = Vec::new();
+    let mut depth = 0usize;
+    let mut start = projection_start;
+    for (index, token) in tokens.iter().enumerate().take(from).skip(projection_start) {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Comma if depth == 0 => {
+                if start == index {
+                    return None;
+                }
+                projections.push(&tokens[start..index]);
+                start = index + 1;
+            }
+            _ => {}
+        }
+    }
+    if start >= from {
+        return None;
+    }
+    projections.push(&tokens[start..from]);
+    let first_literal = projections
+        .iter()
+        .position(|projection| matches!(projection.first(), Some(Token::String(_))))?;
+    if first_literal == 0 {
+        return None;
+    }
+    let mut literals = Vec::new();
+    for projection in &projections[first_literal..] {
+        let (value, alias) = match projection {
+            [Token::String(value), Token::Word(as_word), alias]
+                if as_word.eq_ignore_ascii_case("AS") =>
+            {
+                (value.clone(), alias)
+            }
+            [Token::String(value), alias] => (value.clone(), alias),
+            _ => return None,
+        };
+        literals.push((value, token_name(alias)?.to_owned()));
+    }
+    let mut cleaned = tokens[..projection_start].to_vec();
+    for (index, projection) in projections[..first_literal].iter().enumerate() {
+        if index > 0 {
+            cleaned.push(Token::Comma);
+        }
+        cleaned.extend_from_slice(projection);
+    }
+    cleaned.extend_from_slice(&tokens[from..]);
+    Some((cleaned, literals))
+}
+
 /// Parse an outer grouped join over a bounded UNION ALL of joined projections.
 pub fn parse_derived_union_join_with_schema(
     sql: &str,
@@ -1491,7 +1755,8 @@ pub fn parse_derived_union_select_with_schema(
     let Some(branch_tokens) = split_union_all(&tokens[open + 1..close]) else {
         return Ok(None);
     };
-    let Some((branches, columns)) = parse_union_branches(branch_tokens, &mut resolve)? else {
+    let Some((branches, columns)) = parse_union_select_branches(branch_tokens, &mut resolve)?
+    else {
         return Ok(None);
     };
 

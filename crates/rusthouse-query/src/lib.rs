@@ -43,7 +43,7 @@ pub use cte_correlated_avg::{
     CteCorrelatedAvg, CteOutputColumn, parse_cte_correlated_avg_with_schema,
 };
 pub use cte_join::{
-    CteMultiJoin, CteMultiJoinSource, parse_cte_multi_join_with_schema,
+    CteMultiJoin, CteMultiJoinSource, CteSourceQuery, parse_cte_multi_join_with_schema,
     parse_cte_union_select_with_schema,
 };
 pub use cte_max::{CteMaxJoin, has_cte_max_join, parse_cte_max_join};
@@ -64,14 +64,14 @@ pub use insert_select::{InsertSelect, parse_insert_select};
 pub(crate) use join::JoinExistsLookupPair;
 pub use join::{
     DerivedColumn, DerivedGroupedJoin, DerivedGroupedSelect, DerivedJoinCount, DerivedUnionJoin,
-    DerivedUnionSelect, GroupedCaseValue, GroupedSum, GroupedWindowRatio, JoinAggregate,
-    JoinColumn, JoinCorrelatedAvg, JoinCorrelatedExists, JoinCorrelatedMin, JoinCorrelatedSum,
-    JoinExistsDateFilter, JoinExistsFilter, JoinExistsKey, JoinExistsLookup, JoinGroupedOutput,
-    JoinProjectionOrder, JoinScalarAggregate, JoinScalarProjection, JoinSelect, JoinStep, JoinType,
-    JoinVirtualColumn, NestedJoinSum, SubstringAntiJoin, explain_join, has_derived_join_count,
-    has_derived_union, has_explicit_join, has_implicit_join, has_join_correlated_avg,
-    has_join_correlated_min, has_join_correlated_sum, has_nested_join_sum, has_substring_antijoin,
-    has_top_level_exists, parse_derived_grouped_join_with_schema,
+    DerivedUnionSelect, DerivedUnionSelectBranch, GroupedCaseValue, GroupedSum, GroupedWindowRatio,
+    JoinAggregate, JoinColumn, JoinCorrelatedAvg, JoinCorrelatedExists, JoinCorrelatedMin,
+    JoinCorrelatedSum, JoinExistsDateFilter, JoinExistsFilter, JoinExistsKey, JoinExistsLookup,
+    JoinGroupedOutput, JoinProjectionOrder, JoinScalarAggregate, JoinScalarProjection, JoinSelect,
+    JoinStep, JoinType, JoinVirtualColumn, NestedJoinSum, SubstringAntiJoin, explain_join,
+    has_derived_join_count, has_derived_union, has_explicit_join, has_implicit_join,
+    has_join_correlated_avg, has_join_correlated_min, has_join_correlated_sum, has_nested_join_sum,
+    has_substring_antijoin, has_top_level_exists, parse_derived_grouped_join_with_schema,
     parse_derived_grouped_select_with_schema, parse_derived_join_count_with_schema,
     parse_derived_join_sum_with_schema, parse_derived_union_join_with_schema,
     parse_derived_union_select_with_schema, parse_join, parse_join_correlated_avg_with_schema,

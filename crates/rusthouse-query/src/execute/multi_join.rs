@@ -25,12 +25,95 @@ use super::join::multi_join_row_key as row_key;
 use super::join::{
     MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES,
     multi_join_row_key_into as row_key_into, read_projected_build_rows,
+    read_projected_build_rows_matching,
 };
 
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
 const MAX_CHAIN_COLUMNS: usize = 256;
 const MAX_CHAIN_HASH_BYTES: usize = MAX_CHAIN_BYTES;
 const SCALAR_OUTPUT_INDEX_BASE: usize = usize::MAX;
+
+type RelationComparison = (usize, crate::Operator, typed::Cell);
+
+fn relation_comparison_filters(
+    comparisons: &[(usize, crate::Operator, typed::Cell)],
+    relation_start: usize,
+    physical_columns: usize,
+) -> Vec<RelationComparison> {
+    comparisons
+        .iter()
+        .filter_map(|(index, operator, value)| {
+            index
+                .checked_sub(relation_start)
+                .filter(|local| *local < physical_columns)
+                .map(|local| (local, *operator, value.clone()))
+        })
+        .collect()
+}
+
+fn passes_relation_comparison_filters(row: &[typed::Cell], filters: &[RelationComparison]) -> bool {
+    filters.iter().all(|(index, operator, value)| {
+        row.get(*index)
+            .is_some_and(|candidate| typed::matches_comparison(candidate, value, *operator))
+    })
+}
+
+#[cfg(test)]
+mod relation_comparison_filter_tests {
+    use super::*;
+
+    #[test]
+    fn comparison_filters_are_local_and_all_must_pass() {
+        let comparisons = [
+            (
+                1,
+                crate::Operator::Eq,
+                typed::Cell::Numeric(super::super::Number::Unsigned(1)),
+            ),
+            (
+                2,
+                crate::Operator::Gt,
+                typed::Cell::Numeric(super::super::Number::Unsigned(10)),
+            ),
+            (
+                3,
+                crate::Operator::Le,
+                typed::Cell::Numeric(super::super::Number::Unsigned(20)),
+            ),
+            (
+                4,
+                crate::Operator::Eq,
+                typed::Cell::Numeric(super::super::Number::Unsigned(4)),
+            ),
+        ];
+        let filters = relation_comparison_filters(&comparisons, 2, 2);
+
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters[0].0, 0);
+        assert_eq!(filters[1].0, 1);
+        assert!(passes_relation_comparison_filters(
+            &[
+                typed::Cell::Numeric(super::super::Number::Unsigned(11)),
+                typed::Cell::Numeric(super::super::Number::Unsigned(20)),
+            ],
+            &filters,
+        ));
+        assert!(!passes_relation_comparison_filters(
+            &[
+                typed::Cell::Numeric(super::super::Number::Unsigned(10)),
+                typed::Cell::Numeric(super::super::Number::Unsigned(20)),
+            ],
+            &filters,
+        ));
+        assert!(!passes_relation_comparison_filters(
+            &[
+                typed::Cell::Null,
+                typed::Cell::Numeric(super::super::Number::Unsigned(20))
+            ],
+            &filters,
+        ));
+    }
+}
 
 fn scalar_output_index(index: usize, projection_count: usize) -> Option<usize> {
     SCALAR_OUTPUT_INDEX_BASE
@@ -2062,14 +2145,50 @@ fn execute_multi_join_inner<W: Write>(
     } else {
         MAX_INPUT_ROWS
     };
-    let mut rows = read_projected_build_rows(
-        &paths[0],
-        &relations[0].names,
-        &required[0],
-        relations[0].rows,
-        input_row_limit,
-        MAX_STREAM_BUILD_BYTES,
-    )?;
+    let inner_join_plan = query.kind == JoinType::Inner
+        && query.steps.iter().all(|step| step.kind == JoinType::Inner);
+    let first_relation_filters = if inner_join_plan {
+        relation_comparison_filters(&comparisons, 0, relations[0].physical_columns)
+    } else {
+        Vec::new()
+    };
+    let first_row_filter = row_filters
+        .as_ref()
+        .filter(|filters| {
+            inner_join_plan && filters.can_prefilter_relation(0, relations[0].names.len())
+        })
+        .map(|filters| {
+            let conditions = filters.prefilter_conditions(0, relations[0].names.len());
+            (filters, conditions)
+        });
+    let mut rows = if first_relation_filters.is_empty() && first_row_filter.is_none() {
+        read_projected_build_rows(
+            &paths[0],
+            &relations[0].names,
+            &required[0],
+            relations[0].rows,
+            input_row_limit,
+            MAX_STREAM_BUILD_BYTES,
+        )?
+    } else {
+        let mut predicate = |row: &[typed::Cell]| {
+            passes_relation_comparison_filters(row, &first_relation_filters)
+                && first_row_filter
+                    .as_ref()
+                    .map_or(true, |(filters, conditions)| {
+                        filters.passes_relation(row, 0, conditions)
+                    })
+        };
+        read_projected_build_rows_matching(
+            &paths[0],
+            &relations[0].names,
+            &required[0],
+            relations[0].rows,
+            input_row_limit,
+            MAX_STREAM_BUILD_BYTES,
+            &mut predicate,
+        )?
+    };
     if min_filter_relation == Some(0) {
         let filter = min_filter
             .as_ref()
@@ -2100,14 +2219,55 @@ fn execute_multi_join_inner<W: Write>(
             }
             continue;
         }
-        let right_rows = read_projected_build_rows(
-            &paths[step_index + 1],
-            &right_relation.names,
-            &required[step_index + 1],
-            right_relation.rows,
-            input_row_limit,
-            MAX_STREAM_BUILD_BYTES,
-        )?;
+        let right_filters = if inner_join_plan {
+            relation_comparison_filters(
+                &comparisons,
+                right_relation.start,
+                right_relation.physical_columns,
+            )
+        } else {
+            Vec::new()
+        };
+        let right_row_filter = row_filters
+            .as_ref()
+            .filter(|filters| {
+                inner_join_plan
+                    && filters
+                        .can_prefilter_relation(right_relation.start, right_relation.names.len())
+            })
+            .map(|filters| {
+                let conditions =
+                    filters.prefilter_conditions(right_relation.start, right_relation.names.len());
+                (filters, conditions)
+            });
+        let right_rows = if right_filters.is_empty() && right_row_filter.is_none() {
+            read_projected_build_rows(
+                &paths[step_index + 1],
+                &right_relation.names,
+                &required[step_index + 1],
+                right_relation.rows,
+                input_row_limit,
+                MAX_STREAM_BUILD_BYTES,
+            )?
+        } else {
+            let mut predicate = |row: &[typed::Cell]| {
+                passes_relation_comparison_filters(row, &right_filters)
+                    && right_row_filter
+                        .as_ref()
+                        .map_or(true, |(filters, conditions)| {
+                            filters.passes_relation(row, right_relation.start, conditions)
+                        })
+            };
+            read_projected_build_rows_matching(
+                &paths[step_index + 1],
+                &right_relation.names,
+                &required[step_index + 1],
+                right_relation.rows,
+                input_row_limit,
+                MAX_STREAM_BUILD_BYTES,
+                &mut predicate,
+            )?
+        };
         let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::new();
         let mut hash_bytes = 0usize;
         let mut build_key = Vec::with_capacity(right_keys.len());

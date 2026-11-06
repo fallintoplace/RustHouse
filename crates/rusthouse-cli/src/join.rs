@@ -5,9 +5,9 @@ use crate::{
     sql_values, vertical,
 };
 use rusthouse_query::{
-    CteCorrelatedAvg, CteMaxJoin, DerivedGroupedJoin, DerivedGroupedSelect, DerivedJoinCount,
-    DerivedUnionJoin, DerivedUnionSelect, JoinCorrelatedAvg, JoinCorrelatedExists,
-    JoinCorrelatedMin, JoinCorrelatedSum, JoinSelect, NestedJoinSum, Source,
+    CteCorrelatedAvg, CteMaxJoin, CteSourceQuery, DerivedGroupedJoin, DerivedGroupedSelect,
+    DerivedJoinCount, DerivedUnionJoin, DerivedUnionSelect, JoinCorrelatedAvg,
+    JoinCorrelatedExists, JoinCorrelatedMin, JoinCorrelatedSum, JoinSelect, NestedJoinSum, Source,
     bind_join_having_subquery, bind_join_in_subquery, execute_correlated_avg_with_paths,
     execute_correlated_join, execute_correlated_min, execute_correlated_sum, execute_cte_max_join,
     execute_derived_grouped_join, execute_derived_grouped_select, execute_derived_join_count,
@@ -320,21 +320,48 @@ pub(super) fn run_cte_multi_join(
     let mut temporary_parts = Vec::with_capacity(plan.sources().len());
 
     for source in plan.sources() {
-        let query = source.query();
-        let tables = [&query.left, &query.right]
-            .into_iter()
-            .chain(query.steps.iter().map(|step| &step.table));
-        let paths = tables
-            .map(|table| {
-                cte_paths
-                    .get(&table.to_ascii_lowercase())
-                    .cloned()
-                    .map(Ok)
-                    .unwrap_or_else(|| crate::database::select_source(database, table))
-            })
-            .collect::<Result<Vec<_>, String>>()?;
         let mut cte_output = Vec::new();
-        execute_selected_join(query, &paths, &mut cte_output).map_err(|error| error.to_string())?;
+        match source.query() {
+            CteSourceQuery::Join(query) => {
+                let tables = [&query.left, &query.right]
+                    .into_iter()
+                    .chain(query.steps.iter().map(|step| &step.table));
+                let paths = tables
+                    .map(|table| {
+                        cte_paths
+                            .get(&table.to_ascii_lowercase())
+                            .cloned()
+                            .map(Ok)
+                            .unwrap_or_else(|| crate::database::select_source(database, table))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                execute_selected_join(query, &paths, &mut cte_output)
+                    .map_err(|error| error.to_string())?;
+            }
+            CteSourceQuery::Union(query) => {
+                let branch_paths = query
+                    .branches()
+                    .iter()
+                    .map(|branch| {
+                        branch
+                            .source_tables()
+                            .into_iter()
+                            .map(|table| {
+                                cte_paths
+                                    .get(&table.to_ascii_lowercase())
+                                    .cloned()
+                                    .map(Ok)
+                                    .unwrap_or_else(|| {
+                                        crate::database::select_source(database, table)
+                                    })
+                            })
+                            .collect::<Result<Vec<_>, String>>()
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                execute_derived_union_select(query, &branch_paths, &mut cte_output)
+                    .map_err(|error| error.to_string())?;
+            }
+        }
         let temporary = materialize_cte_part(&cte_output, source.columns())?;
         cte_paths.insert(source.name().to_ascii_lowercase(), temporary.path.clone());
         temporary_parts.push(temporary);
@@ -533,9 +560,9 @@ pub(super) fn run_derived_union_select(
         .branches()
         .iter()
         .map(|branch| {
-            [&branch.left, &branch.right]
+            branch
+                .source_tables()
                 .into_iter()
-                .chain(branch.steps.iter().map(|step| &step.table))
                 .map(|table| crate::database::select_source(database, table))
                 .collect::<Result<Vec<_>, _>>()
         })

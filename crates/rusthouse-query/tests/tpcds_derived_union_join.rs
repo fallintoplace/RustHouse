@@ -1,7 +1,7 @@
 use rusthouse_query::{
-    DerivedColumn, execute_derived_union_join, execute_derived_union_select, has_derived_union,
-    parse_cte_union_select_with_schema, parse_derived_union_join_with_schema,
-    parse_derived_union_select_with_schema, parse_join,
+    DerivedColumn, DerivedUnionSelectBranch, execute_derived_union_join,
+    execute_derived_union_select, has_derived_union, parse_cte_union_select_with_schema,
+    parse_derived_union_join_with_schema, parse_derived_union_select_with_schema, parse_join,
 };
 use rusthouse_storage::{Column, write_wide_part};
 use std::fs;
@@ -235,8 +235,12 @@ fn unions_text_literal_labels_with_projected_source_columns() {
     assert_eq!(plan.columns()[0].name, "channel");
     assert_eq!(plan.columns()[0].data_type, "String");
     assert_eq!(plan.columns()[1].name, "ext_price");
+    let DerivedUnionSelectBranch::Join(branch) = &plan.branches()[0] else {
+        panic!("text-labeled joined branch should keep its scalar projection");
+    };
+    assert_eq!(branch.scalar_projections.len(), 1);
     assert!(
-        plan.branches()[0].scalar_projections[0]
+        branch.scalar_projections[0]
             .expression
             .eq(&rusthouse_query::ScalarExpr::TextLiteral("store".into()))
     );
