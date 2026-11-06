@@ -22,6 +22,13 @@ pub struct HeartbeatDetector {
     minimum_samples: usize,
 }
 
+fn nearest_rank_quantile(intervals: &mut [u64], percentile: f64) -> u64 {
+    let rank = ((intervals.len() as f64 * percentile).ceil() as usize)
+        .saturating_sub(1)
+        .min(intervals.len() - 1);
+    *intervals.select_nth_unstable(rank).1
+}
+
 impl HeartbeatDetector {
     /// A larger history smooths jitter while retaining a bounded memory cost.
     pub fn new(window: usize, minimum_samples: usize) -> Result<Self, &'static str> {
@@ -255,12 +262,9 @@ impl HeartbeatDetector {
             return Ok(None);
         }
         let mut intervals = self.intervals_ms.iter().copied().collect::<Vec<_>>();
-        let rank = ((intervals.len() as f64 * percentile).ceil() as usize)
-            .saturating_sub(1)
-            .min(intervals.len() - 1);
         // Only the selected quantile matters. A full sort is unnecessary.
-        let (_, quantile, _) = intervals.select_nth_unstable(rank);
-        let delay = (*quantile)
+        let quantile = nearest_rank_quantile(&mut intervals, percentile);
+        let delay = quantile
             .checked_mul(u64::from(tolerance))
             .ok_or("empirical heartbeat deadline overflow")?;
         let deadline = last
