@@ -56,6 +56,34 @@ enum MergeError {
     ProductOverflow,
 }
 
+
+fn parse_peer_counted_state<'a>(
+    cap: usize,
+    body: &'a [u8],
+    header: &[u8],
+) -> Result<(&'a [u8], u128), MergeError> {
+    if cap == 0 || !body.starts_with(header) || !body.ends_with(b"\n") {
+        return Err(MergeError::InvalidSum);
+    }
+    let row = &body[header.len()..body.len() - 1];
+    let Some(tab) = row.iter().position(|&byte| byte == b'\t') else {
+        return Err(MergeError::InvalidSum);
+    };
+    let raw_value = &row[..tab];
+    let raw_count = &row[tab + 1..];
+    if raw_count.contains(&b'\t') {
+        return Err(MergeError::InvalidSum);
+    }
+    let count_text = std::str::from_utf8(raw_count).map_err(|_| MergeError::InvalidSum)?;
+    let count = count_text
+        .parse::<u128>()
+        .map_err(|_| MergeError::InvalidSum)?;
+    if count.to_string() != count_text || (count == 0) != (raw_value == b"NULL") {
+        return Err(MergeError::InvalidSum);
+    }
+    Ok((raw_value, count))
+}
+
 /// Parse only the canonical RustHouse peer capability document, never
 /// trust matching substrings embedded in arbitrary JSON string values.
 fn parse_peer_capabilities(data: &[u8]) -> Result<usize, String> {
