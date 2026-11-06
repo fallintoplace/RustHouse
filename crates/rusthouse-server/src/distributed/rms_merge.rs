@@ -30,6 +30,17 @@ fn parse_peer_state<'a>(
     Ok((raw_rms, count))
 }
 
+fn parse_nonnegative_rms(raw_rms: &[u8]) -> Result<f64, MergeError> {
+    let value = std::str::from_utf8(raw_rms)
+        .map_err(|_| MergeError::InvalidSum)?
+        .parse::<f64>()
+        .map_err(|_| MergeError::InvalidSum)?;
+    if !value.is_finite() || value < 0.0 {
+        return Err(MergeError::InvalidSum);
+    }
+    Ok(value)
+}
+
 pub(super) fn merge_global_rms(
     shards: &[(usize, Vec<u8>)],
     column: &str,
@@ -45,13 +56,7 @@ pub(super) fn merge_global_rms(
         if count == 0 {
             continue;
         }
-        let value = std::str::from_utf8(raw_rms)
-            .map_err(|_| MergeError::InvalidSum)?
-            .parse::<f64>()
-            .map_err(|_| MergeError::InvalidSum)?;
-        if !value.is_finite() || value < 0.0 {
-            return Err(MergeError::InvalidSum);
-        }
+        let value = parse_nonnegative_rms(raw_rms)?;
         let next_count = total_count
             .checked_add(count)
             .ok_or(MergeError::CountOverflow)?;
