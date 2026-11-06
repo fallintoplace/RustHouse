@@ -155,23 +155,22 @@ impl Parser<'_> {
         Ok(())
     }
 
-    fn object(&mut self, depth: usize) -> io::Result<()> {
-        if depth > MAX_JSON_NESTING || !self.eat(b'{') {
-            return Err(invalid());
-        }
+    fn container_items(&mut self, depth: usize, close: u8, object: bool) -> io::Result<()> {
         self.whitespace();
-        if self.eat(b'}') {
+        if self.eat(close) {
             return Ok(());
         }
         loop {
-            self.string()?;
-            self.whitespace();
-            if !self.eat(b':') {
-                return Err(invalid());
+            if object {
+                self.string()?;
+                self.whitespace();
+                if !self.eat(b':') {
+                    return Err(invalid());
+                }
             }
             self.value(depth)?;
             self.whitespace();
-            if self.eat(b'}') {
+            if self.eat(close) {
                 return Ok(());
             }
             if !self.eat(b',') {
@@ -181,24 +180,18 @@ impl Parser<'_> {
         }
     }
 
+    fn object(&mut self, depth: usize) -> io::Result<()> {
+        if depth > MAX_JSON_NESTING || !self.eat(b'{') {
+            return Err(invalid());
+        }
+        self.container_items(depth, b'}', true)
+    }
+
     fn array(&mut self, depth: usize) -> io::Result<()> {
         if depth > MAX_JSON_NESTING || !self.eat(b'[') {
             return Err(invalid());
         }
-        self.whitespace();
-        if self.eat(b']') {
-            return Ok(());
-        }
-        loop {
-            self.value(depth)?;
-            self.whitespace();
-            if self.eat(b']') {
-                return Ok(());
-            }
-            if !self.eat(b',') {
-                return Err(invalid());
-            }
-        }
+        self.container_items(depth, b']', false)
     }
 
     fn value(&mut self, depth: usize) -> io::Result<()> {
