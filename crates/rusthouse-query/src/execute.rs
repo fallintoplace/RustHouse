@@ -79,7 +79,8 @@ pub use multi_join::{
     bind_join_having_subquery, bind_join_in_subquery, execute_correlated_avg,
     execute_correlated_avg_with_paths, execute_correlated_join, execute_correlated_min,
     execute_correlated_sum, execute_derived_grouped_join, execute_derived_grouped_select,
-    execute_derived_union_join, execute_multi_join, execute_nested_join_sum,
+    execute_derived_union_join, execute_derived_union_select, execute_multi_join,
+    execute_nested_join_sum,
 };
 use sort::{MAX_SORTED_ROWS, SortedRows};
 mod multi_aggregate;

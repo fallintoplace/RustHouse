@@ -133,9 +133,10 @@ pub(super) fn checked_multiply(left: Number, right: Number) -> Result<Number, Ex
         (Number::Float(_), _) | (_, Number::Float(_)) => Ok(Number::Float(
             number_as_float(left) * number_as_float(right),
         )),
-        (Number::Unsigned(a), Number::Unsigned(b)) => {
-            a.checked_mul(b).map(Number::Unsigned).ok_or_else(unsigned_overflow)
-        }
+        (Number::Unsigned(a), Number::Unsigned(b)) => a
+            .checked_mul(b)
+            .map(Number::Unsigned)
+            .ok_or_else(unsigned_overflow),
         (Number::Unsigned(a), Number::Signed(b)) | (Number::Signed(b), Number::Unsigned(a)) => {
             multiply_unsigned_signed(a, b)
         }
