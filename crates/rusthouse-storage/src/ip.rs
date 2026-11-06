@@ -28,31 +28,32 @@ fn validate_ip_write_batch(rows: usize, width: usize) -> io::Result<()> {
     Ok(())
 }
 
-/// Write ClickHouse IPv4 UInt32 values in little-endian disk order.
-/// Use bounded fixed-size blocks regardless of the total number of rows.
-pub fn write_ipv4_values<W: Write>(writer: &mut W, addresses: &[Ipv4Addr]) -> io::Result<()> {
-    validate_ip_write_batch(addresses.len(), 4)?;
+fn write_ip_values<const WIDTH: usize, W: Write, T>(
+    writer: &mut W,
+    addresses: &[T],
+    encode: impl Fn(&T) -> [u8; WIDTH],
+) -> io::Result<()> {
+    validate_ip_write_batch(addresses.len(), WIDTH)?;
     let mut buffer = [0u8; 16 * 1024];
-    for chunk in addresses.chunks(buffer.len() / 4) {
-        for (index, &address) in chunk.iter().enumerate() {
-            buffer[index * 4..index * 4 + 4].copy_from_slice(&u32::from(address).to_le_bytes());
+    for chunk in addresses.chunks(buffer.len() / WIDTH) {
+        for (index, address) in chunk.iter().enumerate() {
+            let start = index * WIDTH;
+            buffer[start..start + WIDTH].copy_from_slice(&encode(address));
         }
-        writer.write_all(&buffer[..chunk.len() * 4])?;
+        writer.write_all(&buffer[..chunk.len() * WIDTH])?;
     }
     Ok(())
 }
 
+/// Write ClickHouse IPv4 UInt32 values in little-endian disk order.
+/// Use bounded fixed-size blocks regardless of the total number of rows.
+pub fn write_ipv4_values<W: Write>(writer: &mut W, addresses: &[Ipv4Addr]) -> io::Result<()> {
+    write_ip_values(writer, addresses, |address| u32::from(*address).to_le_bytes())
+}
+
 /// Write IPv6 addresses in ClickHouse's network-byte-order disk encoding.
 pub fn write_ipv6_values<W: Write>(writer: &mut W, addresses: &[Ipv6Addr]) -> io::Result<()> {
-    validate_ip_write_batch(addresses.len(), 16)?;
-    let mut buffer = [0u8; 16 * 1024];
-    for chunk in addresses.chunks(buffer.len() / 16) {
-        for (index, &address) in chunk.iter().enumerate() {
-            buffer[index * 16..index * 16 + 16].copy_from_slice(&address.octets());
-        }
-        writer.write_all(&buffer[..chunk.len() * 16])?;
-    }
-    Ok(())
+    write_ip_values(writer, addresses, |address| address.octets())
 }
 
 #[cfg(test)]
