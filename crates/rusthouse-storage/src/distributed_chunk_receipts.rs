@@ -4,6 +4,8 @@ use crate::distributed_transfer_journal::JournalReceipt;
 use std::collections::BTreeMap;
 use std::ops::Range;
 
+const MAX_WINDOW_RECEIPTS: usize = 4096;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChunkReceipts {
     total: u64,
@@ -14,7 +16,7 @@ pub struct ChunkReceipts {
 
 impl ChunkReceipts {
     pub fn new(total: u64, window: u64) -> Result<Self, &'static str> {
-        if total == 0 || window == 0 || window > 4096 {
+        if total == 0 || window == 0 || window > MAX_WINDOW_RECEIPTS as u64 {
             return Err("invalid replica receive window");
         }
         Ok(Self {
@@ -34,7 +36,7 @@ impl ChunkReceipts {
         window: u64,
         records: &[JournalReceipt],
     ) -> Result<Self, &'static str> {
-        if records.len() > 4096 || records.len() as u64 > total {
+        if records.len() > MAX_WINDOW_RECEIPTS || records.len() as u64 > total {
             return Err("too many transfer receipts to restore");
         }
         let mut restored = Self::new(total, window)?;
