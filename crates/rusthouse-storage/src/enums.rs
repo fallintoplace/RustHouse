@@ -89,23 +89,8 @@ pub fn read_enum_column<R: Read>(
         _ => unreachable!("Enum storage is Int8 or Int16"),
     };
 
-    // Wide Enum scans use direct bit probes rather than tree lookups.
-    // Enum8 needs 4 words (32 bytes), not the 1024 words of Enum16.
-    if rows > 32 && variants.len() > 4 {
-        let invalid = if width == 8 {
-            first_unknown_code::<4>(&codes, &variants)
-        } else {
-            first_unknown_code::<1024>(&codes, &variants)
-        };
-        if let Some((row, code)) = invalid {
-            return Err(EnumReadError::UnknownValue { row, code });
-        }
-    } else {
-        for (row, &code) in codes.iter().enumerate() {
-            if !variants.contains_key(&code) {
-                return Err(EnumReadError::UnknownValue { row, code });
-            }
-        }
+    if let Some((row, code)) = find_unknown_code(&codes, width, &variants) {
+        return Err(EnumReadError::UnknownValue { row, code });
     }
 
     Ok(EnumColumn { codes, variants })
@@ -128,19 +113,7 @@ pub fn write_enum_values<W: Write>(
             "Enum batch exceeds the row limit",
         ));
     }
-    let invalid = if codes.len() > 32 && variants.len() > 4 {
-        if width == 8 {
-            first_unknown_code::<4>(codes, &variants)
-        } else {
-            first_unknown_code::<1024>(codes, &variants)
-        }
-    } else {
-        codes
-            .iter()
-            .copied()
-            .enumerate()
-            .find(|&(_, code)| !variants.contains_key(&code))
-    };
+    let invalid = find_unknown_code(codes, width, &variants);
     if invalid.is_some() {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
@@ -163,6 +136,27 @@ pub fn write_enum_values<W: Write>(
         output.write_all(&buffer[..chunk.len() * byte_width])?;
     }
     Ok(())
+}
+
+fn find_unknown_code(
+    codes: &[i16],
+    width: u8,
+    variants: &BTreeMap<i16, String>,
+) -> Option<(usize, i16)> {
+    // Wide batches use a bitmap; short batches are cheaper with tree lookups.
+    if codes.len() > 32 && variants.len() > 4 {
+        if width == 8 {
+            first_unknown_code::<4>(codes, variants)
+        } else {
+            first_unknown_code::<1024>(codes, variants)
+        }
+    } else {
+        codes
+            .iter()
+            .copied()
+            .enumerate()
+            .find(|&(_, code)| !variants.contains_key(&code))
+    }
 }
 
 fn first_unknown_code<const WORDS: usize>(
