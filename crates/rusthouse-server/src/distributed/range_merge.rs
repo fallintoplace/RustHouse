@@ -35,6 +35,20 @@ fn parse_peer_range<'a>(
     Ok(Some((low, high)))
 }
 
+fn update_bounds<T: Ord + Copy>(
+    minimum: &mut Option<T>,
+    maximum: &mut Option<T>,
+    lower: T,
+    upper: T,
+) -> Result<(), MergeError> {
+    if lower > upper {
+        return Err(MergeError::InvalidExtremum);
+    }
+    *minimum = Some(minimum.map_or(lower, |old| old.min(lower)));
+    *maximum = Some(maximum.map_or(upper, |old| old.max(upper)));
+    Ok(())
+}
+
 pub(super) fn merge_global_range(
     shards: &[(usize, Vec<u8>)],
     column: &str,
@@ -63,11 +77,7 @@ pub(super) fn merge_global_range(
             let hi = high
                 .parse::<u128>()
                 .map_err(|_| MergeError::InvalidExtremum)?;
-            if lo > hi {
-                return Err(MergeError::InvalidExtremum);
-            }
-            unsigned_min = Some(unsigned_min.map_or(lo, |old| old.min(lo)));
-            unsigned_max = Some(unsigned_max.map_or(hi, |old| old.max(hi)));
+            update_bounds(&mut unsigned_min, &mut unsigned_max, lo, hi)?;
         } else {
             let lo = low
                 .parse::<i128>()
@@ -75,11 +85,7 @@ pub(super) fn merge_global_range(
             let hi = high
                 .parse::<i128>()
                 .map_err(|_| MergeError::InvalidExtremum)?;
-            if lo > hi {
-                return Err(MergeError::InvalidExtremum);
-            }
-            signed_min = Some(signed_min.map_or(lo, |old| old.min(lo)));
-            signed_max = Some(signed_max.map_or(hi, |old| old.max(hi)));
+            update_bounds(&mut signed_min, &mut signed_max, lo, hi)?;
         }
     }
     let rendered = if unsigned {
