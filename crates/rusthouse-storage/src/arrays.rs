@@ -150,6 +150,21 @@ fn append_array_offset<const ABSOLUTE: bool>(
     Ok(())
 }
 
+#[inline]
+fn append_encoded_offset_records<const ABSOLUTE: bool>(
+    base: u64,
+    absolute: &mut u64,
+    first_row: usize,
+    bytes: &[u8],
+    offsets: &mut Vec<usize>,
+) -> Result<(), ArrayReadError> {
+    for (index, record) in bytes.chunks_exact(OFFSET_ENTRY_BYTES).enumerate() {
+        let encoded = u64::from_le_bytes(record.try_into().unwrap());
+        append_array_offset::<ABSOLUTE>(base, absolute, encoded, first_row + index, offsets)?;
+    }
+    Ok(())
+}
+
 // Specialize the two offset encodings before the hot decode loop. The
 // compiler can eliminate the per-element mode match for million-row arrays.
 fn decode_array_offsets<const ABSOLUTE: bool, O: Read>(
@@ -170,13 +185,13 @@ fn decode_array_offsets<const ABSOLUTE: bool, O: Read>(
         offset_stream
             .read_exact(&mut scratch[..bytes])
             .map_err(ArrayReadError::Offsets)?;
-        for (row, record) in scratch[..bytes]
-            .chunks_exact(OFFSET_ENTRY_BYTES)
-            .enumerate()
-        {
-            let encoded = u64::from_le_bytes(record.try_into().unwrap());
-            append_array_offset::<ABSOLUTE>(base, &mut absolute, encoded, row, &mut offsets)?;
-        }
+        append_encoded_offset_records::<ABSOLUTE>(
+            base,
+            &mut absolute,
+            0,
+            &scratch[..bytes],
+            &mut offsets,
+        )?;
         return Ok(ArrayOffsets {
             offsets,
             last_absolute_offset: absolute,
@@ -192,13 +207,13 @@ fn decode_array_offsets<const ABSOLUTE: bool, O: Read>(
         offset_stream
             .read_exact(&mut scratch[..bytes])
             .map_err(ArrayReadError::Offsets)?;
-        for (row, record) in scratch[..bytes]
-            .chunks_exact(OFFSET_ENTRY_BYTES)
-            .enumerate()
-        {
-            let encoded = u64::from_le_bytes(record.try_into().unwrap());
-            append_array_offset::<ABSOLUTE>(base, &mut absolute, encoded, row, &mut offsets)?;
-        }
+        append_encoded_offset_records::<ABSOLUTE>(
+            base,
+            &mut absolute,
+            0,
+            &scratch[..bytes],
+            &mut offsets,
+        )?;
         return Ok(ArrayOffsets {
             offsets,
             last_absolute_offset: absolute,
@@ -213,11 +228,14 @@ fn decode_array_offsets<const ABSOLUTE: bool, O: Read>(
             .read_exact(&mut buffer[..count * OFFSET_ENTRY_BYTES])
             .map_err(ArrayReadError::Offsets)?;
 
-        for bytes in buffer[..count * OFFSET_ENTRY_BYTES].chunks_exact(OFFSET_ENTRY_BYTES) {
-            let encoded = u64::from_le_bytes(bytes.try_into().unwrap());
-            append_array_offset::<ABSOLUTE>(base, &mut absolute, encoded, row, &mut offsets)?;
-            row += 1;
-        }
+        append_encoded_offset_records::<ABSOLUTE>(
+            base,
+            &mut absolute,
+            row,
+            &buffer[..count * OFFSET_ENTRY_BYTES],
+            &mut offsets,
+        )?;
+        row += count;
     }
 
     Ok(ArrayOffsets {
