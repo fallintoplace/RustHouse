@@ -14,26 +14,33 @@ fn mark_keys_sorted<T: Ord + Copy>(len: usize, key_at: &impl Fn(usize) -> Option
     true
 }
 
+fn partition_key_point<T: Ord + Copy>(
+    len: usize,
+    key_at: &impl Fn(usize) -> Option<T>,
+    target: T,
+    inclusive: bool,
+) -> usize {
+    let mut low = 0;
+    let mut high = len;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let key = key_at(mid).expect("validated monotonic mark keys");
+        if key < target || (inclusive && key == target) {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+    low
+}
+
 fn candidate_mark_range_sorted<T: Ord + Copy>(
     len: usize,
     key_at: &impl Fn(usize) -> Option<T>,
     lower: Bound<T>,
     upper: Bound<T>,
 ) -> Range<usize> {
-    let partition_point = |target: T, inclusive: bool| {
-        let mut low = 0;
-        let mut high = len;
-        while low < high {
-            let mid = low + (high - low) / 2;
-            let key = key_at(mid).expect("validated monotonic mark keys");
-            if key < target || (inclusive && key == target) {
-                low = mid + 1;
-            } else {
-                high = mid;
-            }
-        }
-        low
-    };
+    let partition_point = |target, inclusive| partition_key_point(len, key_at, target, inclusive);
     let start = match lower {
         Bound::Included(value) => partition_point(value, false).saturating_sub(1),
         Bound::Excluded(value) => partition_point(value, true).saturating_sub(1),
