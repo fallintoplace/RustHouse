@@ -1,8 +1,9 @@
+fn wrapped_inner<'a>(kind: &'a str, prefix: &str) -> Option<&'a str> {
+    kind.strip_prefix(prefix)?.strip_suffix(')')
+}
+
 pub(super) fn base_type(kind: &str) -> (&str, bool) {
-    if let Some(base) = kind
-        .strip_prefix("Nullable(")
-        .and_then(|v| v.strip_suffix(')'))
-    {
+    if let Some(base) = wrapped_inner(kind, "Nullable(") {
         (base, true)
     } else {
         (kind, false)
@@ -28,12 +29,12 @@ fn numeric_scalar(kind: &str) -> bool {
 }
 
 pub(super) fn numeric_array_inner_type(kind: &str) -> Option<&str> {
-    let inner = kind.strip_prefix("Array(")?.strip_suffix(')')?;
+    let inner = wrapped_inner(kind, "Array(")?;
     numeric_scalar(inner).then_some(inner)
 }
 
 pub(super) fn map_string_value_type(kind: &str) -> Option<&str> {
-    let value = kind.strip_prefix("Map(String, ")?.strip_suffix(')')?;
+    let value = wrapped_inner(kind, "Map(String, ")?;
     (value == "String" || numeric_scalar(value)).then_some(value)
 }
 
