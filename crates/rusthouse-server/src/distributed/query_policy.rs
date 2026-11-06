@@ -144,6 +144,12 @@ pub(super) fn is_safe_multi_grouped_distinct(select: &Select) -> bool {
         && select.offset.is_none()
 }
 
+fn distinct_group_clause_bounds(sql: &str) -> Option<(usize, usize)> {
+    let from = clause_offset(sql, b"FROM")?;
+    let group = clause_offset(&sql[from..], b"GROUP")? + from;
+    Some((from, group))
+}
+
 pub(super) fn multi_grouped_distinct_shard_sql(sql: &str, select: &Select) -> Option<String> {
     if !is_safe_multi_grouped_distinct(select) {
         return None;
@@ -155,8 +161,7 @@ pub(super) fn multi_grouped_distinct_shard_sql(sql: &str, select: &Select) -> Op
     else {
         return None;
     };
-    let from = clause_offset(sql, b"FROM")?;
-    let group = clause_offset(&sql[from..], b"GROUP")? + from;
+    let (from, group) = distinct_group_clause_bounds(sql)?;
     let rewritten = format!(
         "SELECT DISTINCT {}, {value_column} {}",
         columns.join(", "),
@@ -183,8 +188,7 @@ pub(super) fn grouped_distinct_shard_sql(sql: &str, select: &Select) -> Option<S
     else {
         return None;
     };
-    let from = clause_offset(sql, b"FROM")?;
-    let group = clause_offset(&sql[from..], b"GROUP")? + from;
+    let (from, group) = distinct_group_clause_bounds(sql)?;
     let rewritten = format!(
         "SELECT DISTINCT {column}, {value_column} {}",
         sql[from..group].trim_end()
