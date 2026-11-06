@@ -36,6 +36,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "CHAR_LENGTH"
                 | "CHARACTER_LENGTH"
                 | "OCTET_LENGTH"
+                | "REGEXP_LIKE"
                 | "TOSTARTOFFIFTEENMINUTES"
                 | "ASCII"
                 | "TOSTARTOFMINUTE"
@@ -623,6 +624,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(format!("{a}.{b}.{c}.xxx"))
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "REGEXP_LIKE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "regexp_like requires a pattern")?;
+            let pattern = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "regexp_like requires two arguments")?;
+            match (input, pattern) {
+                (Some(input), Some(pattern)) => {
+                    if pattern.len() > 4096 {
+                        return Err(ParseError("regexp_like pattern exceeds 4096 bytes".into()));
+                    }
+                    let regex = regex::RegexBuilder::new(&pattern)
+                        .dot_matches_new_line(false)
+                        .case_insensitive(false)
+                        .size_limit(2 * 1024 * 1024)
+                        .build()
+                        .map_err(|error| {
+                            ParseError(format!("invalid regexp_like regex: {error}"))
+                        })?;
+                    ConstantValue::Integer(i64::from(regex.is_match(&input)))
+                }
+                _ => ConstantValue::Null,
             }
         }
         "MACSTRINGTONUM" => {
