@@ -22,6 +22,13 @@ fn matches_case_projection(projection: &Projection, expected: &[&str]) -> bool {
     }
 }
 
+fn has_duplicate_case_keys(names: &[&String]) -> bool {
+    names
+        .iter()
+        .enumerate()
+        .any(|(index, name)| names[..index].contains(name))
+}
+
 pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError> {
     let (first, flag1, flag2, source, case_label, destination, destination_label) =
         match tokens.as_slice() {
@@ -87,10 +94,7 @@ pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError
             _ => return Ok(None),
         };
     let names = [&first, &flag1, &flag2, &source, &destination];
-    if names
-        .iter()
-        .enumerate()
-        .any(|(i, name)| names[..i].contains(name))
+    if has_duplicate_case_keys(&names)
         || case_label.eq_ignore_ascii_case(&destination_label)
     {
         return Err(ParseError("ambiguous CASE grouping key".into()));
