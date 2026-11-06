@@ -34,43 +34,68 @@ pub(super) fn plan(query: &JoinSelect, sizes: &[u64]) -> Option<(JoinSelect, Vec
         return None;
     }
     let mut edges = Vec::new();
-    for (index, keys) in std::iter::once(&query.keys)
-        .chain(query.steps.iter().map(|step| &step.keys))
-        .enumerate()
-    {
-        if keys.is_empty() {
-            return None;
-        }
+    for keys in std::iter::once(&query.keys).chain(query.steps.iter().map(|step| &step.keys)) {
         for (left, right) in keys {
             let a = aliases.iter().position(|alias| **alias == left.relation)?;
             let b = aliases.iter().position(|alias| **alias == right.relation)?;
-            let added = index + 1;
-            if !((a == added && b < added) || (b == added && a < added)) {
+            if a == b {
                 return None;
             }
             edges.push((a, b, (left.clone(), right.clone())));
         }
     }
-    let largest = sizes.iter().enumerate().max_by_key(|(_, n)| *n)?.0;
-    if sizes[largest] <= sizes[0] || sizes[largest] <= crate::join::MAX_STREAM_JOIN_BUILD_ROWS {
+    if edges.is_empty() {
         return None;
     }
+    let largest = sizes.iter().enumerate().max_by_key(|(_, n)| *n)?.0;
+    if sizes[largest] <= crate::join::MAX_STREAM_JOIN_BUILD_ROWS {
+        return None;
+    }
+    let mut aggregate_references = vec![0usize; aliases.len()];
+    for item in &query.scalar_aggregates {
+        if let crate::JoinAggregate::CountColumn(column)
+        | crate::JoinAggregate::Numeric { column, .. } = &item.aggregate
+        {
+            if let Some(index) = aliases.iter().position(|alias| **alias == column.relation) {
+                aggregate_references[index] += 1;
+            }
+        }
+    }
+    let largest_aggregate_reference = (0..aliases.len())
+        .filter(|&index| sizes[index] > crate::join::MAX_STREAM_JOIN_BUILD_ROWS)
+        .map(|index| aggregate_references[index])
+        .max()
+        .unwrap_or(0);
+    let root = if largest_aggregate_reference > 0 {
+        (0..aliases.len())
+            .filter(|&index| {
+                sizes[index] > crate::join::MAX_STREAM_JOIN_BUILD_ROWS
+                    && aggregate_references[index] == largest_aggregate_reference
+            })
+            .max_by_key(|&index| (sizes[index], std::cmp::Reverse(index)))?
+    } else {
+        if sizes[largest] <= sizes[0] {
+            return None;
+        }
+        largest
+    };
     let table_at = |index: usize| match index {
         0 => &query.left,
         1 => &query.right,
         _ => &query.steps[index - 2].table,
     };
-    let mut order = vec![largest];
+    let mut order = vec![root];
     let mut assigned = vec![false; edges.len()];
     let mut new_steps = Vec::new();
     while order.len() < aliases.len() {
         let next = (0..aliases.len())
             .filter(|i| !order.contains(i))
-            .find(|i| {
+            .filter(|i| {
                 edges.iter().any(|(a, b, _)| {
                     (*a == *i && order.contains(b)) || (*b == *i && order.contains(a))
                 })
-            })?;
+            })
+            .min_by_key(|&index| sizes[index])?;
         let mut keys = Vec::new();
         for (i, (a, b, key)) in edges.iter().enumerate() {
             if !assigned[i]
@@ -92,6 +117,9 @@ pub(super) fn plan(query: &JoinSelect, sizes: &[u64]) -> Option<(JoinSelect, Vec
         order.push(next);
     }
     if assigned.iter().any(|v| !v) {
+        return None;
+    }
+    if order.iter().copied().eq(0..aliases.len()) {
         return None;
     }
     let first = order[0];
@@ -131,11 +159,16 @@ mod tests {
         assert_eq!(order[0], 2);
     }
     #[test]
-    fn rejects_invalid_original_predicate_scopes() {
+    fn reattaches_edges_outside_their_original_join_step() {
         let mut query = query();
         query.steps[0].keys.push(query.keys[0].clone());
-        assert!(plan(&query, &[10, 20, 300_000]).is_none());
-        query.steps[0].keys.pop();
+        let (reordered, _) = plan(&query, &[10, 20, 300_000]).unwrap();
+        assert_eq!(reordered.keys.len() + reordered.steps[0].keys.len(), 3);
+    }
+
+    #[test]
+    fn rejects_unknown_join_qualifiers_when_reordering() {
+        let mut query = query();
         query.steps[0].keys[0].0.relation.clear();
         assert!(plan(&query, &[10, 20, 300_000]).is_none());
     }
@@ -148,6 +181,22 @@ mod tests {
         assert_eq!(reordered.keys.len() + reordered.steps[0].keys.len(), 3);
         assert_eq!(reordered.steps[0].keys.len(), 2);
     }
+
+    #[test]
+    fn starts_with_the_aggregated_large_table_when_from_order_is_disconnected() {
+        let query = crate::parse_join(
+            "SELECT MIN(t.id) AS movie_id, MIN(s.id) AS small_id FROM small s, medium m, large t WHERE s.id = t.id AND m.id = t.id",
+        )
+        .unwrap()
+        .unwrap();
+        let (reordered, order) = plan(&query, &[4, 400_000, 10]).unwrap();
+        assert_eq!(order, vec![1, 0, 2]);
+        assert_eq!(reordered.left_alias, "t");
+        assert_eq!(reordered.right_alias, "s");
+        assert_eq!(reordered.steps[0].alias, "m");
+        assert_eq!(reordered.keys.len() + reordered.steps[0].keys.len(), 2);
+    }
+
     #[test]
     fn leaves_non_inner_and_any_joins_in_place() {
         let mut query = query();

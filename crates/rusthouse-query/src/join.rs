@@ -3513,6 +3513,33 @@ fn parse_join_tokens_internal(
             "unexpected JOIN syntax; supported: equi-JOIN, ORDER BY, LIMIT, OFFSET".into(),
         ));
     }
+    if !steps.is_empty()
+        && kind == JoinType::Inner
+        && steps.iter().all(|step| step.kind == JoinType::Inner)
+        && group_by.is_none()
+        && order_by.is_empty()
+        && offset == 0
+        && scalar_aggregates.is_empty()
+        && matches!(
+            aggregate.as_ref(),
+            Some(JoinAggregate::Numeric {
+                function: crate::AggregateFunction::Min | crate::AggregateFunction::Max,
+                ..
+            })
+        )
+    {
+        let aggregate = aggregate
+            .take()
+            .expect("matching scalar extrema aggregate is present");
+        let alias = aggregate_alias
+            .take()
+            .unwrap_or_else(|| join_aggregate_header(&aggregate));
+        scalar_aggregates.push(JoinScalarAggregate {
+            aggregate,
+            alias,
+            distinct: false,
+        });
+    }
     if !where_substring_comparisons.is_empty()
         && (steps.is_empty()
             || kind != JoinType::Inner

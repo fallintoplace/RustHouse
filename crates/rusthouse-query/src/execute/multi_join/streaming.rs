@@ -13,6 +13,8 @@ use super::super::join::{
 
 const MAX_STREAM_GROUPS: usize = 100_000;
 const MAX_STREAM_GROUP_BYTES: usize = 64 * 1024 * 1024;
+const MAX_STREAM_SEMI_JOIN_BYTES: usize = 8 * 1024 * 1024;
+const MAX_STREAM_SEMI_JOIN_KEYS: usize = 65_536;
 
 // Account for hash entries and owned key payloads alongside the retained rows.
 fn hash_key_bytes(key: &[typed::Key], single_numeric: bool) -> Result<usize, ExecutionError> {
@@ -69,6 +71,262 @@ struct Stage {
     full_width: usize,
     kind: JoinType,
     any: bool,
+}
+
+#[derive(Clone, Copy)]
+struct JoinKeyPair {
+    left_relation: usize,
+    left_column: usize,
+    right_relation: usize,
+    right_column: usize,
+}
+
+type SemiJoinKeySets = HashMap<(usize, usize), HashSet<typed::Key>>;
+
+fn relation_column(
+    relations: &[Relation],
+    absolute_column: usize,
+) -> Result<(usize, usize), ExecutionError> {
+    relations
+        .iter()
+        .enumerate()
+        .find_map(|(index, relation)| {
+            absolute_column
+                .checked_sub(relation.start)
+                .filter(|&local| local < relation.names.len())
+                .map(|local| (index, local))
+        })
+        .ok_or_else(|| invalid("JOIN key references an unknown relation column"))
+}
+
+fn join_key_pairs(
+    query: &JoinSelect,
+    relations: &[Relation],
+    initial_step: &JoinStep,
+) -> Result<Vec<JoinKeyPair>, ExecutionError> {
+    let mut pairs = Vec::new();
+    for (step_index, step) in std::iter::once(initial_step)
+        .chain(query.steps.iter())
+        .enumerate()
+    {
+        let relation = &relations[step_index + 1];
+        let (left_keys, right_keys) =
+            super::step_keys(step, &relations[..=step_index + 1], relation.start)?;
+        for (left_key, right_key) in left_keys.into_iter().zip(right_keys) {
+            let (left_relation, left_column) = relation_column(relations, left_key)?;
+            pairs.push(JoinKeyPair {
+                left_relation,
+                left_column,
+                right_relation: step_index + 1,
+                right_column: right_key,
+            });
+        }
+    }
+    Ok(pairs)
+}
+
+fn semijoin_filters_for_relation<'a>(
+    relation: usize,
+    pairs: &[JoinKeyPair],
+    keysets: &'a SemiJoinKeySets,
+) -> Vec<(usize, &'a HashSet<typed::Key>)> {
+    let mut filters = Vec::new();
+    for pair in pairs {
+        if pair.left_relation == relation {
+            if let Some(keys) = keysets.get(&(pair.right_relation, pair.right_column)) {
+                filters.push((pair.left_column, keys));
+            }
+        }
+        if pair.right_relation == relation {
+            if let Some(keys) = keysets.get(&(pair.left_relation, pair.left_column)) {
+                filters.push((pair.right_column, keys));
+            }
+        }
+    }
+    filters
+}
+
+fn is_joinable_key(value: &typed::Cell) -> bool {
+    !matches!(value, typed::Cell::Null)
+        && !matches!(value, typed::Cell::Numeric(super::super::Number::Float(number)) if number.is_nan())
+}
+
+fn passes_semijoin_filters(row: &[typed::Cell], filters: &[(usize, &HashSet<typed::Key>)]) -> bool {
+    filters.iter().all(|(column, keys)| {
+        row.get(*column)
+            .is_some_and(|value| is_joinable_key(value) && keys.contains(&value.key()))
+    })
+}
+
+fn semijoin_key_bytes(keys: &HashSet<typed::Key>) -> Result<usize, ExecutionError> {
+    keys.iter().try_fold(0usize, |bytes, key| {
+        let payload = match key {
+            typed::Key::Text(value) => value.len(),
+            typed::Key::Uuid(value) => value.len(),
+            _ => 0,
+        };
+        bytes
+            .checked_add(std::mem::size_of::<typed::Key>())
+            .and_then(|bytes| bytes.checked_add(96))
+            .and_then(|bytes| bytes.checked_add(payload))
+            .ok_or_else(|| invalid("JOIN semijoin filter size overflow"))
+    })
+}
+
+fn collect_semijoin_keysets(
+    paths: &[PathBuf],
+    relations: &[Relation],
+    pairs: &[JoinKeyPair],
+    comparisons: &[(usize, crate::Operator, typed::Cell)],
+    row_filters: Option<&super::row_filters::RowFilters>,
+) -> Result<SemiJoinKeySets, ExecutionError> {
+    if relations
+        .iter()
+        .all(|relation| relation.rows <= crate::join::MAX_STREAM_JOIN_BUILD_ROWS)
+    {
+        return Ok(HashMap::new());
+    }
+
+    let mut columns = vec![Vec::new(); relations.len()];
+    for pair in pairs {
+        columns[pair.left_relation].push(pair.left_column);
+        columns[pair.right_relation].push(pair.right_column);
+    }
+    for relation_columns in &mut columns {
+        relation_columns.sort_unstable();
+        relation_columns.dedup();
+    }
+    let mut relation_order = (0..relations.len()).collect::<Vec<_>>();
+    relation_order.sort_by_key(|&index| relations[index].rows);
+    let mut keysets = SemiJoinKeySets::new();
+
+    // Two bounded passes let small filtered dimensions reduce large fact and
+    // bridge tables without retaining any unbounded intermediate relation.
+    for _ in 0..2 {
+        let mut changed = false;
+        for &relation_index in &relation_order {
+            let relation = &relations[relation_index];
+            if columns[relation_index].is_empty() || !relation.virtual_columns.is_empty() {
+                continue;
+            }
+            let local_comparisons = super::relation_comparison_filters(
+                comparisons,
+                relation.start,
+                relation.physical_columns,
+            );
+            let row_prefilter = row_filters.and_then(|filters| {
+                filters.prefilter_conditions(relation.start, relation.names.len())
+            });
+            let semijoin_filters = semijoin_filters_for_relation(relation_index, pairs, &keysets);
+            if local_comparisons.is_empty()
+                && row_prefilter.is_none()
+                && semijoin_filters.is_empty()
+            {
+                continue;
+            }
+
+            let mut projected = columns[relation_index].clone();
+            projected.extend(local_comparisons.iter().map(|(index, _, _)| *index));
+            if row_prefilter.is_some() {
+                if let Some(filters) = row_filters {
+                    projected.extend(filters.indices.iter().filter_map(|&index| {
+                        index
+                            .checked_sub(relation.start)
+                            .filter(|&local| local < relation.physical_columns)
+                    }));
+                }
+            }
+            projected.sort_unstable();
+            projected.dedup();
+            if projected.is_empty() {
+                continue;
+            }
+
+            let mut predicate = |row: &[typed::Cell]| {
+                super::passes_relation_comparison_filters(row, &local_comparisons)
+                    && match (row_filters, row_prefilter.as_ref()) {
+                        (Some(filters), Some(conditions)) => {
+                            filters.passes_relation(row, relation.start, conditions)
+                        }
+                        _ => true,
+                    }
+                    && passes_semijoin_filters(row, &semijoin_filters)
+            };
+            let rows = match read_compact_projected_build_rows_matching(
+                &paths[relation_index],
+                &relation.names,
+                &projected,
+                relation.rows,
+                crate::join::MAX_STREAM_JOIN_BUILD_ROWS,
+                MAX_STREAM_SEMI_JOIN_BYTES,
+                &mut predicate,
+            ) {
+                Ok(rows) => rows,
+                Err(ExecutionError::Invalid(message))
+                    if message.contains("row limit exceeded")
+                        || message.contains("retained-row memory budget") =>
+                {
+                    continue;
+                }
+                Err(error) => return Err(error),
+            };
+
+            for &column in &columns[relation_index] {
+                let Some(position) = projected.iter().position(|&index| index == column) else {
+                    continue;
+                };
+                let mut next = HashSet::new();
+                let mut too_many = false;
+                for row in &rows {
+                    let value = &row[position];
+                    if !is_joinable_key(value) {
+                        continue;
+                    }
+                    let key = value.key();
+                    if !next.contains(&key) {
+                        if next.len() >= MAX_STREAM_SEMI_JOIN_KEYS {
+                            too_many = true;
+                            break;
+                        }
+                        next.insert(key);
+                    }
+                }
+                if too_many {
+                    continue;
+                }
+                if let Some(previous) = keysets.get(&(relation_index, column)) {
+                    next.retain(|key| previous.contains(key));
+                    if *previous == next {
+                        continue;
+                    }
+                }
+                let next_bytes = semijoin_key_bytes(&next)?;
+                let current_bytes = keysets.values().try_fold(0usize, |bytes, set| {
+                    bytes
+                        .checked_add(semijoin_key_bytes(set)?)
+                        .ok_or_else(|| invalid("JOIN semijoin filter size overflow"))
+                })?;
+                let previous_bytes = keysets
+                    .get(&(relation_index, column))
+                    .map(semijoin_key_bytes)
+                    .transpose()?
+                    .unwrap_or(0);
+                if current_bytes
+                    .saturating_sub(previous_bytes)
+                    .saturating_add(next_bytes)
+                    > MAX_STREAM_SEMI_JOIN_BYTES
+                {
+                    continue;
+                }
+                keysets.insert((relation_index, column), next);
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    Ok(keysets)
 }
 
 type GroupRow = (
@@ -367,7 +625,7 @@ fn bind_case_metric(
 struct ScalarAggregateState {
     sum: Option<super::super::Number>,
     count: u64,
-    extreme: Option<super::super::Number>,
+    extreme: Option<typed::Cell>,
     distinct: HashSet<typed::Key>,
     distinct_bytes: usize,
 }
@@ -476,31 +734,32 @@ fn write_scalar_aggregates<W: Write>(
         }
         let value = match &aggregate.aggregate {
             crate::JoinAggregate::CountStar | crate::JoinAggregate::CountColumn(_) => {
-                Some(super::super::Number::Unsigned(u128::from(state.count)))
+                typed::Cell::Numeric(super::super::Number::Unsigned(u128::from(state.count)))
             }
             crate::JoinAggregate::Numeric {
                 function: crate::AggregateFunction::Sum,
                 ..
-            } => state.sum,
+            } => state.sum.map_or(typed::Cell::Null, typed::Cell::Numeric),
             crate::JoinAggregate::Numeric {
                 function: crate::AggregateFunction::Avg,
                 ..
-            } => state.sum.and_then(|sum| {
-                (state.count > 0)
-                    .then(|| super::super::Number::Float(number_as_f64(sum) / state.count as f64))
-            }),
+            } => state
+                .sum
+                .and_then(|sum| {
+                    (state.count > 0).then(|| {
+                        super::super::Number::Float(number_as_f64(sum) / state.count as f64)
+                    })
+                })
+                .map_or(typed::Cell::Null, typed::Cell::Numeric),
             crate::JoinAggregate::Numeric {
                 function: crate::AggregateFunction::Min | crate::AggregateFunction::Max,
                 ..
-            } => state.extreme,
+            } => state.extreme.clone().unwrap_or(typed::Cell::Null),
             crate::JoinAggregate::Numeric { .. } => {
                 return Err(invalid("unsupported scalar JOIN aggregate"));
             }
         };
-        typed::write_value(
-            output,
-            &value.map_or(typed::Cell::Null, typed::Cell::Numeric),
-        )?;
+        typed::write_value(output, &value)?;
     }
     output.write_all(b"\n")?;
     Ok(())
@@ -760,14 +1019,14 @@ fn visit<W: Write>(
                 let Some(value) = value else {
                     return Err(invalid("scalar JOIN aggregate requires a column"));
                 };
-                let typed::Cell::Numeric(value) = value else {
-                    if matches!(value, typed::Cell::Null) {
-                        continue;
-                    }
-                    return Err(invalid("scalar JOIN aggregate requires numeric values"));
-                };
                 match metric.function {
                     crate::AggregateFunction::Sum | crate::AggregateFunction::Avg => {
+                        let typed::Cell::Numeric(value) = value else {
+                            if matches!(value, typed::Cell::Null) {
+                                continue;
+                            }
+                            return Err(invalid("scalar JOIN SUM/AVG requires numeric values"));
+                        };
                         state.sum = Some(match state.sum {
                             Some(previous) => {
                                 super::super::checked_aggregate_sum(previous, *value)?
@@ -780,24 +1039,44 @@ fn visit<W: Write>(
                             .ok_or_else(|| invalid("scalar JOIN aggregate count overflow"))?;
                     }
                     crate::AggregateFunction::Min | crate::AggregateFunction::Max => {
-                        state.extreme = Some(match state.extreme {
-                            Some(previous) => {
-                                let order =
-                                    super::super::multi_aggregate::compare_expression_numbers(
-                                        *value, previous,
+                        if matches!(value, typed::Cell::Null) {
+                            continue;
+                        }
+                        if !matches!(value, typed::Cell::Numeric(_) | typed::Cell::Text(_)) {
+                            return Err(invalid(
+                                "scalar JOIN MIN/MAX requires numeric or String values",
+                            ));
+                        }
+                        let order =
+                            state
+                                .extreme
+                                .as_ref()
+                                .map(|previous| match (value, previous) {
+                                    (
+                                        typed::Cell::Numeric(candidate),
+                                        typed::Cell::Numeric(incumbent),
+                                    ) => super::super::multi_aggregate::compare_expression_numbers(
+                                        *candidate, *incumbent,
                                     )
                                     .unwrap_or_else(|| {
-                                        super::super::compare_numbers(*value, previous)
-                                    });
-                                let replace = if metric.function == crate::AggregateFunction::Min {
-                                    order.is_lt()
-                                } else {
-                                    order.is_gt()
-                                };
-                                if replace { *value } else { previous }
+                                        super::super::compare_numbers(*candidate, *incumbent)
+                                    }),
+                                    (
+                                        typed::Cell::Text(candidate),
+                                        typed::Cell::Text(incumbent),
+                                    ) => candidate.cmp(incumbent),
+                                    _ => typed::cmp(value, previous),
+                                });
+                        let replace = order.is_none_or(|order| {
+                            if metric.function == crate::AggregateFunction::Min {
+                                order.is_lt()
+                            } else {
+                                order.is_gt()
                             }
-                            None => *value,
                         });
+                        if replace {
+                            state.extreme = Some(value.clone());
+                        }
                     }
                     _ => return Err(invalid("unsupported scalar JOIN aggregate")),
                 }
@@ -1436,8 +1715,17 @@ pub(super) fn execute<W: Write>(
                         | "Float32"
                         | "Float64"
                 );
-                if function != crate::AggregateFunction::Count && !numeric {
-                    return Err(invalid("scalar JOIN aggregate requires numeric columns"));
+                let text_extreme = matches!(
+                    (function, kind),
+                    (
+                        crate::AggregateFunction::Min | crate::AggregateFunction::Max,
+                        "String"
+                    )
+                );
+                if function != crate::AggregateFunction::Count && !numeric && !text_extreme {
+                    return Err(invalid(
+                        "scalar JOIN aggregate requires numeric columns or String MIN/MAX",
+                    ));
                 }
             }
             Ok(BoundScalarAggregate {
@@ -1645,10 +1933,22 @@ pub(super) fn execute<W: Write>(
         })
         .collect::<Vec<_>>();
 
-    let mut stages = Vec::with_capacity(relations.len() - 1);
-    let mut retained = 0usize;
     let inner_join_plan = initial_step.kind == JoinType::Inner
         && query.steps.iter().all(|step| step.kind == JoinType::Inner);
+    let join_pairs = join_key_pairs(query, relations, initial_step)?;
+    let semijoin_keysets = if inner_join_plan {
+        collect_semijoin_keysets(paths, relations, &join_pairs, comparisons, row_filters)?
+    } else {
+        HashMap::new()
+    };
+    let semijoin_bytes = semijoin_keysets.values().try_fold(0usize, |bytes, set| {
+        bytes
+            .checked_add(semijoin_key_bytes(set)?)
+            .ok_or_else(|| invalid("JOIN semijoin filter size overflow"))
+    })?;
+    let fact_semijoin_filters = semijoin_filters_for_relation(0, &join_pairs, &semijoin_keysets);
+    let mut stages = Vec::with_capacity(relations.len() - 1);
+    let mut retained = semijoin_bytes;
     for (step_index, step) in std::iter::once(initial_step)
         .chain(query.steps.iter())
         .enumerate()
@@ -1668,17 +1968,15 @@ pub(super) fn execute<W: Write>(
             })
             .collect::<Result<Vec<_>, _>>()?;
         let available = MAX_CHAIN_BYTES.saturating_sub(retained);
-        // Safe relation-local predicates can reject build rows before hash
-        // retention. The full filter still runs in the final visitor.
-        let dimension_filter = inner_join_plan
-            .then(|| {
-                comparisons.iter().find(|(index, _, _)| {
-                    index
-                        .checked_sub(relation.start)
-                        .is_some_and(|local| local < relation.physical_columns)
-                })
-            })
-            .flatten();
+        let local_comparisons = if inner_join_plan {
+            super::relation_comparison_filters(
+                comparisons,
+                relation.start,
+                relation.physical_columns,
+            )
+        } else {
+            Vec::new()
+        };
         let row_filter = row_filters
             .filter(|_| inner_join_plan && relation.virtual_columns.is_empty())
             .and_then(|filters| {
@@ -1686,7 +1984,14 @@ pub(super) fn execute<W: Write>(
                     .prefilter_conditions(relation.start, relation.names.len())
                     .map(|conditions| (filters, conditions))
             });
-        let mut right_rows = if let Some((index, operator, value)) = dimension_filter {
+        let mut stage_semijoin_filters =
+            semijoin_filters_for_relation(step_index + 1, &join_pairs, &semijoin_keysets);
+        stage_semijoin_filters.retain(|(column, _)| *column < relation.physical_columns);
+        let mut right_rows = if local_comparisons.len() == 1
+            && row_filter.is_none()
+            && stage_semijoin_filters.is_empty()
+        {
+            let (index, operator, value) = &local_comparisons[0];
             read_filtered_compact_projected_build_rows(
                 &paths[step_index + 1],
                 &relation.names,
@@ -1694,11 +1999,19 @@ pub(super) fn execute<W: Write>(
                 relation.rows,
                 crate::join::MAX_STREAM_JOIN_BUILD_ROWS,
                 available.min(MAX_STREAM_BUILD_BYTES),
-                (*index - relation.start, *operator, value),
+                (*index, *operator, value),
             )?
-        } else if let Some((filters, conditions)) = row_filter {
-            let mut predicate =
-                |row: &[typed::Cell]| filters.passes_relation(row, relation.start, &conditions);
+        } else if !local_comparisons.is_empty()
+            || row_filter.is_some()
+            || !stage_semijoin_filters.is_empty()
+        {
+            let mut predicate = |row: &[typed::Cell]| {
+                super::passes_relation_comparison_filters(row, &local_comparisons)
+                    && row_filter.as_ref().is_none_or(|(filters, conditions)| {
+                        filters.passes_relation(row, relation.start, conditions)
+                    })
+                    && passes_semijoin_filters(row, &stage_semijoin_filters)
+            };
             read_compact_projected_build_rows_matching(
                 &paths[step_index + 1],
                 &relation.names,
@@ -1846,6 +2159,9 @@ pub(super) fn execute<W: Write>(
                 }
             }
             if !passes_fact_comparisons(&row, &fact_comparisons) {
+                continue;
+            }
+            if !passes_semijoin_filters(&row, &fact_semijoin_filters) {
                 continue;
             }
             // Relation-local OR predicates can reject fact rows before any
