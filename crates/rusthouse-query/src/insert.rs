@@ -83,6 +83,14 @@ fn parse_insert_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, Pars
     Ok(Some(result))
 }
 
+fn finish_insert(parser: &mut Parser) -> Result<(), ParseError> {
+    parser.take(Token::Semicolon);
+    if parser.index != parser.tokens.len() {
+        return Err(ParseError("unexpected tokens after INSERT statement".into()));
+    }
+    Ok(())
+}
+
 /// Recognize INSERT INTO table [(column, ...)] VALUES (...), (...).
 /// Only literal rows are accepted, with no expressions or implicit casts.
 pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
@@ -107,12 +115,7 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
         if !parser.keyword("VALUES") {
             return Err(ParseError("expected VALUES after DEFAULT".into()));
         }
-        parser.take(Token::Semicolon);
-        if parser.index != parser.tokens.len() {
-            return Err(ParseError(
-                "unexpected tokens after INSERT statement".into(),
-            ));
-        }
+        finish_insert(&mut parser)?;
         return Ok(Some(Insert {
             table,
             columns: Some(Vec::new()),
@@ -165,12 +168,7 @@ pub fn parse_insert(sql: &str) -> Result<Option<Insert>, ParseError> {
             break;
         }
     }
-    parser.take(Token::Semicolon);
-    if parser.index != parser.tokens.len() {
-        return Err(ParseError(
-            "unexpected tokens after INSERT statement".into(),
-        ));
-    }
+    finish_insert(&mut parser)?;
     Ok(Some(Insert {
         table,
         columns,
