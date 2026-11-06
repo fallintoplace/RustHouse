@@ -3,7 +3,10 @@ use crate::UuidValue;
 use crate::fixed_width::MAX_BATCH_BYTES;
 use std::io::{self, Write};
 
-fn uuid_disk_bytes(value: &UuidValue) -> [u8; 16] {
+const UUID_BYTES: usize = 16;
+const UUID_BUFFER_BYTES: usize = UUID_BYTES * 1024;
+
+fn uuid_disk_bytes(value: &UuidValue) -> [u8; UUID_BYTES] {
     let mut disk = *value.as_bytes();
     disk[..8].reverse();
     disk[8..].reverse();
@@ -17,7 +20,7 @@ fn uuid_disk_bytes(value: &UuidValue) -> [u8; 16] {
 pub fn write_uuid_values<W: Write>(writer: &mut W, values: &[UuidValue]) -> io::Result<()> {
     let bytes = values
         .len()
-        .checked_mul(16)
+        .checked_mul(UUID_BYTES)
         .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "UUID batch size overflow"))?;
     if bytes > MAX_BATCH_BYTES {
         return Err(io::Error::new(
@@ -26,12 +29,13 @@ pub fn write_uuid_values<W: Write>(writer: &mut W, values: &[UuidValue]) -> io::
         ));
     }
 
-    let mut buffer = [0u8; 16 * 1024];
-    for chunk in values.chunks(buffer.len() / 16) {
+    let mut buffer = [0u8; UUID_BUFFER_BYTES];
+    for chunk in values.chunks(buffer.len() / UUID_BYTES) {
         for (index, value) in chunk.iter().enumerate() {
-            buffer[index * 16..index * 16 + 16].copy_from_slice(&uuid_disk_bytes(value));
+            let offset = index * UUID_BYTES;
+            buffer[offset..offset + UUID_BYTES].copy_from_slice(&uuid_disk_bytes(value));
         }
-        writer.write_all(&buffer[..chunk.len() * 16])?;
+        writer.write_all(&buffer[..chunk.len() * UUID_BYTES])?;
     }
     Ok(())
 }
