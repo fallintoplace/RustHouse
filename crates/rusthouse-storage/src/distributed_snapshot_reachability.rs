@@ -12,6 +12,10 @@ pub struct ReachabilityPlan {
     pub candidates: Vec<SnapshotVersion>,
 }
 
+fn snapshot_key(snapshot: SnapshotVersion) -> (u64, u64) {
+    (snapshot.epoch, snapshot.generation)
+}
+
 /// Every active reader, replica head, and recovery checkpoint must be pinned.
 /// This function only reasons about the supplied immutable ancestry forest.
 pub fn plan_snapshot_reachability(
@@ -24,13 +28,13 @@ pub fn plan_snapshot_reachability(
     }
     let by_id: HashMap<(u64, u64), SnapshotParent> = records
         .iter()
-        .map(|&record| ((record.snapshot.epoch, record.snapshot.generation), record))
+        .map(|&record| (snapshot_key(record.snapshot), record))
         .collect();
     let mut reachable = HashSet::new();
     for &pin in pinned_heads {
         let mut current = pin;
         loop {
-            let key = (current.epoch, current.generation);
+            let key = snapshot_key(current);
             let record = by_id.get(&key).ok_or("pinned snapshot is unknown")?;
             if record.snapshot.fingerprint != current.fingerprint {
                 return Err("pinned snapshot fingerprint mismatch");
@@ -47,7 +51,7 @@ pub fn plan_snapshot_reachability(
     let (mut keep, mut candidates): (Vec<_>, Vec<_>) = records
         .iter()
         .map(|record| record.snapshot)
-        .partition(|snapshot| reachable.contains(&(snapshot.epoch, snapshot.generation)));
+        .partition(|snapshot| reachable.contains(&snapshot_key(*snapshot)));
     keep.sort_unstable_by_key(|v| (v.epoch, v.generation));
     candidates.sort_unstable_by_key(|v| (v.epoch, v.generation));
     Ok(ReachabilityPlan { keep, candidates })
