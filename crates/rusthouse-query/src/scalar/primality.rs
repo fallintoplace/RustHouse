@@ -1,3 +1,9 @@
+/// Reduce a full-width product without overflowing UInt64.
+#[inline]
+fn mul_mod_wide(left: u64, right: u64, modulus: u64) -> u64 {
+    ((u128::from(left) * u128::from(right)) % u128::from(modulus)) as u64
+}
+
 /// Binary exponentiation with exact UInt128 intermediates for 64-bit residues.
 pub(super) fn pow_mod(mut base: u64, mut exponent: u64, modulus: u64) -> u64 {
     // Most scalar inputs fit in 32 bits. Multiplying two residues of a
@@ -21,11 +27,11 @@ pub(super) fn pow_mod(mut base: u64, mut exponent: u64, modulus: u64) -> u64 {
     let mut result = 1u64;
     while exponent > 0 {
         if exponent & 1 != 0 {
-            result = ((u128::from(result) * u128::from(base)) % u128::from(modulus)) as u64;
+            result = mul_mod_wide(result, base, modulus);
         }
         exponent >>= 1;
         if exponent != 0 {
-            base = ((u128::from(base) * u128::from(base)) % u128::from(modulus)) as u64;
+            base = mul_mod_wide(base, base, modulus);
         }
     }
     result
@@ -59,7 +65,7 @@ pub(super) fn prime_u64(value: u64) -> bool {
         }
         let mut witnessed_nontrivial_root = false;
         for _ in 1..shifts {
-            power = ((u128::from(power) * u128::from(power)) % u128::from(value)) as u64;
+            power = mul_mod_wide(power, power, value);
             if power == value - 1 {
                 witnessed_nontrivial_root = true;
                 break;
