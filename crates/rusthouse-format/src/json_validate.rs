@@ -9,6 +9,15 @@ fn invalid() -> io::Error {
     io::Error::new(io::ErrorKind::InvalidData, "invalid JSON object")
 }
 
+fn hex_digit(byte: u8) -> Option<u16> {
+    match byte {
+        b'0'..=b'9' => Some(u16::from(byte - b'0')),
+        b'a'..=b'f' => Some(u16::from(byte - b'a' + 10)),
+        b'A'..=b'F' => Some(u16::from(byte - b'A' + 10)),
+        _ => None,
+    }
+}
+
 struct Parser<'a> {
     input: &'a [u8],
     offset: usize,
@@ -72,12 +81,7 @@ impl Parser<'_> {
         let mut value = 0u16;
         for _ in 0..4 {
             let byte = *self.input.get(self.offset).ok_or_else(invalid)?;
-            let digit = match byte {
-                b'0'..=b'9' => u16::from(byte - b'0'),
-                b'a'..=b'f' => u16::from(byte - b'a' + 10),
-                b'A'..=b'F' => u16::from(byte - b'A' + 10),
-                _ => return Err(invalid()),
-            };
+            let digit = hex_digit(byte).ok_or_else(invalid)?;
             value = (value << 4) | digit;
             self.offset += 1;
         }
