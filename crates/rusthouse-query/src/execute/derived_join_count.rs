@@ -44,6 +44,29 @@ fn parse_group_counts(output: &[u8]) -> Result<BTreeMap<u64, u64>, ExecutionErro
     Ok(groups)
 }
 
+fn compare_group_rows(
+    left: &(u64, u64),
+    right: &(u64, u64),
+    order: &[(bool, bool)],
+) -> std::cmp::Ordering {
+    for &(count, descending) in order {
+        let comparison = if count {
+            left.1.cmp(&right.1)
+        } else {
+            left.0.cmp(&right.0)
+        };
+        let comparison = if descending {
+            comparison.reverse()
+        } else {
+            comparison
+        };
+        if !comparison.is_eq() {
+            return comparison;
+        }
+    }
+    std::cmp::Ordering::Equal
+}
+
 /// Execute the two grouping stages while the caller holds the database read lock.
 pub fn execute_derived_join_count<W: Write>(
     plan: &DerivedJoinCount,
@@ -60,24 +83,7 @@ pub fn execute_derived_join_count<W: Write>(
     let groups = parse_group_counts(&intermediate.0)?;
     let mut rows = groups.into_iter().collect::<Vec<_>>();
     if !plan.order.is_empty() {
-        rows.sort_by(|left, right| {
-            for &(count, descending) in &plan.order {
-                let comparison = if count {
-                    left.1.cmp(&right.1)
-                } else {
-                    left.0.cmp(&right.0)
-                };
-                let comparison = if descending {
-                    comparison.reverse()
-                } else {
-                    comparison
-                };
-                if !comparison.is_eq() {
-                    return comparison;
-                }
-            }
-            std::cmp::Ordering::Equal
-        });
+        rows.sort_by(|left, right| compare_group_rows(left, right, &plan.order));
     }
     writeln!(output, "{}\t{}", plan.group_name, plan.count_name)?;
     for (value, count) in rows
