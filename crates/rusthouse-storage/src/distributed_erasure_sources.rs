@@ -28,13 +28,11 @@ pub struct ErasureSourcePlan {
     pub total_cost: u64,
 }
 
-/// Pick exactly required distinct fragments from separate source nodes.
-/// At least min_zones different zones must be represented.
-pub fn choose_erasure_sources(
+fn validate_source_request(
     sources: &[FragmentSource],
     required: usize,
     min_zones: usize,
-) -> Result<ErasureSourcePlan, &'static str> {
+) -> Result<(), &'static str> {
     if sources.is_empty()
         || sources.len() > MAX_SOURCES
         || required == 0
@@ -56,6 +54,17 @@ pub fn choose_erasure_sources(
             return Err("invalid erasure recovery source");
         }
     }
+    Ok(())
+}
+
+/// Pick exactly required distinct fragments from separate source nodes.
+/// At least min_zones different zones must be represented.
+pub fn choose_erasure_sources(
+    sources: &[FragmentSource],
+    required: usize,
+    min_zones: usize,
+) -> Result<ErasureSourcePlan, &'static str> {
+    validate_source_request(sources, required, min_zones)?;
     // Canonicalize source enumeration so equal-cost plans do not depend on
     // the order in which replica metadata arrived.
     let mut ordered = sources.iter().collect::<Vec<_>>();
