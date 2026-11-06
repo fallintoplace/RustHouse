@@ -28,7 +28,7 @@ impl SnapshotSessionFloor {
         ancestry: &SnapshotAncestry,
         next: SnapshotVersion,
     ) -> Result<(), &'static str> {
-        if !ancestry.is_ancestor(self.floor, next)? {
+        if !self.permits(ancestry, next)? {
             return Err("snapshot would violate monotonic session ancestry");
         }
         self.floor = next;
