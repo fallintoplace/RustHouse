@@ -40,8 +40,7 @@ fn valid_header_value(value: &str) -> bool {
 
 pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
     let (name, value) = line.split_once(':').ok_or("invalid peer header")?;
-    if !valid_header_name(name) || !valid_header_value(value)
-    {
+    if !valid_header_name(name) || !valid_header_value(value) {
         return Err("invalid peer header".into());
     }
     // HTTP optional whitespace is SP / HTAB only. Unicode trim() would
