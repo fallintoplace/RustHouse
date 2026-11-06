@@ -2154,12 +2154,11 @@ fn execute_multi_join_inner<W: Write>(
     };
     let first_row_filter = row_filters
         .as_ref()
-        .filter(|filters| {
-            inner_join_plan && filters.can_prefilter_relation(0, relations[0].names.len())
-        })
-        .map(|filters| {
-            let conditions = filters.prefilter_conditions(0, relations[0].names.len());
-            (filters, conditions)
+        .filter(|_| inner_join_plan)
+        .and_then(|filters| {
+            filters
+                .prefilter_conditions(0, relations[0].names.len())
+                .map(|conditions| (filters, conditions))
         });
     let mut rows = if first_relation_filters.is_empty() && first_row_filter.is_none() {
         read_projected_build_rows(
@@ -2175,9 +2174,7 @@ fn execute_multi_join_inner<W: Write>(
             passes_relation_comparison_filters(row, &first_relation_filters)
                 && first_row_filter
                     .as_ref()
-                    .map_or(true, |(filters, conditions)| {
-                        filters.passes_relation(row, 0, conditions)
-                    })
+                    .is_none_or(|(filters, conditions)| filters.passes_relation(row, 0, conditions))
         };
         read_projected_build_rows_matching(
             &paths[0],
@@ -2228,18 +2225,15 @@ fn execute_multi_join_inner<W: Write>(
         } else {
             Vec::new()
         };
-        let right_row_filter = row_filters
-            .as_ref()
-            .filter(|filters| {
-                inner_join_plan
-                    && filters
-                        .can_prefilter_relation(right_relation.start, right_relation.names.len())
-            })
-            .map(|filters| {
-                let conditions =
-                    filters.prefilter_conditions(right_relation.start, right_relation.names.len());
-                (filters, conditions)
-            });
+        let right_row_filter =
+            row_filters
+                .as_ref()
+                .filter(|_| inner_join_plan)
+                .and_then(|filters| {
+                    filters
+                        .prefilter_conditions(right_relation.start, right_relation.names.len())
+                        .map(|conditions| (filters, conditions))
+                });
         let right_rows = if right_filters.is_empty() && right_row_filter.is_none() {
             read_projected_build_rows(
                 &paths[step_index + 1],
@@ -2254,7 +2248,7 @@ fn execute_multi_join_inner<W: Write>(
                 passes_relation_comparison_filters(row, &right_filters)
                     && right_row_filter
                         .as_ref()
-                        .map_or(true, |(filters, conditions)| {
+                        .is_none_or(|(filters, conditions)| {
                             filters.passes_relation(row, right_relation.start, conditions)
                         })
             };

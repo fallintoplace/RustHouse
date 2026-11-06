@@ -27,8 +27,13 @@ struct RowCondition {
 
 pub(super) struct RowFilters {
     branches: Vec<Vec<RowCondition>>,
-    common_conditions: Vec<usize>,
+    common_conditions: Vec<Vec<usize>>,
     pub(super) indices: Vec<usize>,
+}
+
+pub(super) struct RelationPrefilter {
+    common: Vec<usize>,
+    branches: Vec<Vec<usize>>,
 }
 
 fn numeric(kind: &str) -> bool {
@@ -57,21 +62,19 @@ impl RowFilters {
         predicates: &[Vec<Predicate>],
         relations: &[Relation],
     ) -> Result<Self, ExecutionError> {
-        let common_conditions = predicates
-            .first()
-            .map(|first| {
-                first
+        let common_predicates = predicates.first().map_or_else(Vec::new, |first| {
+            let mut common = Vec::new();
+            for predicate in first {
+                if predicates[1..]
                     .iter()
-                    .enumerate()
-                    .filter_map(|(index, predicate)| {
-                        predicates[1..]
-                            .iter()
-                            .all(|branch| branch.contains(predicate))
-                            .then_some(index)
-                    })
-                    .collect()
-            })
-            .unwrap_or_default();
+                    .all(|branch| branch.contains(predicate))
+                    && !common.contains(predicate)
+                {
+                    common.push(predicate.clone());
+                }
+            }
+            common
+        });
         let mut indices = Vec::new();
         let resolve = |name: &str| {
             let (relation, name) = name.split_once('\0').unwrap_or(("", name));
@@ -215,6 +218,17 @@ impl RowFilters {
         }
         indices.sort_unstable();
         indices.dedup();
+        let common_conditions = predicates
+            .iter()
+            .map(|branch| {
+                common_predicates
+                    .iter()
+                    .filter_map(|predicate| {
+                        branch.iter().position(|candidate| candidate == predicate)
+                    })
+                    .collect()
+            })
+            .collect();
         Ok(Self {
             branches,
             common_conditions,
@@ -238,10 +252,7 @@ impl RowFilters {
         Ok(false)
     }
 
-    fn common_condition_is_local(&self, index: usize, start: usize, end: usize) -> bool {
-        let Some(condition) = self.branches.first().and_then(|branch| branch.get(index)) else {
-            return false;
-        };
+    fn condition_is_local(condition: &RowCondition, start: usize, end: usize) -> bool {
         (start..end).contains(&condition.index)
             && match &condition.test {
                 RowTest::Column(_, other) => (start..end).contains(other),
@@ -250,46 +261,113 @@ impl RowFilters {
             }
     }
 
-    /// Return shared predicates that can reject rows from this relation alone.
-    pub(super) fn prefilter_conditions(&self, start: usize, width: usize) -> Vec<usize> {
-        let Some(end) = start.checked_add(width) else {
-            return Vec::new();
-        };
-        self.common_conditions
+    /// Return predicates that can reject rows from this relation alone.
+    /// Every OR branch must contribute a local condition unless a common local
+    /// predicate already rejects rows for every branch.
+    pub(super) fn prefilter_conditions(
+        &self,
+        start: usize,
+        width: usize,
+    ) -> Option<RelationPrefilter> {
+        let end = start.checked_add(width)?;
+        let common = self
+            .branches
+            .first()?
             .iter()
-            .copied()
-            .filter(|&index| self.common_condition_is_local(index, start, end))
-            .collect()
-    }
-
-    /// Shared conditions can be pushed to each relation that they reference
-    /// without requiring unrelated shared predicates to use the same relation.
-    pub(super) fn can_prefilter_relation(&self, start: usize, width: usize) -> bool {
-        let Some(end) = start.checked_add(width) else {
-            return false;
-        };
-        self.common_conditions
+            .enumerate()
+            .filter_map(|(index, condition)| {
+                (self
+                    .common_conditions
+                    .first()
+                    .is_some_and(|conditions| conditions.contains(&index))
+                    && Self::condition_is_local(condition, start, end))
+                .then_some(index)
+            })
+            .collect::<Vec<_>>();
+        let mut branches = self
+            .branches
             .iter()
-            .any(|&index| self.common_condition_is_local(index, start, end))
+            .enumerate()
+            .map(|(branch_index, branch)| {
+                let common = self
+                    .common_conditions
+                    .get(branch_index)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default();
+                branch
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, condition)| {
+                        (Self::condition_is_local(condition, start, end)
+                            && !common.contains(&index))
+                        .then_some(index)
+                    })
+                    .collect()
+            })
+            .collect::<Vec<_>>();
+        if branches.iter().any(Vec::is_empty) {
+            branches.clear();
+        }
+        if common.is_empty() && branches.is_empty() {
+            return None;
+        }
+        Some(RelationPrefilter { common, branches })
     }
 
     pub(super) fn passes_relation(
         &self,
         row: &[typed::Cell],
         start: usize,
-        conditions: &[usize],
+        conditions: &RelationPrefilter,
     ) -> bool {
         let Some(end) = start.checked_add(row.len()) else {
             return false;
         };
+        debug_assert!(conditions.common.iter().all(|&index| {
+            self.branches
+                .first()
+                .and_then(|branch| branch.get(index))
+                .is_some_and(|condition| Self::condition_is_local(condition, start, end))
+        }));
         debug_assert!(
-            conditions
-                .iter()
-                .all(|&index| self.common_condition_is_local(index, start, end))
+            conditions.branches.is_empty() || {
+                conditions.branches.len() == self.branches.len()
+                    && conditions
+                        .branches
+                        .iter()
+                        .zip(&self.branches)
+                        .all(|(indices, branch)| {
+                            !indices.is_empty()
+                                && indices.iter().all(|&index| {
+                                    branch.get(index).is_some_and(|condition| {
+                                        Self::condition_is_local(condition, start, end)
+                                    })
+                                })
+                        })
+            }
         );
-        conditions.iter().all(|&index| {
-            Self::condition_passes(&self.branches[0][index], row, start).is_ok_and(|passes| passes)
-        })
+        let common_passes = conditions.common.iter().all(|&index| {
+            self.branches
+                .first()
+                .and_then(|branch| branch.get(index))
+                .is_some_and(|condition| {
+                    Self::condition_passes(condition, row, start).is_ok_and(|passes| passes)
+                })
+        });
+        common_passes
+            && (conditions.branches.is_empty()
+                || conditions
+                    .branches
+                    .iter()
+                    .zip(&self.branches)
+                    .any(|(indices, branch)| {
+                        indices.iter().all(|&index| {
+                            branch.get(index).is_some_and(|condition| {
+                                Self::condition_passes(condition, row, start)
+                                    .is_ok_and(|passes| passes)
+                            })
+                        })
+                    }))
     }
 
     fn condition_passes(
@@ -411,12 +489,12 @@ mod tests {
     }
 
     #[test]
-    fn prefilters_only_common_conjuncts_that_are_local_to_the_relation() {
+    fn prefilters_local_conditions_from_every_or_branch() {
         let filters =
             RowFilters::bind(&[vec![like("part\0p_name", "%green%")]], &relations()).unwrap();
-        assert!(filters.can_prefilter_relation(1, 1));
-        assert!(!filters.can_prefilter_relation(0, 1));
-        let local = filters.prefilter_conditions(1, 1);
+        assert!(filters.prefilter_conditions(1, 1).is_some());
+        assert!(filters.prefilter_conditions(0, 1).is_none());
+        let local = filters.prefilter_conditions(1, 1).unwrap();
         assert!(filters.passes_relation(&[typed::Cell::Text(b"green part".to_vec())], 1, &local));
         assert!(!filters.passes_relation(&[typed::Cell::Text(b"blue part".to_vec())], 1, &local));
 
@@ -428,14 +506,19 @@ mod tests {
             &relations(),
         )
         .unwrap();
-        assert!(!branches.can_prefilter_relation(1, 1));
+        assert!(branches.prefilter_conditions(1, 1).is_some());
+        let local = branches.prefilter_conditions(1, 1).unwrap();
+        assert_eq!(local.branches.len(), 2);
+        assert!(branches.passes_relation(&[typed::Cell::Text(b"green part".to_vec())], 1, &local,));
+        assert!(branches.passes_relation(&[typed::Cell::Text(b"blue part".to_vec())], 1, &local,));
+        assert!(!branches.passes_relation(&[typed::Cell::Text(b"red part".to_vec())], 1, &local,));
     }
 
     #[test]
     fn prefilter_matches_the_full_row_filter_for_a_single_relation() {
         let filters =
             RowFilters::bind(&[vec![like("part\0p_name", "%green%")]], &relations()).unwrap();
-        let local_conditions = filters.prefilter_conditions(1, 1);
+        let local_conditions = filters.prefilter_conditions(1, 1).unwrap();
         for name in [b"green part".as_slice(), b"blue part"] {
             let local_row = [typed::Cell::Text(name.to_vec())];
             let full = [
@@ -461,10 +544,11 @@ mod tests {
         )
         .unwrap();
 
-        assert!(filters.can_prefilter_relation(0, 1));
-        assert!(!filters.can_prefilter_relation(1, 1));
-        let local_conditions = filters.prefilter_conditions(0, 1);
-        assert_eq!(local_conditions.len(), 1);
+        assert!(filters.prefilter_conditions(0, 1).is_some());
+        assert!(filters.prefilter_conditions(1, 1).is_some());
+        let local_conditions = filters.prefilter_conditions(0, 1).unwrap();
+        assert_eq!(local_conditions.common.len(), 1);
+        assert!(local_conditions.branches.is_empty());
         assert!(filters.passes_relation(
             &[typed::Cell::Numeric(super::super::super::Number::Unsigned(
                 11
@@ -498,11 +582,11 @@ mod tests {
             &relations(),
         )
         .unwrap();
-        let order_conditions = filters.prefilter_conditions(0, 1);
-        let part_conditions = filters.prefilter_conditions(1, 1);
+        let order_conditions = filters.prefilter_conditions(0, 1).unwrap();
+        let part_conditions = filters.prefilter_conditions(1, 1).unwrap();
 
-        assert_eq!(order_conditions.len(), 1);
-        assert_eq!(part_conditions.len(), 1);
+        assert_eq!(order_conditions.common.len(), 1);
+        assert_eq!(part_conditions.common.len(), 1);
         assert!(filters.passes_relation(
             &[typed::Cell::Numeric(super::super::super::Number::Unsigned(
                 11
@@ -530,35 +614,81 @@ mod tests {
     }
 
     #[test]
-    fn prefilters_shared_or_conditions_but_not_branch_specific_local_conditions() {
-        let shared_part = like("part\0p_name", "%green%");
+    fn prefilters_disjunctions_of_relation_local_conditions() {
+        let shared = comparison("orders\0id", Operator::Gt, "0");
         let filters = RowFilters::bind(
             &[
                 vec![
-                    shared_part.clone(),
+                    shared.clone(),
+                    like("part\0p_name", "%green%"),
                     comparison("orders\0id", Operator::Gt, "10"),
                 ],
-                vec![shared_part, comparison("orders\0id", Operator::Lt, "5")],
+                vec![
+                    shared,
+                    like("part\0p_name", "%blue%"),
+                    comparison("orders\0id", Operator::Lt, "5"),
+                ],
             ],
             &relations(),
         )
         .unwrap();
-        let order_conditions = filters.prefilter_conditions(0, 1);
-        let part_conditions = filters.prefilter_conditions(1, 1);
+        let order_conditions = filters.prefilter_conditions(0, 1).unwrap();
+        let part_conditions = filters.prefilter_conditions(1, 1).unwrap();
 
-        assert!(order_conditions.is_empty());
-        assert_eq!(part_conditions.len(), 1);
-        assert!(!filters.can_prefilter_relation(0, 1));
+        assert_eq!(order_conditions.branches.len(), 2);
+        assert_eq!(order_conditions.common.len(), 1);
+        assert_eq!(part_conditions.branches.len(), 2);
+        for order_id in [3, 8, 11] {
+            let local = [typed::Cell::Numeric(super::super::super::Number::Unsigned(
+                order_id,
+            ))];
+            assert_eq!(
+                filters.passes_relation(&local, 0, &order_conditions),
+                order_id < 5 || order_id > 10,
+            );
+        }
         assert!(filters.passes_relation(
             &[typed::Cell::Text(b"green part".to_vec())],
             1,
             &part_conditions,
         ));
-        assert!(!filters.passes_relation(
+        assert!(filters.passes_relation(
             &[typed::Cell::Text(b"blue part".to_vec())],
             1,
             &part_conditions,
         ));
+        assert!(!filters.passes_relation(
+            &[typed::Cell::Text(b"red part".to_vec())],
+            1,
+            &part_conditions,
+        ));
+        for order_id in [3, 8, 11] {
+            for part_name in [b"green part".as_slice(), b"blue part", b"red part"] {
+                let full = [
+                    typed::Cell::Numeric(super::super::super::Number::Unsigned(order_id)),
+                    typed::Cell::Text(part_name.to_vec()),
+                ];
+                if filters.passes(&full).unwrap() {
+                    assert!(filters.passes_relation(&full[..1], 0, &order_conditions));
+                    assert!(filters.passes_relation(&full[1..], 1, &part_conditions));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn does_not_prefilter_when_an_or_branch_has_no_local_condition() {
+        let filters = RowFilters::bind(
+            &[
+                vec![comparison("orders\0id", Operator::Gt, "10")],
+                vec![like("part\0p_name", "%green%")],
+            ],
+            &relations(),
+        )
+        .unwrap();
+
+        assert!(filters.prefilter_conditions(0, 1).is_none());
+        assert!(filters.prefilter_conditions(1, 1).is_none());
     }
 
     #[test]
@@ -576,9 +706,7 @@ mod tests {
         )
         .unwrap();
 
-        assert!(filters.prefilter_conditions(0, 1).is_empty());
-        assert!(filters.prefilter_conditions(1, 2).is_empty());
-        assert!(!filters.can_prefilter_relation(0, 1));
-        assert!(!filters.can_prefilter_relation(1, 2));
+        assert!(filters.prefilter_conditions(0, 1).is_none());
+        assert!(filters.prefilter_conditions(1, 2).is_none());
     }
 }

@@ -1680,16 +1680,11 @@ pub(super) fn execute<W: Write>(
             })
             .flatten();
         let row_filter = row_filters
-            .filter(|filters| {
-                inner_join_plan
-                    && relation.virtual_columns.is_empty()
-                    && filters.can_prefilter_relation(relation.start, relation.names.len())
-            })
-            .map(|filters| {
-                (
-                    filters,
-                    filters.prefilter_conditions(relation.start, relation.names.len()),
-                )
+            .filter(|_| inner_join_plan && relation.virtual_columns.is_empty())
+            .and_then(|filters| {
+                filters
+                    .prefilter_conditions(relation.start, relation.names.len())
+                    .map(|conditions| (filters, conditions))
             });
         let mut right_rows = if let Some((index, operator, value)) = dimension_filter {
             read_filtered_compact_projected_build_rows(
@@ -1810,9 +1805,11 @@ pub(super) fn execute<W: Write>(
     // Reuse the same dependency projection for the fact scan.
     let fact_width = relations[0].names.len();
     let fact_comparisons = fact_side_comparisons(comparisons, fact_width);
-    let fact_row_filter = row_filters
-        .filter(|filters| inner_join_plan && filters.can_prefilter_relation(0, fact_width))
-        .map(|filters| (filters, filters.prefilter_conditions(0, fact_width)));
+    let fact_row_filter = row_filters.filter(|_| inner_join_plan).and_then(|filters| {
+        filters
+            .prefilter_conditions(0, fact_width)
+            .map(|conditions| (filters, conditions))
+    });
     let projected = &projections[0];
     let physical_projected = physical_projection(&relations[0], projected)?;
     let projected_names = physical_projected
@@ -1851,7 +1848,7 @@ pub(super) fn execute<W: Write>(
             if !passes_fact_comparisons(&row, &fact_comparisons) {
                 continue;
             }
-            // Common OR-branch predicates can reject fact rows before any
+            // Relation-local OR predicates can reject fact rows before any
             // hash probes. The final visitor checks the full WHERE filter.
             if fact_row_filter
                 .as_ref()
