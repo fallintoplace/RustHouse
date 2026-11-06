@@ -63,18 +63,7 @@ pub fn prove_absence(
     })
 }
 
-/// Verify that a missing key lies exactly between two authenticated,
-/// adjacent leaves, or before the first or after the last authenticated leaf.
-/// Forged indexes, bounds and proofs are rejected even if key ordering holds.
-pub fn verify_absence(trusted_root: [u8; 32], key: &str, proof: &MerkleAbsenceProof) -> bool {
-    if key.is_empty() {
-        return false;
-    }
-    if proof.leaf_count == 0 {
-        return proof.before.is_none()
-            && proof.after.is_none()
-            && MerkleInventory::new(&[]).is_ok_and(|inventory| inventory.root() == trusted_root);
-    }
+fn verify_neighbor_bounds(trusted_root: [u8; 32], key: &str, proof: &MerkleAbsenceProof) -> bool {
     match (&proof.before, &proof.after) {
         (Some(before), Some(after)) => {
             authenticated_neighbor(trusted_root, proof.leaf_count, before)
@@ -95,6 +84,21 @@ pub fn verify_absence(trusted_root: [u8; 32], key: &str, proof: &MerkleAbsencePr
         }
         (None, None) => false,
     }
+}
+
+/// Verify that a missing key lies exactly between two authenticated,
+/// adjacent leaves, or before the first or after the last authenticated leaf.
+/// Forged indexes, bounds and proofs are rejected even if key ordering holds.
+pub fn verify_absence(trusted_root: [u8; 32], key: &str, proof: &MerkleAbsenceProof) -> bool {
+    if key.is_empty() {
+        return false;
+    }
+    if proof.leaf_count == 0 {
+        return proof.before.is_none()
+            && proof.after.is_none()
+            && MerkleInventory::new(&[]).is_ok_and(|inventory| inventory.root() == trusted_root);
+    }
+    verify_neighbor_bounds(trusted_root, key, proof)
 }
 
 #[cfg(test)]
