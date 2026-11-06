@@ -25,16 +25,22 @@ pub(super) fn parse_http_status(status_line: &str) -> Result<u16, String> {
     Ok(status)
 }
 
-pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
-    let (name, value) = line.split_once(':').ok_or("invalid peer header")?;
-    if name.is_empty()
-        || !name
+fn valid_header_name(name: &str) -> bool {
+    !name.is_empty()
+        && name
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        || value.chars().any(|ch| {
-            (ch.is_control() && ch != '\t') || (ch.is_whitespace() && ch != ' ' && ch != '\t')
-        })
-    {
+}
+
+fn valid_header_value(value: &str) -> bool {
+    !value.chars().any(|ch| {
+        (ch.is_control() && ch != '\t') || (ch.is_whitespace() && ch != ' ' && ch != '\t')
+    })
+}
+
+pub(super) fn parse_peer_header(line: &str) -> Result<(&str, &str), String> {
+    let (name, value) = line.split_once(':').ok_or("invalid peer header")?;
+    if !valid_header_name(name) || !valid_header_value(value) {
         return Err("invalid peer header".into());
     }
     // HTTP optional whitespace is SP / HTAB only. Unicode trim() would
