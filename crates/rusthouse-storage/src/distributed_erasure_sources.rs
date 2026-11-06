@@ -61,8 +61,7 @@ pub fn choose_erasure_sources(
     let mut ordered = sources.iter().collect::<Vec<_>>();
     ordered.sort_unstable_by(|left, right| left.node.cmp(&right.node));
 
-    let mut chosen_mask = None;
-    let mut chosen_cost = u64::MAX;
+    let mut chosen = None;
     for mask in 1u32..(1u32 << sources.len()) {
         if mask.count_ones() as usize != required {
             continue;
@@ -88,15 +87,11 @@ pub fn choose_erasure_sources(
             };
             cost = next;
         }
-        if good
-            && zones.len() >= min_zones
-            && (chosen_mask.is_none() || (cost, mask) < (chosen_cost, chosen_mask.unwrap()))
-        {
-            chosen_cost = cost;
-            chosen_mask = Some(mask);
+        if good && zones.len() >= min_zones && chosen.is_none_or(|best| (cost, mask) < best) {
+            chosen = Some((cost, mask));
         }
     }
-    let mask = chosen_mask.ok_or("no feasible erasure fragment source set")?;
+    let (chosen_cost, mask) = chosen.ok_or("no feasible erasure fragment source set")?;
     let mut nodes = Vec::new();
     let mut fragment_indices = Vec::new();
     for (index, source) in ordered.iter().enumerate() {
