@@ -46,22 +46,25 @@ impl ReaderPinLedger {
         Self::default()
     }
 
+    fn stale_reader_token(&self, pin: &ReaderPin, now_ms: u64) -> bool {
+        self.highest.get(&pin.reader).is_some_and(|&previous| {
+            pin.token < previous
+                || (pin.token == previous
+                    && self
+                        .active
+                        .get(&pin.reader)
+                        .is_none_or(|active| active.expires_at_ms <= now_ms))
+        })
+    }
+
     /// A caller must pin before using a snapshot. An identical token can
     /// renew only the same reader's snapshot and never shorten its expiry.
     pub fn pin(&mut self, pin: ReaderPin, now_ms: u64, ttl_limit: u64) -> Result<(), &'static str> {
         if !valid_pin_request(&pin, now_ms, ttl_limit, self.last_clock_ms) {
             return Err("invalid reader snapshot pin or clock");
         }
-        if let Some(&previous) = self.highest.get(&pin.reader) {
-            if pin.token < previous
-                || (pin.token == previous
-                    && self
-                        .active
-                        .get(&pin.reader)
-                        .is_none_or(|active| active.expires_at_ms <= now_ms))
-            {
-                return Err("stale reader fencing token");
-            }
+        if self.stale_reader_token(&pin, now_ms) {
+            return Err("stale reader fencing token");
         }
         if let Some(previous) = self.active.get(&pin.reader) {
             if pin.token == previous.token
