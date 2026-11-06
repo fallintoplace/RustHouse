@@ -10,7 +10,10 @@ fn duplicate_column_name(
         columns.iter().any(|existing| existing.name == candidate)
     } else {
         let seen = names.get_or_insert_with(|| {
-            columns.iter().map(|existing| existing.name.clone()).collect()
+            columns
+                .iter()
+                .map(|existing| existing.name.clone())
+                .collect()
         });
         !seen.insert(candidate.to_owned())
     }
