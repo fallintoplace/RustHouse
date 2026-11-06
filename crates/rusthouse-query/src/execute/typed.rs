@@ -2317,56 +2317,12 @@ pub(super) fn execute_typed<W: Write>(
 }
 
 #[cfg(test)]
-mod predicate_order_tests {
-    use super::*;
-
-    #[test]
-    fn cheap_conditions_run_before_expensive_like_conditions() {
-        let mut conditions = vec![
-            Condition {
-                index: 0,
-                test: Test::Like {
-                    pattern: compile_like("match").unwrap(),
-                    case_insensitive: false,
-                    negated: false,
-                },
-            },
-            Condition {
-                index: 1,
-                test: Test::IsNull(false),
-            },
-        ];
-        order_compiled_conditions(&mut conditions);
-        assert_eq!(conditions[0].index, 1);
-        assert_eq!(conditions[1].index, 0);
-    }
-}
+#[path = "typed_tests/predicate_order_tests.rs"]
+mod predicate_order_tests;
 
 #[cfg(test)]
-mod direct_group_key_tests {
-    use super::{cell, key_at};
-    use rusthouse_storage::{TypedColumn, read_legacy_strings};
-
-    #[test]
-    fn direct_group_keys_match_materialized_cells() {
-        let mut input = b"\x03foo\x00\x03foo".as_slice();
-        let values = read_legacy_strings(&mut input, 3).unwrap();
-        let plain = TypedColumn::Text(values);
-        for row in 0..3 {
-            assert!(key_at(&plain, row) == cell(&plain, row).key());
-        }
-
-        let mut input = b"\x03foo\x00\x03bar".as_slice();
-        let values = read_legacy_strings(&mut input, 3).unwrap();
-        let nullable = TypedColumn::NullableText {
-            values,
-            nulls: vec![0, 1, 0],
-        };
-        for row in 0..3 {
-            assert!(key_at(&nullable, row) == cell(&nullable, row).key());
-        }
-    }
-}
+#[path = "typed_tests/direct_group_key_tests.rs"]
+mod direct_group_key_tests;
 
 #[cfg(test)]
 mod like_tests {
@@ -2651,852 +2607,89 @@ mod like_tests {
 }
 
 #[cfg(test)]
-mod typed_output_perf_tests {
-    use super::{Cell, write_value};
-    use std::io::{self, Write};
-
-    #[derive(Default)]
-    struct CountingWriter {
-        writes: usize,
-        bytes: Vec<u8>,
-    }
-
-    impl Write for CountingWriter {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.writes += 1;
-            self.bytes.extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn preserves_tsv_escaping_across_plain_spans() {
-        let mut output = Vec::new();
-        write_value(
-            &mut output,
-            &Cell::Text(b"one\ttwo\\three\n\0\x01".to_vec()),
-        )
-        .unwrap();
-        assert_eq!(output, br"one\ttwo\\three\n\0\x01");
-    }
-
-    #[test]
-    fn emits_long_unescaped_strings_with_one_write() {
-        let mut output = CountingWriter::default();
-        write_value(&mut output, &Cell::Text(vec![b'a'; 16 * 1024])).unwrap();
-        assert_eq!(output.bytes, vec![b'a'; 16 * 1024]);
-        assert_eq!(output.writes, 1);
-    }
-}
+#[path = "typed_tests/typed_output_perf_tests.rs"]
+mod typed_output_perf_tests;
 
 #[cfg(test)]
-mod unicode_ilike_regressions {
-    use super::*;
-
-    #[test]
-    fn matches_non_ascii_letters_in_literal_and_simple_wildcard_patterns() {
-        for (pattern, text) in [
-            ("CAFÉ", "café"),
-            ("CAFÉ%", "café au lait"),
-            ("%CAFÉ", "un café"),
-            ("%CAFÉ%", "un café noir"),
-            ("İ", "i\u{307}"),
-        ] {
-            let compiled = compile_like(pattern).unwrap();
-            assert!(like_matches(text.as_bytes(), &compiled, true), "{pattern}");
-            assert!(
-                !like_matches(text.as_bytes(), &compiled, false),
-                "{pattern}"
-            );
-        }
-    }
-
-    #[test]
-    fn keeps_ascii_behavior_and_does_not_match_invalid_utf8() {
-        let pattern = compile_like("ABC%").unwrap();
-        assert!(like_matches(b"abcdef", &pattern, true));
-        assert!(!like_matches(&[0xff], &compile_like("É").unwrap(), true));
-    }
-}
+#[path = "typed_tests/unicode_ilike_regressions.rs"]
+mod unicode_ilike_regressions;
 
 #[cfg(test)]
-mod topk_tests {
-    use crate::{execute, parse_select};
-    use rusthouse_storage::{Column, write_wide_part};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-    #[test]
-    fn bounded_sort_keeps_earlier_ties_and_skips_losing_rows() {
-        let path = std::env::temp_dir().join(format!(
-            "rusthouse-typed-topk-prune-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let columns = [
-            Column {
-                name: "note".into(),
-                data_type: "String".into(),
-            },
-            Column {
-                name: "rank".into(),
-                data_type: "UInt64".into(),
-            },
-        ];
-        let mut rows = vec![
-            vec![Some("first".into()), Some("1".into())],
-            vec![Some("second".into()), Some("1".into())],
-        ];
-        rows.extend((0..300).map(|index| vec![Some(format!("loser-{index}")), Some("99".into())]));
-        write_wide_part(&path, &columns, &rows).unwrap();
-        let query = parse_select("SELECT note FROM part ORDER BY rank LIMIT 2").unwrap();
-        let mut output = Vec::new();
-        execute(&query, Some(&path), &mut output).unwrap();
-        assert_eq!(output, b"note\nfirst\nsecond\n");
-        std::fs::remove_dir_all(path).unwrap();
-    }
-}
+#[path = "typed_tests/topk_tests.rs"]
+mod topk_tests;
 
 #[cfg(test)]
-mod nullable_string_group_tests {
-    use crate::{execute, parse_select};
-    use rusthouse_storage::{Column, write_wide_part};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-    #[test]
-    fn groups_nullable_text_with_borrowed_non_null_keys() {
-        let part = std::env::temp_dir().join(format!(
-            "rusthouse-null-text-group-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
-        let columns = [Column {
-            name: "category".into(),
-            data_type: "Nullable(String)".into(),
-        }];
-        let rows = [
-            vec![Some("x".into())],
-            vec![None],
-            vec![Some("x".into())],
-            vec![Some("y".into())],
-            vec![None],
-        ];
-        write_wide_part(&part, &columns, &rows).unwrap();
-        let query = parse_select("SELECT category, count(*) FROM part GROUP BY category").unwrap();
-        let mut output = Vec::new();
-        execute(&query, Some(&part), &mut output).unwrap();
-        assert_eq!(output, b"category\tcount\nx\t2\n\\N\t2\ny\t1\n");
-        std::fs::remove_dir_all(part).unwrap();
-    }
-}
+#[path = "typed_tests/nullable_string_group_tests.rs"]
+mod nullable_string_group_tests;
 
 #[cfg(test)]
-mod single_column_distinct_perf_tests {
-    use crate::{execute, parse_select};
-    use rusthouse_storage::{Column, write_wide_part};
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    static NEXT: AtomicUsize = AtomicUsize::new(0);
-
-    #[test]
-    fn single_string_distinct_preserves_first_seen_order() {
-        let part = std::env::temp_dir().join(format!(
-            "rusthouse-single-distinct-{}-{}",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed),
-        ));
-        let columns = [Column {
-            name: "word".into(),
-            data_type: "String".into(),
-        }];
-        let rows = [
-            vec![Some("alpha".into())],
-            vec![Some("beta".into())],
-            vec![Some("alpha".into())],
-            vec![Some("gamma".into())],
-            vec![Some("beta".into())],
-        ];
-        write_wide_part(&part, &columns, &rows).unwrap();
-        let query = parse_select("SELECT DISTINCT word FROM part").unwrap();
-        let mut output = Vec::new();
-        execute(&query, Some(&part), &mut output).unwrap();
-        assert_eq!(output, b"word\nalpha\nbeta\ngamma\n");
-        std::fs::remove_dir_all(part).unwrap();
-    }
-}
+#[path = "typed_tests/single_column_distinct_perf_tests.rs"]
+mod single_column_distinct_perf_tests;
 
 #[cfg(test)]
-mod uuid_distinct_key_tests {
-    use super::{Key, key_at};
-    use rusthouse_storage::{TypedColumn, read_uuid_values};
-
-    #[test]
-    fn distinct_probe_uses_canonical_uuid_bytes_without_formatting() {
-        let mut disk = [0u8; 48];
-        disk[16] = 1;
-        let values = read_uuid_values(&mut disk.as_slice(), 3).unwrap();
-        let column = TypedColumn::Uuid(values);
-        let first = key_at(&column, 0);
-        let second = key_at(&column, 1);
-        assert!(matches!(&first, Key::UuidBytes(_)));
-        assert!(first != second);
-        assert!(first == key_at(&column, 2));
-    }
-}
+#[path = "typed_tests/uuid_distinct_key_tests.rs"]
+mod uuid_distinct_key_tests;
 
 #[cfg(test)]
-mod single_uuid_membership_tests {
-    use super::{Test, compile_in};
-    use crate::Operator;
-
-    #[test]
-    fn one_uuid_member_uses_binary_comparison() {
-        let value = "61f0c404-5cb3-11e7-907b-a6006ad3dba0".to_owned();
-        for negated in [false, true] {
-            let compiled = compile_in("UUID", std::slice::from_ref(&value), negated).unwrap();
-            match compiled {
-                Test::UuidCompare(operator, bytes) => {
-                    assert!(matches!(
-                        (operator, negated),
-                        (Operator::Eq, false) | (Operator::Ne, true)
-                    ));
-                    assert_eq!(bytes[0], 0x61);
-                    assert_eq!(bytes[15], 0xa0);
-                }
-                _ => panic!("single UUID IN should use fixed-width comparison"),
-            }
-        }
-    }
-}
+#[path = "typed_tests/single_uuid_membership_tests.rs"]
+mod single_uuid_membership_tests;
 
 #[cfg(test)]
-mod short_in_predicate_perf_tests {
-    use super::*;
-
-    #[test]
-    fn compiled_short_bitmap_preserves_negative_values_and_nulls() {
-        let values = (-20..0).map(|value| value.to_string()).collect::<Vec<_>>();
-        let includes = [vec![Condition {
-            index: 0,
-            test: compile_in("Nullable(Int16)", &values, false).unwrap(),
-        }]];
-        assert!(matches!(&includes[0][0].test, Test::ShortInSet(_, false)));
-        let batch = [TypedColumn::NullableNumeric {
-            values: NumericColumn::Int16(vec![-20, -1, 100, -5]),
-            nulls: vec![0, 0, 0, 1],
-        }];
-        assert!(passes(&batch, 0, &includes));
-        assert!(passes(&batch, 1, &includes));
-        assert!(!passes(&batch, 2, &includes));
-        assert!(!passes(&batch, 3, &includes));
-        let unsigned = (0..100).map(|value| value.to_string()).collect::<Vec<_>>();
-        let excludes = [vec![Condition {
-            index: 0,
-            test: compile_in("UInt16", &unsigned, true).unwrap(),
-        }]];
-        let batch = [TypedColumn::Numeric(NumericColumn::UInt16(vec![
-            0, 99, 65535,
-        ]))];
-        assert!(!passes(&batch, 0, &excludes));
-        assert!(!passes(&batch, 1, &excludes));
-        assert!(passes(&batch, 2, &excludes));
-    }
-}
+#[path = "typed_tests/short_in_predicate_perf_tests.rs"]
+mod short_in_predicate_perf_tests;
 
 #[cfg(test)]
-mod direct_numeric_set_probe_tests {
-    use super::{Condition, Test, passes};
-    use super::{Number, NumberKey};
-    use rusthouse_storage::{NumericColumn, TypedColumn};
-    use std::collections::HashSet;
-
-    #[test]
-    fn native_numeric_membership_respects_null_nan_and_negation() {
-        let targets = HashSet::from([NumberKey::from(Number::Signed(-3))]);
-        let batch = [TypedColumn::NullableNumeric {
-            values: NumericColumn::Int64(vec![-3, 2, -3]),
-            nulls: vec![0, 1, 0],
-        }];
-        let includes = [vec![Condition {
-            index: 0,
-            test: Test::NumericInSet(HashSet::from([NumberKey::from(Number::Signed(-3))]), false),
-        }]];
-        let excludes = [vec![Condition {
-            index: 0,
-            test: Test::NumericInSet(targets, true),
-        }]];
-        assert!(passes(&batch, 0, &includes));
-        assert!(!passes(&batch, 1, &includes));
-        assert!(!passes(&batch, 1, &excludes));
-        assert!(!passes(&batch, 2, &excludes));
-        let floats = [TypedColumn::Numeric(NumericColumn::Float64(vec![f64::NAN]))];
-        let float_set = [vec![Condition {
-            index: 0,
-            test: Test::NumericInSet(
-                HashSet::from([NumberKey::from(Number::Float(f64::NAN))]),
-                false,
-            ),
-        }]];
-        assert!(!passes(&floats, 0, &float_set));
-    }
-}
+#[path = "typed_tests/direct_numeric_set_probe_tests.rs"]
+mod direct_numeric_set_probe_tests;
 
 #[cfg(test)]
-mod uuid_literal_byte_parse_tests {
-    use super::uuid_literal_bytes;
-
-    #[test]
-    fn decodes_uppercase_and_lowercase_without_changing_byte_order() {
-        let lower = uuid_literal_bytes("61f0c404-5cb3-11e7-907b-a6006ad3dba0").unwrap();
-        let upper = uuid_literal_bytes("61F0C404-5CB3-11E7-907B-A6006AD3DBA0").unwrap();
-        assert_eq!(lower, upper);
-        assert_eq!(lower[..4], [0x61, 0xf0, 0xc4, 0x04]);
-        assert_eq!(lower[15], 0xa0);
-    }
-
-    #[test]
-    fn rejects_invalid_uuid_literals_before_decoding() {
-        for invalid in [
-            "",
-            "1",
-            "61f0c4045cb311e7907ba6006ad3dba0",
-            "61f0c404-5cb3-11e7-907b-a6006ad3dbzz",
-            "61f0c404-5cb3-11e7-907b-a6006ad3dbax",
-        ] {
-            assert!(uuid_literal_bytes(invalid).is_err(), "{invalid}");
-        }
-    }
-}
+#[path = "typed_tests/uuid_literal_byte_parse_tests.rs"]
+mod uuid_literal_byte_parse_tests;
 
 #[cfg(test)]
-mod direct_numeric_comparison_tests {
-    use super::{Cell, matches_comparison_at};
-    use crate::Operator;
-    use rusthouse_storage::{NumericColumn, TypedColumn};
-
-    #[test]
-    fn borrowed_numeric_comparisons_match_signed_unsigned_and_nulls() {
-        let signed = TypedColumn::Numeric(NumericColumn::Int64(vec![-3, 0, 7]));
-        assert!(matches_comparison_at(
-            &signed,
-            0,
-            &Cell::Numeric(super::Number::Signed(-2)),
-            Operator::Lt
-        ));
-        assert!(!matches_comparison_at(
-            &signed,
-            0,
-            &Cell::Numeric(super::Number::Signed(-2)),
-            Operator::Ge
-        ));
-        let nullable = TypedColumn::NullableNumeric {
-            values: NumericColumn::UInt64(vec![4, 99, 7]),
-            nulls: vec![0, 1, 0],
-        };
-        let target = Cell::Numeric(super::Number::Unsigned(4));
-        assert!(matches_comparison_at(&nullable, 0, &target, Operator::Eq));
-        assert!(!matches_comparison_at(&nullable, 1, &target, Operator::Ne));
-        assert!(matches_comparison_at(&nullable, 2, &target, Operator::Gt));
-    }
-}
+#[path = "typed_tests/direct_numeric_comparison_tests.rs"]
+mod direct_numeric_comparison_tests;
 
 #[cfg(test)]
-mod narrow_group_bucket_tests {
-    use super::*;
-
-    #[test]
-    fn dense_numeric_buckets_preserve_exact_signed_values() {
-        let signed8 = TypedColumn::Numeric(NumericColumn::Int8(vec![i8::MIN, -1, 0, i8::MAX]));
-        assert_eq!(
-            (0..4)
-                .map(|row| dense_group_bucket(&signed8, row))
-                .collect::<Vec<_>>(),
-            [Some(128), Some(255), Some(0), Some(127)]
-        );
-        let signed16 = TypedColumn::Numeric(NumericColumn::Int16(vec![i16::MIN, -1, 0, i16::MAX]));
-        assert_eq!(
-            (0..4)
-                .map(|row| dense_group_bucket(&signed16, row))
-                .collect::<Vec<_>>(),
-            [Some(32768), Some(65535), Some(0), Some(32767)]
-        );
-    }
-
-    #[test]
-    fn nullable_and_wider_dimensions_never_share_group_ids() {
-        let nullable = TypedColumn::NullableNumeric {
-            values: NumericColumn::UInt16(vec![0, 0, u16::MAX, 1]),
-            nulls: vec![0, 1, 0, 0],
-        };
-        assert_eq!(
-            (0..4)
-                .map(|row| dense_group_bucket(&nullable, row))
-                .collect::<Vec<_>>(),
-            [Some(0), None, Some(65535), Some(1)]
-        );
-        let wide = TypedColumn::Numeric(NumericColumn::UInt32(vec![1]));
-        assert_eq!(dense_group_bucket(&wide, 0), None);
-    }
-}
+#[path = "typed_tests/narrow_group_bucket_tests.rs"]
+mod narrow_group_bucket_tests;
 
 #[cfg(test)]
-mod count_distinct_text_budget_tests {
-    use super::*;
-
-    #[test]
-    fn duplicate_strings_do_not_charge_memory_twice() {
-        let mut seen = HashSet::new();
-        let mut retained = 0usize;
-        remember_distinct_text(&mut seen, &mut retained, b"same").unwrap();
-        let charged = retained;
-        remember_distinct_text(&mut seen, &mut retained, b"same").unwrap();
-        assert_eq!(seen.len(), 1);
-        assert_eq!(retained, charged);
-    }
-
-    #[test]
-    fn rejects_oversized_new_text_before_allocating_hash_entry() {
-        let mut seen = HashSet::new();
-        let mut retained = 0usize;
-        let value = vec![b'x'; MAX_TEXT_DISTINCT_BYTES];
-        assert!(remember_distinct_text(&mut seen, &mut retained, &value).is_err());
-        assert_eq!(retained, 0);
-        assert!(seen.is_empty());
-    }
-}
+#[path = "typed_tests/count_distinct_text_budget_tests.rs"]
+mod count_distinct_text_budget_tests;
 
 #[cfg(test)]
-mod byte_in_predicate_perf_tests {
-    use super::*;
-
-    #[test]
-    fn compiled_byte_bitmap_respects_nullable_and_signed_membership() {
-        let unsigned = (0..20).map(|value| value.to_string()).collect::<Vec<_>>();
-        let includes = [vec![Condition {
-            index: 0,
-            test: compile_in("Nullable(UInt8)", &unsigned, false).unwrap(),
-        }]];
-        assert!(matches!(&includes[0][0].test, Test::ByteInSet(_, false)));
-        let batch = [TypedColumn::NullableNumeric {
-            values: NumericColumn::UInt8(vec![0, 19, 20, 5]),
-            nulls: vec![0, 0, 0, 1],
-        }];
-        assert!(passes(&batch, 0, &includes));
-        assert!(passes(&batch, 1, &includes));
-        assert!(!passes(&batch, 2, &includes));
-        assert!(!passes(&batch, 3, &includes));
-        let signed = (-20..0).map(|value| value.to_string()).collect::<Vec<_>>();
-        let excludes = [vec![Condition {
-            index: 0,
-            test: compile_in("Int8", &signed, true).unwrap(),
-        }]];
-        let batch = [TypedColumn::Numeric(NumericColumn::Int8(vec![-20, -1, 1]))];
-        assert!(!passes(&batch, 0, &excludes));
-        assert!(!passes(&batch, 1, &excludes));
-        assert!(passes(&batch, 2, &excludes));
-    }
-}
+#[path = "typed_tests/byte_in_predicate_perf_tests.rs"]
+mod byte_in_predicate_perf_tests;
 
 #[cfg(test)]
-mod select_distinct_key_budget_tests {
-    use super::*;
-
-    #[test]
-    fn text_key_bytes_contribute_to_distinct_budget() {
-        let mut used = 0usize;
-        let one = vec![Key::Text(vec![1u8; 1_024])];
-        charge_select_distinct_key(&mut used, &one).unwrap();
-        assert!(used > 1_024);
-        let before = used;
-        charge_select_distinct_key(&mut used, &one).unwrap();
-        assert_eq!(used, before * 2);
-    }
-
-    #[test]
-    fn oversized_distinct_key_fails_without_charging() {
-        let mut used = 0usize;
-        let huge = vec![Key::Text(vec![b'x'; MAX_SELECT_DISTINCT_KEY_BYTES])];
-        assert!(charge_select_distinct_key(&mut used, &huge).is_err());
-        assert_eq!(used, 0);
-    }
-}
+#[path = "typed_tests/select_distinct_key_budget_tests.rs"]
+mod select_distinct_key_budget_tests;
 
 #[cfg(test)]
-mod grouped_text_retention_budget_tests {
-    use super::*;
-
-    #[test]
-    fn charges_both_owned_copies_before_insert() {
-        let mut charged = 0;
-        charge_grouped_text(&mut charged, 1024).unwrap();
-        assert!(charged >= 2048);
-        let previous = charged;
-        assert!(charge_grouped_text(&mut charged, MAX_GROUPED_TEXT_BYTES).is_err());
-        assert_eq!(charged, previous);
-        assert!(charge_grouped_text(&mut charged, usize::MAX).is_err());
-    }
-}
+#[path = "typed_tests/grouped_text_retention_budget_tests.rs"]
+mod grouped_text_retention_budget_tests;
 
 #[cfg(test)]
-mod parallel_filtered_count_tests {
-    use super::*;
-    use rusthouse_storage::{Column, write_wide_part};
-    use std::fs;
-
-    #[test]
-    fn filters_and_nullable_counts_match_sequential_across_skewed_parts() {
-        let root = std::env::temp_dir().join(format!(
-            "rusthouse-parallel-filtered-count-{}",
-            std::process::id()
-        ));
-        let _ = fs::remove_dir_all(&root);
-        fs::create_dir_all(&root).unwrap();
-        let columns = [
-            Column {
-                name: "category".into(),
-                data_type: "String".into(),
-            },
-            Column {
-                name: "value".into(),
-                data_type: "Nullable(UInt64)".into(),
-            },
-        ];
-        for index in 0..20 {
-            let rows = (0..(index + 1))
-                .map(|row| {
-                    let is_keep = row % 2 == 0;
-                    vec![
-                        Some(if is_keep { "keep" } else { "other" }.into()),
-                        if is_keep && index % 3 == 0 {
-                            None
-                        } else {
-                            Some(row.to_string())
-                        },
-                    ]
-                })
-                .collect::<Vec<_>>();
-            write_wide_part(
-                &root.join(format!("all_{index}_{index}_0")),
-                &columns,
-                &rows,
-            )
-            .unwrap();
-        }
-        let names = vec!["value".to_owned(), "category".to_owned()];
-        let query =
-            crate::parse_select("SELECT count(*) FROM part WHERE category = 'keep'").unwrap();
-        let indices = names
-            .iter()
-            .enumerate()
-            .map(|(i, name)| (name.clone(), i))
-            .collect::<HashMap<_, _>>();
-        let types = columns
-            .iter()
-            .map(|column| (column.name.clone(), column.data_type.clone()))
-            .collect::<HashMap<_, _>>();
-        let conditions = vec![compile(&query.predicates, &indices, &types).unwrap()];
-        let parts = rusthouse_storage::query_parts(&root).unwrap();
-        let all = parallel_filtered_count_parts(&parts, 3, &names, &conditions, None).unwrap();
-        let nonnull =
-            parallel_filtered_count_parts(&parts, 3, &names, &conditions, Some(0)).unwrap();
-        let expected_all: u64 = (0..20).map(|i| (i + 2) / 2).sum();
-        let expected_nonnull: u64 = (0..20).filter(|i| i % 3 != 0).map(|i| (i + 2) / 2).sum();
-        assert_eq!(all, expected_all);
-        assert_eq!(nonnull, expected_nonnull);
-        assert!(nonnull < all);
-        fs::remove_dir_all(root).unwrap();
-    }
-}
+#[path = "typed_tests/parallel_filtered_count_tests.rs"]
+mod parallel_filtered_count_tests;
 
 #[cfg(test)]
-mod typed_condition_cost_order_tests {
-    use super::*;
-    use rusthouse_storage::{NumericColumn, TypedColumn, read_legacy_strings};
-
-    #[test]
-    fn reordering_mixed_nullable_predicates_preserves_every_row_result() {
-        let mut input = b"\x05alpha\x04beta\x05gamma".as_slice();
-        let text = read_legacy_strings(&mut input, 3).unwrap();
-        let batch = [
-            TypedColumn::Text(text),
-            TypedColumn::NullableNumeric {
-                values: NumericColumn::UInt64(vec![1, 2, 3]),
-                nulls: vec![0, 1, 0],
-            },
-        ];
-        let mut conditions = vec![
-            Condition {
-                index: 0,
-                test: Test::Like {
-                    pattern: compile_like("a%").unwrap(),
-                    case_insensitive: false,
-                    negated: false,
-                },
-            },
-            Condition {
-                index: 1,
-                test: Test::Compare(Operator::Eq, Cell::Numeric(Number::Unsigned(1))),
-            },
-            Condition {
-                index: 1,
-                test: Test::IsNull(true),
-            },
-        ];
-        let expected = (0..3)
-            .map(|row| passes(&batch, row, std::slice::from_ref(&conditions)))
-            .collect::<Vec<_>>();
-        assert_eq!(expected, vec![true, false, false]);
-        order_compiled_conditions(&mut conditions);
-        assert!(matches!(conditions[0].test, Test::IsNull(true)));
-        assert!(matches!(conditions[1].test, Test::Compare(..)));
-        assert!(matches!(conditions[2].test, Test::Like { .. }));
-        let actual = (0..3)
-            .map(|row| passes(&batch, row, std::slice::from_ref(&conditions)))
-            .collect::<Vec<_>>();
-        assert_eq!(actual, expected);
-    }
-
-    #[test]
-    fn modulos_and_wildcards_follow_cheap_bitmap_checks() {
-        let mut conditions = vec![
-            Condition {
-                index: 0,
-                test: Test::Like {
-                    pattern: compile_like("%needle%").unwrap(),
-                    case_insensitive: true,
-                    negated: false,
-                },
-            },
-            Condition {
-                index: 1,
-                test: Test::Compare(Operator::Modulo(3), Cell::Numeric(Number::Unsigned(2))),
-            },
-            Condition {
-                index: 2,
-                test: Test::IsNull(false),
-            },
-            Condition {
-                index: 3,
-                test: Test::ByteInSet([0; 4], false),
-            },
-        ];
-        order_compiled_conditions(&mut conditions);
-        assert!(matches!(conditions[0].test, Test::IsNull(false)));
-        assert!(matches!(conditions[1].test, Test::ByteInSet(..)));
-        assert!(matches!(
-            conditions[2].test,
-            Test::Compare(Operator::Modulo(_), _)
-        ));
-        assert!(matches!(conditions[3].test, Test::Like { .. }));
-    }
-}
+#[path = "typed_tests/typed_condition_cost_order_tests.rs"]
+mod typed_condition_cost_order_tests;
 
 #[cfg(test)]
-mod native_distinct_nan_tests {
-    use super::*;
-
-    #[test]
-    fn native_nan_checks_preserve_distinct_and_nullable_semantics() {
-        let column = TypedColumn::NullableNumeric {
-            values: NumericColumn::Float32(vec![f32::NAN, -0.0, 1.0, f32::NAN]),
-            nulls: vec![0, 0, 0, 1],
-        };
-        assert!(numeric_nan_at(&column, 0));
-        assert!(!numeric_nan_at(&column, 1));
-        assert!(!numeric_nan_at(&column, 3));
-        let branches = vec![vec![Condition {
-            index: 0,
-            test: Test::DistinctFrom(Cell::Numeric(Number::Float(f64::NAN)), false),
-        }]];
-        let batch = [column];
-        assert_eq!(
-            (0..4)
-                .map(|row| passes(&batch, row, &branches))
-                .collect::<Vec<_>>(),
-            [false, true, true, true]
-        );
-        let not_distinct = vec![vec![Condition {
-            index: 0,
-            test: Test::DistinctFrom(Cell::Numeric(Number::Float(f64::NAN)), true),
-        }]];
-        assert_eq!(
-            (0..4)
-                .map(|row| passes(&batch, row, &not_distinct))
-                .collect::<Vec<_>>(),
-            [true, false, false, false]
-        );
-    }
-}
+#[path = "typed_tests/native_distinct_nan_tests.rs"]
+mod native_distinct_nan_tests;
 
 #[cfg(test)]
-mod direct_byte_compare_tests {
-    use super::*;
-
-    #[test]
-    fn compiled_byte_comparisons_match_generic_on_signed_unsigned_and_nulls() {
-        for kind in ["UInt8", "Int8"] {
-            let indices = HashMap::from([("status".to_owned(), 0usize)]);
-            let types = HashMap::from([("status".to_owned(), format!("Nullable({kind})"))]);
-            for op in [
-                Operator::Eq,
-                Operator::Ne,
-                Operator::Lt,
-                Operator::Le,
-                Operator::Gt,
-                Operator::Ge,
-            ] {
-                let predicate = Predicate::Comparison {
-                    column: "status".into(),
-                    operator: op,
-                    value: "0".into(),
-                };
-                let conditions = compile(&[predicate], &indices, &types).unwrap();
-                assert!(matches!(conditions[0].test, Test::ByteCompare(..)));
-                let values = if kind == "Int8" {
-                    NumericColumn::Int8(vec![-128, -1, 0, 127])
-                } else {
-                    NumericColumn::UInt8(vec![0, 1, 127, 255])
-                };
-                let batch = [TypedColumn::NullableNumeric {
-                    values,
-                    nulls: vec![0, 0, 1, 0],
-                }];
-                let target = Cell::Numeric(if kind == "Int8" {
-                    Number::Signed(0)
-                } else {
-                    Number::Unsigned(0)
-                });
-                let old = vec![Condition {
-                    index: 0,
-                    test: Test::Compare(op, target),
-                }];
-                for row in 0..4 {
-                    assert_eq!(
-                        passes(&batch, row, std::slice::from_ref(&conditions)),
-                        passes(&batch, row, std::slice::from_ref(&old)),
-                        "{kind}, {op:?}, row {row}"
-                    );
-                }
-            }
-        }
-    }
-}
+#[path = "typed_tests/direct_byte_compare_tests.rs"]
+mod direct_byte_compare_tests;
 
 #[cfg(test)]
-mod fused_numeric_between_tests {
-    use super::*;
-
-    #[test]
-    fn between_matches_two_independent_comparisons_at_boundaries_and_nulls() {
-        let predicates = vec![
-            Predicate::Comparison {
-                column: "amount".into(),
-                operator: Operator::Ge,
-                value: "1000".into(),
-            },
-            Predicate::Comparison {
-                column: "amount".into(),
-                operator: Operator::Le,
-                value: "9000".into(),
-            },
-        ];
-        let indices = HashMap::from([("amount".to_owned(), 0usize)]);
-        let types = HashMap::from([("amount".to_owned(), "Nullable(UInt16)".to_owned())]);
-        let conditions = compile(&predicates, &indices, &types).unwrap();
-        assert_eq!(conditions.len(), 1);
-        assert!(matches!(conditions[0].test, Test::NumericBetween(..)));
-        let batch = [TypedColumn::NullableNumeric {
-            values: NumericColumn::UInt16(vec![999, 1000, 9000, 9001, 5000]),
-            nulls: vec![0, 0, 0, 0, 1],
-        }];
-        let old = vec![
-            Condition {
-                index: 0,
-                test: Test::Compare(Operator::Ge, Cell::Numeric(Number::Unsigned(1000))),
-            },
-            Condition {
-                index: 0,
-                test: Test::Compare(Operator::Le, Cell::Numeric(Number::Unsigned(9000))),
-            },
-        ];
-        for row in 0..5 {
-            assert_eq!(
-                passes(&batch, row, std::slice::from_ref(&conditions)),
-                passes(&batch, row, std::slice::from_ref(&old)),
-                "row {row}"
-            );
-        }
-    }
-
-    #[test]
-    fn fused_float_between_preserves_nan_semantics() {
-        let predicates = vec![
-            Predicate::Comparison {
-                column: "x".into(),
-                operator: Operator::Ge,
-                value: "-1".into(),
-            },
-            Predicate::Comparison {
-                column: "x".into(),
-                operator: Operator::Le,
-                value: "1".into(),
-            },
-        ];
-        let indices = HashMap::from([("x".to_owned(), 0usize)]);
-        let types = HashMap::from([("x".to_owned(), "Float64".to_owned())]);
-        let conditions = compile(&predicates, &indices, &types).unwrap();
-        let batch = [TypedColumn::Numeric(NumericColumn::Float64(vec![
-            f64::NAN,
-            -1.0,
-            0.0,
-            1.0,
-            2.0,
-        ]))];
-        let results = (0..5)
-            .map(|row| passes(&batch, row, std::slice::from_ref(&conditions)))
-            .collect::<Vec<_>>();
-        assert_eq!(results, vec![false, true, true, true, false]);
-    }
-}
+#[path = "typed_tests/fused_numeric_between_tests.rs"]
+mod fused_numeric_between_tests;
 
 #[cfg(test)]
-mod mixed_numeric_join_comparisons {
-    use super::*;
-
-    #[test]
-    fn compares_mixed_values_without_losing_precision() {
-        let unsigned = |value| Cell::Numeric(Number::Unsigned(value));
-        let signed = |value| Cell::Numeric(Number::Signed(value));
-        let float = |value| Cell::Numeric(Number::Float(value));
-        assert!(matches_comparison(&unsigned(0), &signed(-1), Operator::Gt));
-        assert!(matches_comparison(&signed(-1), &unsigned(0), Operator::Lt));
-        assert!(matches_comparison(
-            &unsigned((1 << 53) + 1),
-            &float((1u64 << 53) as f64),
-            Operator::Gt
-        ));
-        assert!(matches_comparison(
-            &unsigned(u128::MAX),
-            &float(f64::INFINITY),
-            Operator::Lt
-        ));
-        assert!(!matches_comparison(
-            &unsigned(1),
-            &float(f64::NAN),
-            Operator::Eq
-        ));
-        assert!(matches_comparison(
-            &unsigned(1),
-            &float(f64::NAN),
-            Operator::Ne
-        ));
-        assert!(!matches_comparison(&Cell::Null, &signed(-1), Operator::Ne));
-    }
-}
+#[path = "typed_tests/mixed_numeric_join_comparisons.rs"]
+mod mixed_numeric_join_comparisons;
