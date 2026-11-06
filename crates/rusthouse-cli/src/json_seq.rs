@@ -43,9 +43,7 @@ impl<W: Write> JsonSeqSink<W> {
             return self.write_record_start(chunk);
         }
         self.output.write_all(chunk)?;
-        if chunk.ends_with(b"\n") {
-            self.at_row_start = true;
-        }
+        self.at_row_start = chunk.ends_with(b"\n");
         Ok(())
     }
 }
