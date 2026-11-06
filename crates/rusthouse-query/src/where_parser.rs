@@ -324,6 +324,87 @@ fn check_parenthesis_depth(depth: usize) -> Result<(), ParseError> {
     Ok(())
 }
 
+fn has_arithmetic_operator(tokens: &[Token]) -> bool {
+    tokens.iter().enumerate().any(|(index, token)| match token {
+        Token::Star | Token::Slash | Token::Percent => true,
+        Token::Plus | Token::Minus => index > 0,
+        _ => false,
+    })
+}
+
+fn expression_between_bounds(
+    parser: &mut Parser,
+) -> Result<Option<(ScalarExpr, ScalarExpr)>, ParseError> {
+    fn boundary(tokens: &[Token], start: usize, between_delimiter: bool) -> Option<usize> {
+        let mut depth = 0usize;
+        let mut case_depth = 0usize;
+        for (index, token) in tokens.iter().enumerate().skip(start) {
+            match token {
+                Token::LParen => depth += 1,
+                Token::RParen if depth == 0 => return Some(index),
+                Token::RParen => depth -= 1,
+                Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("CASE") => {
+                    case_depth += 1;
+                }
+                Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("END") => {
+                    case_depth = case_depth.saturating_sub(1);
+                }
+                Token::Word(word)
+                    if depth == 0
+                        && case_depth == 0
+                        && (word.eq_ignore_ascii_case("AND")
+                            || (!between_delimiter
+                                && [
+                                    "OR", "GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "FORMAT",
+                                ]
+                                .iter()
+                                .any(|keyword| word.eq_ignore_ascii_case(keyword)))) =>
+                {
+                    return Some(index);
+                }
+                Token::Semicolon if depth == 0 && case_depth == 0 => return Some(index),
+                _ => {}
+            }
+        }
+        None
+    }
+
+    fn parse_bound(tokens: &[Token]) -> Result<ScalarExpr, ParseError> {
+        let mut parser = Parser {
+            tokens: tokens.to_vec(),
+            index: 0,
+        };
+        let expression = crate::expression::parse_expression_tokens(&mut parser)?;
+        if parser.index != parser.tokens.len() {
+            return Err(ParseError("invalid expression in BETWEEN bound".into()));
+        }
+        Ok(expression)
+    }
+
+    let start = parser.index;
+    let Some(and) = boundary(&parser.tokens, start, true) else {
+        return Ok(None);
+    };
+    let upper_start = and + 1;
+    let upper_end = boundary(&parser.tokens, upper_start, false).unwrap_or(parser.tokens.len());
+    let lower_tokens = &parser.tokens[start..and];
+    let upper_tokens = &parser.tokens[upper_start..upper_end];
+    if !has_arithmetic_operator(lower_tokens) && !has_arithmetic_operator(upper_tokens) {
+        return Ok(None);
+    }
+    let (Ok(lower), Ok(upper)) = (parse_bound(lower_tokens), parse_bound(upper_tokens)) else {
+        return Ok(None);
+    };
+    let mut referenced_columns = Vec::new();
+    lower.referenced_columns(&mut referenced_columns);
+    upper.referenced_columns(&mut referenced_columns);
+    if referenced_columns.is_empty() {
+        return Ok(None);
+    }
+    parser.index = upper_end;
+    Ok(Some((lower, upper)))
+}
+
 fn parse_atom(
     parser: &mut Parser,
     conditions: &mut usize,
@@ -569,6 +650,38 @@ fn parse_atom(
     } else if parser.keyword("BETWEEN") {
         // ASYMMETRIC is the SQL default and uses the existing ordered bounds.
         parser.keyword("ASYMMETRIC");
+        let expression_bounds = if allow_expression {
+            expression_between_bounds(parser)?
+        } else {
+            None
+        };
+        if let Some((lower, upper)) = expression_bounds {
+            let value = ScalarExpr::Column(column);
+            let between = vec![
+                Predicate::Expression(ScalarExpr::Compare(
+                    Box::new(value.clone()),
+                    Operator::Ge,
+                    Box::new(lower),
+                )),
+                Predicate::Expression(ScalarExpr::Compare(
+                    Box::new(value),
+                    Operator::Le,
+                    Box::new(upper),
+                )),
+            ];
+            let branches = if negate_in {
+                negate(vec![between])?
+            } else {
+                vec![between]
+            };
+            *conditions = conditions
+                .checked_add(branches.iter().map(Vec::len).sum::<usize>())
+                .ok_or_else(bad_expansion)?;
+            if *conditions > MAX_CONDITIONS {
+                return Err(ParseError("WHERE supports at most 16 conditions".into()));
+            }
+            return Ok(branches);
+        }
         let lower = numeric_or_literal(parser)?;
         if !parser.keyword("AND") {
             return Err(ParseError("BETWEEN requires AND".into()));
