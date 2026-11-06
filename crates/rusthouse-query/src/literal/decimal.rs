@@ -1,5 +1,23 @@
 use super::*;
 
+fn signed_mantissa(whole: &str, fraction: &str, negative: bool) -> Result<i128, ParseError> {
+    let mut signed = 0i128;
+    for digit in whole.bytes().chain(fraction.bytes()) {
+        let value = i128::from(digit - b'0');
+        signed = signed
+            .checked_mul(10)
+            .and_then(|current| {
+                if negative {
+                    current.checked_sub(value)
+                } else {
+                    current.checked_add(value)
+                }
+            })
+            .ok_or_else(|| ParseError("decimal constant exceeds Int128".into()))?;
+    }
+    Ok(signed)
+}
+
 pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
     let (negative, digits) = match value.strip_prefix('-') {
         Some(rest) => (true, rest),
@@ -28,20 +46,7 @@ pub(super) fn fixed_decimal(value: &str) -> Result<(i128, usize), ParseError> {
     // A decimal mantissa does not need to be copied into a temporary
     // String. Accumulate the whole and fractional ASCII digit slices
     // directly, with checked signed arithmetic so Int128::MIN stays valid.
-    let mut signed = 0i128;
-    for digit in whole.bytes().chain(fraction.bytes()) {
-        let value = i128::from(digit - b'0');
-        signed = signed
-            .checked_mul(10)
-            .and_then(|current| {
-                if negative {
-                    current.checked_sub(value)
-                } else {
-                    current.checked_add(value)
-                }
-            })
-            .ok_or_else(|| ParseError("decimal constant exceeds Int128".into()))?;
-    }
+    let signed = signed_mantissa(whole, fraction, negative)?;
     // Zero remains exact under any finite decimal exponent. Avoid rejecting
     // it merely because a redundant power of ten exceeds Int128.
     if signed == 0 {
