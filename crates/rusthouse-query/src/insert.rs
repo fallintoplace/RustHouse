@@ -86,7 +86,9 @@ fn parse_insert_columns(parser: &mut Parser) -> Result<Option<Vec<String>>, Pars
 fn finish_insert(parser: &mut Parser) -> Result<(), ParseError> {
     parser.take(Token::Semicolon);
     if parser.index != parser.tokens.len() {
-        return Err(ParseError("unexpected tokens after INSERT statement".into()));
+        return Err(ParseError(
+            "unexpected tokens after INSERT statement".into(),
+        ));
     }
     Ok(())
 }
