@@ -133,16 +133,16 @@ fn write_framed_plain_cell<const N: usize, W: Write>(
 
 fn plain_html_cell_is_safe(field: &str) -> bool {
     if field.len() > 4096 {
-                false
-            } else if field.is_ascii() {
-                field.bytes().all(|byte| {
-                    !byte.is_ascii_control() && !matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'')
-                })
-            } else {
-                field
-                    .chars()
-                    .all(|ch| !ch.is_control() && !matches!(ch, '&' | '<' | '>' | '"' | '\''))
-            }
+        false
+    } else if field.is_ascii() {
+        field.bytes().all(|byte| {
+            !byte.is_ascii_control() && !matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'')
+        })
+    } else {
+        field
+            .chars()
+            .all(|ch| !ch.is_control() && !matches!(ch, '&' | '<' | '>' | '"' | '\''))
+    }
 }
 
 fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::Result<()> {
