@@ -39,6 +39,22 @@ fn find_augmenting_path(
     (parent[sink] != usize::MAX).then_some(parent)
 }
 
+fn path_bottleneck(
+    residual: &[Vec<u128>],
+    parent: &[usize; MAX_VERTICES],
+    source: usize,
+    sink: usize,
+) -> u128 {
+    let mut bottleneck = u128::MAX;
+    let mut cursor = sink;
+    while cursor != source {
+        let previous = parent[cursor];
+        bottleneck = bottleneck.min(residual[previous][cursor]);
+        cursor = previous;
+    }
+    bottleneck
+}
+
 /// Return the maximum aggregate source-to-sink capacity in bytes per second.
 /// Antiparallel and repeated links are allowed and combined without overflow.
 pub fn maximum_replica_flow(
@@ -72,20 +88,14 @@ pub fn maximum_replica_flow(
 
     let mut total_flow = 0u64;
     while let Some(parent) = find_augmenting_path(&residual, source, sink) {
-        let mut bottleneck = u128::MAX;
-        let mut cursor = sink;
-        while cursor != source {
-            let previous = parent[cursor];
-            bottleneck = bottleneck.min(residual[previous][cursor]);
-            cursor = previous;
-        }
+        let bottleneck = path_bottleneck(&residual, &parent, source, sink);
         // Validate all potentially overflowing updates before modifying the
         // residual graph so a maliciously large capacity never wraps.
         let added_flow = u64::try_from(bottleneck).map_err(|_| "replica total flow overflow")?;
         total_flow = total_flow
             .checked_add(added_flow)
             .ok_or("replica total flow overflow")?;
-        cursor = sink;
+        let mut cursor = sink;
         while cursor != source {
             let previous = parent[cursor];
             residual[previous][cursor] -= bottleneck;
