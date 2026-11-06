@@ -73,6 +73,15 @@ impl TokenBucket {
         self.remainder
     }
 
+    fn filled_at(self, now_ms: u64) -> Self {
+        Self {
+            tokens: self.capacity,
+            last_ms: now_ms,
+            remainder: 0,
+            ..self
+        }
+    }
+
     /// Refill using exact unsigned integer arithmetic.
     ///
     /// A cap-safe fast path handles enormous elapsed times without even
@@ -86,11 +95,7 @@ impl TokenBucket {
             return Ok(self);
         }
         if self.tokens == self.capacity {
-            return Ok(Self {
-                last_ms: now_ms,
-                remainder: 0,
-                ..self
-            });
+            return Ok(self.filled_at(now_ms));
         }
 
         // The maximum missing capacity is u64::MAX bytes, so this
@@ -98,12 +103,7 @@ impl TokenBucket {
         let needed = u128::from(self.capacity - self.tokens) * 1000;
         let threshold = needed.div_ceil(u128::from(self.rate_bytes_per_second));
         if u128::from(elapsed) >= threshold {
-            return Ok(Self {
-                tokens: self.capacity,
-                last_ms: now_ms,
-                remainder: 0,
-                ..self
-            });
+            return Ok(self.filled_at(now_ms));
         }
 
         // Before the threshold, elapsed * rate < capacity * 1000.
@@ -114,12 +114,7 @@ impl TokenBucket {
         let remainder = (earned % 1000) as u16;
         let tokens = self.tokens + bytes;
         if tokens >= self.capacity {
-            Ok(Self {
-                tokens: self.capacity,
-                last_ms: now_ms,
-                remainder: 0,
-                ..self
-            })
+            Ok(self.filled_at(now_ms))
         } else {
             Ok(Self {
                 tokens,
