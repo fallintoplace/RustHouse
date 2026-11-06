@@ -186,6 +186,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "PORT"
                 | "PROTOCOL"
                 | "FROMUNIXTIMESTAMP64NANO"
+                | "REGEXP_REPLACE"
                 | "TRANSLATE"
                 | "TRANSLATEUTF8"
                 | "POSITIONCASEINSENSITIVE"
@@ -3318,6 +3319,81 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     result.push_str(&input[..prefix]);
                     result.push_str(&replacement);
                     result.push_str(&input[suffix..]);
+                    ConstantValue::Text(result)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "REGEXP_REPLACE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "regexp_replace requires a pattern")?;
+            let pattern = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "regexp_replace requires a replacement",
+            )?;
+            let replacement = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "regexp_replace requires three arguments",
+            )?;
+            match (input, pattern, replacement) {
+                (Some(input), Some(pattern), Some(replacement)) => {
+                    if pattern.len() > 4096 || replacement.len() > 4096 {
+                        return Err(ParseError(
+                            "regexp_replace pattern or replacement exceeds 4096 bytes".into(),
+                        ));
+                    }
+                    let regex = regex::RegexBuilder::new(&pattern)
+                        .dot_matches_new_line(true)
+                        .size_limit(2 * 1024 * 1024)
+                        .build()
+                        .map_err(|error| {
+                            ParseError(format!("invalid regexp_replace regex: {error}"))
+                        })?;
+                    let mut converted = String::with_capacity(replacement.len());
+                    let mut characters = replacement.chars();
+                    while let Some(character) = characters.next() {
+                        if character == '\\' {
+                            match characters.next() {
+                                Some(digit @ '0'..='9') => {
+                                    converted.push('$');
+                                    converted.push('{');
+                                    converted.push(digit);
+                                    converted.push('}');
+                                }
+                                Some(next) => {
+                                    if next == '$' {
+                                        converted.push('$');
+                                    }
+                                    converted.push(next);
+                                }
+                                None => converted.push('\\'),
+                            }
+                        } else if character == '$' {
+                            converted.push_str("$$");
+                        } else {
+                            converted.push(character);
+                        }
+                    }
+                    let mut result = String::with_capacity(input.len());
+                    let mut cursor = 0;
+                    for captures in regex.captures_iter(&input) {
+                        let found = captures.get(0).expect("regex capture zero");
+                        result.push_str(&input[cursor..found.start()]);
+                        captures.expand(&converted, &mut result);
+                        if result.len() > MAX_TEXT_BYTES {
+                            return Err(ParseError("regexp_replace output is too large".into()));
+                        }
+                        cursor = found.end();
+                        break;
+                    }
+                    result.push_str(&input[cursor..]);
+                    if result.len() > MAX_TEXT_BYTES {
+                        return Err(ParseError("regexp_replace output is too large".into()));
+                    }
                     ConstantValue::Text(result)
                 }
                 _ => ConstantValue::Null,
