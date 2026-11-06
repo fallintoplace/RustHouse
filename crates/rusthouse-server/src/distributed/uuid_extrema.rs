@@ -4,6 +4,15 @@
 
 use super::{AggregateFunction, MergeError};
 
+fn hex_nibble(byte: u8) -> Option<u8> {
+    match byte {
+        b'0'..=b'9' => Some(byte - b'0'),
+        b'a'..=b'f' => Some(byte - b'a' + 10),
+        b'A'..=b'F' => Some(byte - b'A' + 10),
+        _ => None,
+    }
+}
+
 fn uuid_value(raw: &[u8]) -> Option<u128> {
     if raw.len() != 36 {
         return None;
@@ -16,12 +25,7 @@ fn uuid_value(raw: &[u8]) -> Option<u128> {
             }
             continue;
         }
-        let hex = match byte {
-            b'0'..=b'9' => byte - b'0',
-            b'a'..=b'f' => byte - b'a' + 10,
-            b'A'..=b'F' => byte - b'A' + 10,
-            _ => return None,
-        };
+        let hex = hex_nibble(byte)?;
         number = (number << 4) | u128::from(hex);
     }
     Some(number)
