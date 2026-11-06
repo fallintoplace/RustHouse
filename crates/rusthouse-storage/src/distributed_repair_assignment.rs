@@ -24,6 +24,31 @@ fn reconstruct_workers(
     Ok(chosen)
 }
 
+fn consider_assignment(
+    mask: usize,
+    worker: usize,
+    current: u64,
+    cost: Option<u64>,
+    best: &mut [Option<u64>],
+    predecessor: &mut [Option<(usize, usize)>],
+) {
+    let worker_bit = 1usize << worker;
+    if mask & worker_bit != 0 {
+        return;
+    }
+    let Some(cost) = cost else {
+        return;
+    };
+    let Some(next_cost) = current.checked_add(cost) else {
+        return;
+    };
+    let next = mask | worker_bit;
+    if best[next].is_none_or(|existing| next_cost < existing) {
+        best[next] = Some(next_cost);
+        predecessor[next] = Some((mask, worker));
+    }
+}
+
 fn validate_matrix(costs: &[Vec<Option<u64>>]) -> Result<usize, &'static str> {
     let workers = costs[0].len();
     if workers == 0
@@ -61,22 +86,8 @@ pub fn minimum_cost_assignment(
         let Some(current) = best[mask] else {
             continue;
         };
-        for (worker, cost) in costs[task].iter().enumerate() {
-            let worker_bit = 1usize << worker;
-            if mask & worker_bit != 0 {
-                continue;
-            }
-            let Some(cost) = *cost else {
-                continue;
-            };
-            let Some(next_cost) = current.checked_add(cost) else {
-                continue;
-            };
-            let next = mask | worker_bit;
-            if best[next].is_none_or(|existing| next_cost < existing) {
-                best[next] = Some(next_cost);
-                predecessor[next] = Some((mask, worker));
-            }
+        for (worker, &cost) in costs[task].iter().enumerate() {
+            consider_assignment(mask, worker, current, cost, &mut best, &mut predecessor);
         }
     }
     let (mask, cost) = (0..states)
