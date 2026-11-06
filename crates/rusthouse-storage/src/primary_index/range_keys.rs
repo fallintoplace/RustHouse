@@ -147,7 +147,7 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
             vec![range]
         });
     }
-    let mut ranges: Vec<_> = intervals
+    let ranges: Vec<_> = intervals
         .iter()
         .map(|(lower, upper)| candidate_mark_range_sorted(len, &cached_key, *lower, *upper))
         .filter(|range| !range.is_empty())
