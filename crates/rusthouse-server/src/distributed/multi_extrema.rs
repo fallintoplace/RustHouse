@@ -7,6 +7,18 @@ use super::{
 };
 use std::collections::HashMap;
 
+fn combine_extremum<T: Ord + Copy>(
+    prior: &mut Option<T>,
+    value: T,
+    function: AggregateFunction,
+) {
+    *prior = Some(prior.map_or(value, |old| match function {
+        AggregateFunction::Min => old.min(value),
+        AggregateFunction::Max => old.max(value),
+        _ => unreachable!("validated extrema"),
+    }));
+}
+
 pub(super) fn merge_multi_key_extrema(
     shards: &[(usize, Vec<u8>)],
     columns: &[String],
@@ -87,22 +99,12 @@ pub(super) fn merge_multi_key_extrema(
                 let value = text
                     .parse::<u128>()
                     .map_err(|_| MergeError::InvalidGroupedSum)?;
-                let prior = &mut groups[index].2;
-                *prior = Some(prior.map_or(value, |old| match function {
-                    AggregateFunction::Min => old.min(value),
-                    AggregateFunction::Max => old.max(value),
-                    _ => unreachable!("validated extrema"),
-                }));
+                combine_extremum(&mut groups[index].2, value, function);
             } else {
                 let value = text
                     .parse::<i128>()
                     .map_err(|_| MergeError::InvalidGroupedSum)?;
-                let prior = &mut groups[index].1;
-                *prior = Some(prior.map_or(value, |old| match function {
-                    AggregateFunction::Min => old.min(value),
-                    AggregateFunction::Max => old.max(value),
-                    _ => unreachable!("validated extrema"),
-                }));
+                combine_extremum(&mut groups[index].1, value, function);
             }
         }
     }
