@@ -281,6 +281,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "TRYBASE32DECODE"
                 | "FROM_BASE32"
                 | "BASE32ENCODE"
+                | "IS_NUMERIC"
                 | "TO_BASE32"
                 | "ENDSWITHCASEINSENSITIVE"
                 | "ENDSWITHCASEINSENSITIVEUTF8"
@@ -5880,6 +5881,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     )
                 }
                 _ => ConstantValue::Null,
+            }
+        }
+        "IS_NUMERIC" => {
+            let value = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "is_numeric requires one argument")?;
+            match value {
+                Some(value) => ConstantValue::Integer(i64::from(
+                    !value.is_empty()
+                        && value.parse::<f64>().is_ok_and(|number| number.is_finite()),
+                )),
+                None => ConstantValue::Null,
             }
         }
         "REGEXPQUOTEMETA" => {
