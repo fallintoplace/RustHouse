@@ -1,34 +1,7 @@
 //! Global weighted average from exact integer sums and non-NULL counts.
 //! Averaging local averages would overweight small shards.
 
-use super::{MergeError, WideSignedSum};
-
-fn parse_peer_state<'a>(
-    cap: usize,
-    body: &'a [u8],
-    header: &[u8],
-) -> Result<(&'a [u8], u128), MergeError> {
-    if cap == 0 || !body.starts_with(header) || !body.ends_with(b"\n") {
-        return Err(MergeError::InvalidSum);
-    }
-    let row = &body[header.len()..body.len() - 1];
-    let Some(tab) = row.iter().position(|&byte| byte == b'\t') else {
-        return Err(MergeError::InvalidSum);
-    };
-    let raw_sum = &row[..tab];
-    let raw_count = &row[tab + 1..];
-    if raw_count.contains(&b'\t') {
-        return Err(MergeError::InvalidSum);
-    }
-    let count_text = std::str::from_utf8(raw_count).map_err(|_| MergeError::InvalidSum)?;
-    let count = count_text
-        .parse::<u128>()
-        .map_err(|_| MergeError::InvalidSum)?;
-    if count.to_string() != count_text || (count == 0) != (raw_sum == b"NULL") {
-        return Err(MergeError::InvalidSum);
-    }
-    Ok((raw_sum, count))
-}
+use super::{MergeError, WideSignedSum, parse_peer_counted_state};
 
 pub(super) fn merge_global_avg(
     shards: &[(usize, Vec<u8>)],
@@ -54,7 +27,7 @@ pub(super) fn merge_global_avg(
         return Err(MergeError::InvalidSum);
     }
     for (cap, body) in shards {
-        let (raw_sum, count) = parse_peer_state(*cap, body, header.as_bytes())?;
+        let (raw_sum, count) = parse_peer_counted_state(*cap, body, header.as_bytes())?;
         total = total.checked_add(count).ok_or(MergeError::CountOverflow)?;
         if count == 0 {
             continue;
