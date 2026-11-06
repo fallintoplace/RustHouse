@@ -28,8 +28,8 @@ pub fn write_uuid_values<W: Write>(writer: &mut W, values: &[UuidValue]) -> io::
 
     let mut buffer = [0u8; 16 * 1024];
     for chunk in values.chunks(buffer.len() / 16) {
-        for (index, value) in chunk.iter().enumerate() {
-            buffer[index * 16..index * 16 + 16].copy_from_slice(&uuid_disk_bytes(value));
+        for (slot, value) in buffer.chunks_exact_mut(16).zip(chunk) {
+            slot.copy_from_slice(&uuid_disk_bytes(value));
         }
         writer.write_all(&buffer[..chunk.len() * 16])?;
     }
