@@ -17,6 +17,14 @@ impl Write for KeyOutput {
     }
 }
 
+fn valid_integer_key(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .enumerate()
+            .all(|(index, byte)| byte.is_ascii_digit() || (index == 0 && byte == b'-'))
+}
+
 fn schema_column<'a>(
     name: &str,
     schema: &'a [rusthouse_query::ColumnDef],
@@ -110,12 +118,7 @@ pub(super) fn bind(database: &Path, query: CorrelatedExists) -> Result<Select, S
         if value == "\\N" || value == "NULL" {
             continue;
         }
-        if value.is_empty()
-            || !value
-                .bytes()
-                .enumerate()
-                .all(|(i, b)| b.is_ascii_digit() || (i == 0 && b == b'-'))
-        {
+        if !valid_integer_key(value) {
             return Err("invalid integer from correlated EXISTS".into());
         }
         values.push(value.to_owned());
