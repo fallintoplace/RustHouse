@@ -145,6 +145,17 @@ enum State {
 pub(super) enum BoundExpr {
     Column(usize),
     TextLength(usize),
+    TextLiteral(Vec<u8>),
+    TextConcat(Vec<Self>),
+    TextSubstring {
+        value: Box<Self>,
+        start: usize,
+        length: Option<usize>,
+    },
+    Round {
+        value: Box<Self>,
+        precision: i32,
+    },
     Integer(i64),
     Float(f64),
     // Fast path for the affine expression family in ClickBench Q30.
@@ -360,6 +371,26 @@ impl BoundExpr {
                     .transpose()?,
             },
             ScalarExpr::Column(name) => Self::Column(index(name)?),
+            ScalarExpr::TextLiteral(value) => Self::TextLiteral(value.as_bytes().to_vec()),
+            ScalarExpr::TextConcat(arguments) => Self::TextConcat(
+                arguments
+                    .iter()
+                    .map(|argument| Self::bind(argument, indices))
+                    .collect::<Result<Vec<_>, ExecutionError>>()?,
+            ),
+            ScalarExpr::TextSubstring {
+                value,
+                start,
+                length,
+            } => Self::TextSubstring {
+                value: Box::new(Self::bind(value, indices)?),
+                start: *start,
+                length: *length,
+            },
+            ScalarExpr::Round { value, precision } => Self::Round {
+                value: Box::new(Self::bind(value, indices)?),
+                precision: *precision,
+            },
             ScalarExpr::IsNull { column, negated } => Self::IsNull {
                 index: index(column)?,
                 negated: *negated,
@@ -540,11 +571,106 @@ pub(super) fn compare_expression_numbers(
 }
 
 // Evaluate the numeric arithmetic subset against an already joined row.
+fn round_number(value: Number, precision: i32) -> Result<Number, ExecutionError> {
+    if precision >= 0 {
+        if !matches!(value, Number::Float(_)) {
+            return Ok(value);
+        }
+        let Number::Float(value) = value else {
+            unreachable!();
+        };
+        let factor = 10_f64.powi(precision);
+        let rounded = if factor.is_finite() {
+            let scaled = value * factor;
+            if scaled.is_finite() {
+                scaled.round() / factor
+            } else {
+                value
+            }
+        } else {
+            value
+        };
+        return rounded
+            .is_finite()
+            .then_some(Number::Float(rounded))
+            .ok_or_else(|| ExecutionError::Invalid("non-finite ROUND result".into()));
+    }
+
+    let scale = precision.unsigned_abs();
+    let rounded = match value {
+        Number::Signed(value) => {
+            let Some(divisor) = 10_u128.checked_pow(scale) else {
+                return Ok(Number::Signed(0));
+            };
+            let magnitude = value.unsigned_abs();
+            let units = magnitude / divisor;
+            let remainder = magnitude % divisor;
+            let rounded_units = units
+                .checked_add(u128::from(remainder >= divisor.div_ceil(2)))
+                .ok_or_else(|| ExecutionError::Invalid("ROUND result overflow".into()))?;
+            let rounded = rounded_units
+                .checked_mul(divisor)
+                .ok_or_else(|| ExecutionError::Invalid("ROUND result overflow".into()))?;
+            if value < 0 {
+                if rounded == 1_u128 << 127 {
+                    Number::Signed(i128::MIN)
+                } else {
+                    let rounded = i128::try_from(rounded)
+                        .map_err(|_| ExecutionError::Invalid("ROUND result overflow".into()))?;
+                    Number::Signed(-rounded)
+                }
+            } else {
+                Number::Signed(
+                    i128::try_from(rounded)
+                        .map_err(|_| ExecutionError::Invalid("ROUND result overflow".into()))?,
+                )
+            }
+        }
+        Number::Unsigned(value) => {
+            let Some(divisor) = 10_u128.checked_pow(scale) else {
+                return Ok(Number::Unsigned(0));
+            };
+            let units = value / divisor;
+            let remainder = value % divisor;
+            let rounded_units = units
+                .checked_add(u128::from(remainder >= divisor.div_ceil(2)))
+                .ok_or_else(|| ExecutionError::Invalid("ROUND result overflow".into()))?;
+            Number::Unsigned(
+                rounded_units
+                    .checked_mul(divisor)
+                    .ok_or_else(|| ExecutionError::Invalid("ROUND result overflow".into()))?,
+            )
+        }
+        Number::Float(value) => {
+            let factor = 10_f64.powi(precision.saturating_neg());
+            let rounded = if factor.is_finite() {
+                (value / factor).round() * factor
+            } else {
+                0.0
+            };
+            if !rounded.is_finite() {
+                return Err(ExecutionError::Invalid("non-finite ROUND result".into()));
+            }
+            Number::Float(rounded)
+        }
+    };
+    Ok(rounded)
+}
+
 pub(super) fn eval_row_arithmetic(
     expression: &BoundExpr,
     row: &[Cell],
 ) -> Result<Option<Number>, ExecutionError> {
     match expression {
+        BoundExpr::TextLiteral(_) | BoundExpr::TextConcat(_) | BoundExpr::TextSubstring { .. } => {
+            Err(ExecutionError::Invalid(
+                "text scalar expression cannot be used as a numeric expression".into(),
+            ))
+        }
+        BoundExpr::Round { value, precision } => match eval_row_arithmetic(value, row)? {
+            Some(value) => round_number(value, *precision).map(Some),
+            None => Ok(None),
+        },
         BoundExpr::Case {
             branches,
             else_expr,
@@ -732,12 +858,91 @@ pub(super) fn eval_row_arithmetic(
     }
 }
 
+/// Evaluate a scalar projection while preserving either text or numeric output.
+pub(super) fn eval_row_value(expression: &BoundExpr, row: &[Cell]) -> Result<Cell, ExecutionError> {
+    match expression {
+        BoundExpr::Column(index) => row.get(*index).cloned().ok_or_else(|| {
+            ExecutionError::Invalid("scalar projection references an unknown column".into())
+        }),
+        BoundExpr::TextLiteral(value) => Ok(Cell::Text(value.clone())),
+        BoundExpr::TextConcat(arguments) => {
+            let mut output = Vec::new();
+            for argument in arguments {
+                match eval_row_value(argument, row)? {
+                    Cell::Text(value) => output.extend_from_slice(&value),
+                    Cell::Uuid(value) => output.extend_from_slice(value.as_bytes()),
+                    // DuckDB's CONCAT skips NULL arguments and yields an empty
+                    // string when every argument is NULL.
+                    Cell::Null => {}
+                    Cell::Numeric(_) => {
+                        return Err(ExecutionError::Invalid(
+                            "CONCAT requires String arguments".into(),
+                        ));
+                    }
+                }
+            }
+            Ok(Cell::Text(output))
+        }
+        BoundExpr::TextSubstring {
+            value,
+            start,
+            length,
+        } => match eval_row_value(value, row)? {
+            Cell::Text(source) => {
+                let source = std::str::from_utf8(&source).map_err(|_| {
+                    ExecutionError::Invalid("SUBSTRING input is not valid UTF-8".into())
+                })?;
+                let output = source
+                    .chars()
+                    .skip(start - 1)
+                    .take(length.unwrap_or(usize::MAX))
+                    .collect::<String>();
+                Ok(Cell::Text(output.into_bytes()))
+            }
+            Cell::Null => Ok(Cell::Null),
+            _ => Err(ExecutionError::Invalid(
+                "SUBSTRING requires a String value".into(),
+            )),
+        },
+        BoundExpr::Case {
+            branches,
+            else_expr,
+        } => {
+            for (condition, value) in branches {
+                let matched = match eval_row_arithmetic(condition, row)? {
+                    Some(Number::Unsigned(value)) => value != 0,
+                    Some(Number::Signed(value)) => value != 0,
+                    Some(Number::Float(value)) => value != 0.0,
+                    None => false,
+                };
+                if matched {
+                    return eval_row_value(value, row);
+                }
+            }
+            match else_expr {
+                Some(value) => eval_row_value(value, row),
+                None => Ok(Cell::Null),
+            }
+        }
+        _ => Ok(eval_row_arithmetic(expression, row)?.map_or(Cell::Null, Cell::Numeric)),
+    }
+}
+
 pub(super) fn eval_number(
     expression: &BoundExpr,
     batch: &[TypedColumn],
     row: usize,
 ) -> Result<Option<Number>, ExecutionError> {
     match expression {
+        BoundExpr::TextLiteral(_) | BoundExpr::TextConcat(_) | BoundExpr::TextSubstring { .. } => {
+            Err(ExecutionError::Invalid(
+                "text scalar expression cannot be used as a numeric expression".into(),
+            ))
+        }
+        BoundExpr::Round { value, precision } => match eval_number(value, batch, row)? {
+            Some(value) => round_number(value, *precision).map(Some),
+            None => Ok(None),
+        },
         BoundExpr::Case {
             branches,
             else_expr,
@@ -1654,6 +1859,97 @@ mod affine_tests {
         assert!(matches!(
             BoundExpr::bind(&reversed, &indices).unwrap(),
             BoundExpr::Add(_, _)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod text_projection_tests {
+    use super::*;
+
+    #[test]
+    fn concatenates_coalesced_text_from_joined_rows() {
+        let expression = crate::expression::parse_scalar_expression(
+            "concat(concat(coalesce(last_name, ''), ', '), coalesce(first_name, ''))",
+        )
+        .unwrap();
+        let indices = HashMap::from([
+            ("last_name".to_owned(), 0_usize),
+            ("first_name".to_owned(), 1_usize),
+        ]);
+        let bound = BoundExpr::bind(&expression, &indices).unwrap();
+        let row = vec![Cell::Text(b"Vu".to_vec()), Cell::Null];
+
+        assert!(matches!(
+            eval_row_value(&bound, &row).unwrap(),
+            Cell::Text(value) if value == b"Vu, "
+        ));
+    }
+
+    #[test]
+    fn concat_skips_null_arguments() {
+        let expression = crate::expression::parse_scalar_expression("concat(name, '!')").unwrap();
+        let bound =
+            BoundExpr::bind(&expression, &HashMap::from([("name".to_owned(), 0_usize)])).unwrap();
+
+        assert!(matches!(
+            eval_row_value(&bound, &[Cell::Null]).unwrap(),
+            Cell::Text(value) if value == b"!"
+        ));
+    }
+
+    #[test]
+    fn concat_returns_empty_text_when_all_arguments_are_null() {
+        let expression = crate::expression::parse_scalar_expression("concat(left, right)").unwrap();
+        let bound = BoundExpr::bind(
+            &expression,
+            &HashMap::from([("left".to_owned(), 0_usize), ("right".to_owned(), 1_usize)]),
+        )
+        .unwrap();
+
+        assert!(matches!(
+            eval_row_value(&bound, &[Cell::Null, Cell::Null]).unwrap(),
+            Cell::Text(value) if value.is_empty()
+        ));
+    }
+
+    #[test]
+    fn substring_counts_utf8_characters_and_handles_empty_ranges() {
+        let expression =
+            crate::expression::parse_scalar_expression("substring('A界BC', 2, 2)").unwrap();
+        let bound = BoundExpr::bind(&expression, &HashMap::new()).unwrap();
+
+        assert!(matches!(
+            eval_row_value(&bound, &[]).unwrap(),
+            Cell::Text(value) if value == "界B".as_bytes()
+        ));
+    }
+
+    #[test]
+    fn round_handles_signed_values_nulls_and_negative_precision() {
+        let expression = crate::expression::parse_scalar_expression("round(value, 2)").unwrap();
+        let bound =
+            BoundExpr::bind(&expression, &HashMap::from([("value".to_owned(), 0)])).unwrap();
+
+        assert!(matches!(
+            eval_row_value(&bound, &[Cell::Numeric(Number::Float(1.235))]).unwrap(),
+            Cell::Numeric(Number::Float(value)) if (value - 1.24).abs() < 1e-12
+        ));
+        assert!(matches!(
+            eval_row_value(&bound, &[Cell::Numeric(Number::Float(-1.235))]).unwrap(),
+            Cell::Numeric(Number::Float(value)) if (value + 1.24).abs() < 1e-12
+        ));
+        assert!(matches!(
+            eval_row_value(&bound, &[Cell::Null]).unwrap(),
+            Cell::Null
+        ));
+
+        let expression = crate::expression::parse_scalar_expression("round(value, -2)").unwrap();
+        let bound =
+            BoundExpr::bind(&expression, &HashMap::from([("value".to_owned(), 0)])).unwrap();
+        assert!(matches!(
+            eval_row_value(&bound, &[Cell::Numeric(Number::Signed(1250))]).unwrap(),
+            Cell::Numeric(Number::Signed(1300))
         ));
     }
 }
