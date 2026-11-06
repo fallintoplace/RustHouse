@@ -15,10 +15,14 @@ impl UuidValue {
         &self.bytes
     }
 
-    fn decode_uuid_disk_bytes(mut bytes: [u8; 16]) -> Self {
+    fn reverse_disk_halves(bytes: &mut [u8; 16]) {
         for half in bytes.chunks_exact_mut(8) {
             half.reverse();
         }
+    }
+
+    fn decode_uuid_disk_bytes(mut bytes: [u8; 16]) -> Self {
+        Self::reverse_disk_halves(&mut bytes);
         Self { bytes }
     }
 
@@ -26,9 +30,7 @@ impl UuidValue {
     /// UInt64 halves. This is the inverse of physical UUID decoding.
     pub fn to_disk_bytes(self) -> [u8; 16] {
         let mut disk = self.bytes;
-        for half in disk.chunks_exact_mut(8) {
-            half.reverse();
-        }
+        Self::reverse_disk_halves(&mut disk);
         disk
     }
 
