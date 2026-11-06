@@ -19,6 +19,17 @@ pub struct RepairWave {
     pub bytes: u64,
 }
 
+fn valid_repair_task(task: &RepairTask, max_wave_bytes: u64) -> bool {
+    !task.id.is_empty()
+        && task.id.len() <= 64
+        && task
+            .id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+        && task.bytes > 0
+        && task.bytes <= max_wave_bytes
+}
+
 fn build_dependency_graph(
     tasks: &[RepairTask],
     by_id: &HashMap<&str, usize>,
@@ -73,14 +84,7 @@ pub fn plan_repair_waves(
     }
     let mut by_id = HashMap::with_capacity(tasks.len());
     for (index, task) in tasks.iter().enumerate() {
-        if task.id.is_empty()
-            || task.id.len() > 64
-            || !task
-                .id
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
-            || task.bytes == 0
-            || task.bytes > max_wave_bytes
+        if !valid_repair_task(task, max_wave_bytes)
             || by_id.insert(task.id.as_str(), index).is_some()
         {
             return Err("invalid repair task identity or size");
