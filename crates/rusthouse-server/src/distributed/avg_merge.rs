@@ -3,7 +3,7 @@
 
 use super::{MergeError, WideSignedSum};
 
-fn parse_peer_state<'a>(
+pub(super) fn parse_peer_state<'a>(
     cap: usize,
     body: &'a [u8],
     header: &[u8],
