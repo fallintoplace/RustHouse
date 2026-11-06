@@ -94,9 +94,7 @@ pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError
             _ => return Ok(None),
         };
     let names = [&first, &flag1, &flag2, &source, &destination];
-    if has_duplicate_case_keys(&names)
-        || case_label.eq_ignore_ascii_case(&destination_label)
-    {
+    if has_duplicate_case_keys(&names) || case_label.eq_ignore_ascii_case(&destination_label) {
         return Err(ParseError("ambiguous CASE grouping key".into()));
     }
     let mut group = None;
