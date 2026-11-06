@@ -14,14 +14,29 @@ fn replaceregexpone_replaces_matches() {
             "SELECT replaceRegexpOne('abc123def456', '[0-9]+', 'X')",
             ConstantValue::Text("abcXdef456".into()),
         ),
-        ("SELECT replaceRegexpOne('hello', 'z', 'X')", ConstantValue::Text("hello".into())),
-        ("SELECT replaceRegexpOne('aaaa', 'a', 'z')", ConstantValue::Text("zaaa".into())),
+        (
+            "SELECT replaceRegexpOne('hello', 'z', 'X')",
+            ConstantValue::Text("hello".into()),
+        ),
+        (
+            "SELECT replaceRegexpOne('aaaa', 'a', 'z')",
+            ConstantValue::Text("zaaa".into()),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
-    assert_eq!(value("SELECT replaceregexpone(NULL, 'a', 'b')"), ConstantValue::Null);
-    assert_eq!(value("SELECT replaceregexpone('a', NULL, 'b')"), ConstantValue::Null);
-    assert_eq!(value("SELECT replaceregexpone('a', 'a', NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT replaceregexpone(NULL, 'a', 'b')"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT replaceregexpone('a', NULL, 'b')"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT replaceregexpone('a', 'a', NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]
