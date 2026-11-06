@@ -59,16 +59,17 @@ fn decode_escape(field: &[u8], index: &mut usize) -> io::Result<u8> {
     let escaped = *field
         .get(*index)
         .ok_or_else(|| invalid_escape("incomplete TSV escape"))?;
-    if escaped == b'x' {
-        let decoded = decode_hex_byte(field, *index + 1)?;
-        *index += 3;
-        Ok(decoded)
+    let (decoded, consumed) = if escaped == b'x' {
+        (decode_hex_byte(field, *index + 1)?, 3)
     } else {
-        let decoded = decode_simple_tsv_escape(escaped)
-            .ok_or_else(|| invalid_escape("unknown TSV escape"))?;
-        *index += 1;
-        Ok(decoded)
-    }
+        (
+            decode_simple_tsv_escape(escaped)
+                .ok_or_else(|| invalid_escape("unknown TSV escape"))?,
+            1,
+        )
+    };
+    *index += consumed;
+    Ok(decoded)
 }
 
 fn next_escape(field: &[u8], from: usize) -> Option<usize> {
