@@ -46,6 +46,23 @@ fn build_dependency_graph(
     Ok((edges, indegree))
 }
 
+fn ready_task_indices(
+    tasks: &[RepairTask],
+    completed: &[bool],
+    indegree: &[usize],
+) -> Vec<usize> {
+    let mut ready: Vec<usize> = (0..tasks.len())
+        .filter(|&index| !completed[index] && indegree[index] == 0)
+        .collect();
+    ready.sort_unstable_by(|&a, &b| {
+        tasks[b]
+            .bytes
+            .cmp(&tasks[a].bytes)
+            .then_with(|| tasks[a].id.cmp(&tasks[b].id))
+    });
+    ready
+}
+
 pub fn plan_repair_waves(
     tasks: &[RepairTask],
     max_parallel: usize,
@@ -79,18 +96,10 @@ pub fn plan_repair_waves(
     let mut count = 0usize;
     let mut waves = Vec::new();
     while count < tasks.len() {
-        let mut ready: Vec<usize> = (0..tasks.len())
-            .filter(|&index| !completed[index] && indegree[index] == 0)
-            .collect();
+        let ready = ready_task_indices(tasks, &completed, &indegree);
         if ready.is_empty() {
             return Err("cycle in replica repair dependencies");
         }
-        ready.sort_unstable_by(|&a, &b| {
-            tasks[b]
-                .bytes
-                .cmp(&tasks[a].bytes)
-                .then_with(|| tasks[a].id.cmp(&tasks[b].id))
-        });
         let mut chosen = Vec::new();
         let mut remaining = max_wave_bytes;
         for index in ready {
