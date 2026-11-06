@@ -14,14 +14,29 @@ fn replaceregexpall_replaces_matches() {
             "SELECT replaceRegexpAll('abc123def456', '[0-9]+', 'X')",
             ConstantValue::Text("abcXdefX".into()),
         ),
-        ("SELECT replaceRegexpAll('hello', 'z', 'X')", ConstantValue::Text("hello".into())),
-        ("SELECT replaceRegexpAll('aaaa', 'a', 'z')", ConstantValue::Text("zzzz".into())),
+        (
+            "SELECT replaceRegexpAll('hello', 'z', 'X')",
+            ConstantValue::Text("hello".into()),
+        ),
+        (
+            "SELECT replaceRegexpAll('aaaa', 'a', 'z')",
+            ConstantValue::Text("zzzz".into()),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
-    assert_eq!(value("SELECT replaceregexpall(NULL, 'a', 'b')"), ConstantValue::Null);
-    assert_eq!(value("SELECT replaceregexpall('a', NULL, 'b')"), ConstantValue::Null);
-    assert_eq!(value("SELECT replaceregexpall('a', 'a', NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT replaceregexpall(NULL, 'a', 'b')"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT replaceregexpall('a', NULL, 'b')"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT replaceregexpall('a', 'a', NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]
