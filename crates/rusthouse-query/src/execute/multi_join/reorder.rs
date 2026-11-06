@@ -55,6 +55,11 @@ pub(super) fn plan(query: &JoinSelect, sizes: &[u64]) -> Option<(JoinSelect, Vec
     if sizes[largest] <= sizes[0] || sizes[largest] <= crate::join::MAX_STREAM_JOIN_BUILD_ROWS {
         return None;
     }
+    let table_at = |index: usize| match index {
+        0 => &query.left,
+        1 => &query.right,
+        _ => &query.steps[index - 2].table,
+    };
     let mut order = vec![largest];
     let mut assigned = vec![false; edges.len()];
     let mut new_steps = Vec::new();
@@ -75,11 +80,7 @@ pub(super) fn plan(query: &JoinSelect, sizes: &[u64]) -> Option<(JoinSelect, Vec
                 assigned[i] = true;
             }
         }
-        let table = match next {
-            0 => &query.left,
-            1 => &query.right,
-            _ => &query.steps[next - 2].table,
-        };
+        let table = table_at(next);
         new_steps.push(JoinStep {
             table: table.clone(),
             alias: aliases[next].clone(),
@@ -95,11 +96,7 @@ pub(super) fn plan(query: &JoinSelect, sizes: &[u64]) -> Option<(JoinSelect, Vec
     }
     let first = order[0];
     let mut result = query.clone();
-    result.left = match first {
-        0 => query.left.clone(),
-        1 => query.right.clone(),
-        _ => query.steps[first - 2].table.clone(),
-    };
+    result.left = table_at(first).clone();
     result.left_alias = aliases[first].clone();
     let step = new_steps.remove(0);
     result.right = step.table;
