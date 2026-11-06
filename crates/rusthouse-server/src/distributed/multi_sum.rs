@@ -6,6 +6,18 @@ use super::{
 };
 use std::collections::HashMap;
 
+fn accumulate_signed_partial(
+    sum: &mut Option<WideSignedSum>,
+    value: i128,
+) -> Result<(), MergeError> {
+    if let Some(existing) = sum {
+        existing.add(value)?;
+    } else {
+        *sum = Some(WideSignedSum::new(value));
+    }
+    Ok(())
+}
+
 pub(super) fn merge_multi_key_sums(
     shards: &[(usize, Vec<u8>)],
     columns: &[String],
@@ -88,11 +100,7 @@ pub(super) fn merge_multi_key_sums(
                 let number = digits
                     .parse::<i128>()
                     .map_err(|_| MergeError::InvalidGroupedSum)?;
-                if let Some(sum) = &mut groups[id].1 {
-                    sum.add(number)?;
-                } else {
-                    groups[id].1 = Some(WideSignedSum::new(number));
-                }
+                accumulate_signed_partial(&mut groups[id].1, number)?;
             }
         }
     }
