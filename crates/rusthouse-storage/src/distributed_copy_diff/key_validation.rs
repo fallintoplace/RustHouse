@@ -1,13 +1,17 @@
 use super::*;
 
+fn numbered_device_segment(stem: &str) -> bool {
+    stem.len() == 4
+        && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT"))
+        && matches!(stem.as_bytes()[3], b'1'..=b'9')
+}
+
 pub(super) fn windows_device_segment(segment: &str) -> bool {
     let stem = segment.split('.').next().unwrap_or(segment);
     ["CON", "PRN", "AUX", "NUL"]
         .iter()
         .any(|name| stem.eq_ignore_ascii_case(name))
-        || (stem.len() == 4
-            && (stem[..3].eq_ignore_ascii_case("COM") || stem[..3].eq_ignore_ascii_case("LPT"))
-            && matches!(stem.as_bytes()[3], b'1'..=b'9'))
+        || numbered_device_segment(stem)
 }
 
 fn valid_key_segment(segment: &str) -> bool {
