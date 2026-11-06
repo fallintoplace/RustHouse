@@ -5,6 +5,21 @@
 use super::{MAX_RESPONSE_BYTES, MergeError, NormalizedGroupKey, normalized_group_key};
 use std::collections::HashMap;
 
+fn add_square_partial(
+    previous: Option<u128>,
+    value: u128,
+    unsigned: bool,
+) -> Result<u128, MergeError> {
+    let next = previous
+        .unwrap_or(0)
+        .checked_add(value)
+        .ok_or(MergeError::SumOverflow)?;
+    if !unsigned && next > i128::MAX as u128 {
+        return Err(MergeError::SumOverflow);
+    }
+    Ok(next)
+}
+
 pub(super) fn merge_multi_key_sumsquares(
     shards: &[(usize, Vec<u8>)],
     columns: &[String],
@@ -74,15 +89,7 @@ pub(super) fn merge_multi_key_sumsquares(
                 .map_err(|_| MergeError::InvalidGroupedSum)?
                 .parse::<u128>()
                 .map_err(|_| MergeError::InvalidGroupedSum)?;
-            let next = groups[id]
-                .1
-                .unwrap_or(0)
-                .checked_add(value)
-                .ok_or(MergeError::SumOverflow)?;
-            if !unsigned && next > i128::MAX as u128 {
-                return Err(MergeError::SumOverflow);
-            }
-            groups[id].1 = Some(next);
+            groups[id].1 = Some(add_square_partial(groups[id].1, value, unsigned)?);
         }
     }
     if groups.len() > max_rows {
