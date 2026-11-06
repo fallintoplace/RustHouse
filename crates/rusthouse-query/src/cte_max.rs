@@ -27,6 +27,19 @@ impl CteMaxJoin {
     }
 }
 
+fn supported_grouped_cte(grouped: &Select) -> bool {
+    !grouped.distinct
+        && grouped.rename.is_none()
+        && grouped.having.is_none()
+        && !grouped.hidden_aggregate
+        && grouped.limit.is_none()
+        && grouped.offset.is_none()
+        && grouped.order_by.is_none()
+        && grouped.order_by_extra.is_empty()
+        && grouped.grouped_expressions.len() == 1
+        && grouped.grouped_expressions[0].is_some()
+}
+
 fn parse_page_number(parser: &mut Parser) -> Result<usize, ParseError> {
     let value = parser.number()?;
     if !value.bytes().all(|byte| byte.is_ascii_digit()) {
@@ -156,17 +169,7 @@ pub fn parse_cte_max_join(sql: &str) -> Result<Option<CteMaxJoin>, ParseError> {
         Some(Source::Table(table)) => table.clone(),
         _ => return Err(ParseError("CTE requires a stored table".into())),
     };
-    if grouped.distinct
-        || grouped.rename.is_some()
-        || grouped.having.is_some()
-        || grouped.hidden_aggregate
-        || grouped.limit.is_some()
-        || grouped.offset.is_some()
-        || grouped.order_by.is_some()
-        || !grouped.order_by_extra.is_empty()
-        || grouped.grouped_expressions.len() != 1
-        || grouped.grouped_expressions[0].is_none()
-    {
+    if !supported_grouped_cte(&grouped) {
         return Err(ParseError("unsupported grouped CTE".into()));
     }
     if group_alias.eq_ignore_ascii_case(&metric_alias) {
