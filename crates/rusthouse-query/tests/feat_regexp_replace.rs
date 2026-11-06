@@ -10,15 +10,33 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn regexp_replace_replaces_matches() {
     for (sql, expected) in [
-        ("SELECT regexp_replace('abab', 'ab', 'X')", ConstantValue::Text("Xab".into())),
-        ("SELECT regexp_replace('hello', 'z', 'X')", ConstantValue::Text("hello".into())),
-        ("SELECT regexp_replace('a1b2', '[0-9]', 'X')", ConstantValue::Text("aXb2".into())),
+        (
+            "SELECT regexp_replace('abab', 'ab', 'X')",
+            ConstantValue::Text("Xab".into()),
+        ),
+        (
+            "SELECT regexp_replace('hello', 'z', 'X')",
+            ConstantValue::Text("hello".into()),
+        ),
+        (
+            "SELECT regexp_replace('a1b2', '[0-9]', 'X')",
+            ConstantValue::Text("aXb2".into()),
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
-    assert_eq!(value("SELECT regexp_replace(NULL, 'a', 'b')"), ConstantValue::Null);
-    assert_eq!(value("SELECT regexp_replace('a', NULL, 'b')"), ConstantValue::Null);
-    assert_eq!(value("SELECT regexp_replace('a', 'a', NULL)"), ConstantValue::Null);
+    assert_eq!(
+        value("SELECT regexp_replace(NULL, 'a', 'b')"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT regexp_replace('a', NULL, 'b')"),
+        ConstantValue::Null
+    );
+    assert_eq!(
+        value("SELECT regexp_replace('a', 'a', NULL)"),
+        ConstantValue::Null
+    );
 }
 
 #[test]
