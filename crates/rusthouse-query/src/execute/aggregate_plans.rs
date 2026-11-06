@@ -2,7 +2,9 @@ use super::predicates::CompiledPredicate;
 use super::*;
 mod dense_grouped;
 mod grouped;
-pub(super) use grouped::{execute_grouped_part, execute_grouped_numbers, execute_grouped_aggregate_numbers};
+pub(super) use grouped::{
+    execute_grouped_aggregate_numbers, execute_grouped_numbers, execute_grouped_part,
+};
 use self::dense_grouped::*;
 
 pub(super) fn execute_count_column_part<W: Write>(
