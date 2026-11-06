@@ -297,11 +297,6 @@ pub struct HierarchicalTransferPlan {
     pub peers: Vec<PeerTransferGrant>,
 }
 
-/// Grant bytes against both a global limiter and each peer's own limiter.
-///
-/// Request order is the explicit priority order supplied by the caller. A
-/// weighted scheduler should order peers before calling this function.
-/// Failure is atomic: all caller-owned bucket states remain unchanged.
 fn validate_peer_requests(requests: &[PeerTransferRequest]) -> Result<(), &'static str> {
     use std::collections::HashSet;
 
@@ -324,6 +319,11 @@ fn validate_peer_requests(requests: &[PeerTransferRequest]) -> Result<(), &'stat
     Ok(())
 }
 
+/// Grant bytes against both a global limiter and each peer's own limiter.
+///
+/// Request order is the explicit priority order supplied by the caller. A
+/// weighted scheduler should order peers before calling this function.
+/// Failure is atomic: all caller-owned bucket states remain unchanged.
 pub fn grant_hierarchical_transfers(
     global: TokenBucket,
     requests: &[PeerTransferRequest],
