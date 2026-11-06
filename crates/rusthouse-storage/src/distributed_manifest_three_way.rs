@@ -48,6 +48,13 @@ fn resolve_record<'a>(
     }
 }
 
+fn inventory_index(records: &[ObjectMetadata]) -> BTreeMap<&str, &ObjectMetadata> {
+    records
+        .iter()
+        .map(|record| (record.key.as_str(), record))
+        .collect()
+}
+
 /// Compute a non-destructive merge from a shared immutable base.
 /// CRC32C and size compare stored metadata, not cryptographic byte identity.
 pub fn plan_three_way_manifest_merge(
@@ -59,15 +66,9 @@ pub fn plan_three_way_manifest_merge(
     for inventory in [base, local, remote] {
         plan_replica_copies(inventory, &[])?;
     }
-    fn index(records: &[ObjectMetadata]) -> BTreeMap<&str, &ObjectMetadata> {
-        records
-            .iter()
-            .map(|record| (record.key.as_str(), record))
-            .collect()
-    }
-    let original = index(base);
-    let left = index(local);
-    let right = index(remote);
+    let original = inventory_index(base);
+    let left = inventory_index(local);
+    let right = inventory_index(remote);
     let keys = original
         .keys()
         .chain(left.keys())
