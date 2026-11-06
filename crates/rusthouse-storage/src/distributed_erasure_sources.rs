@@ -57,6 +57,25 @@ fn validate_source_request(
     Ok(())
 }
 
+fn selection_cost(ordered: &[&FragmentSource], mask: u32, min_zones: usize) -> Option<u64> {
+    let mut fragments = 0u128;
+    let mut zones = HashSet::new();
+    let mut cost = 0u64;
+    for (index, source) in ordered.iter().enumerate() {
+        if mask & (1u32 << index) == 0 {
+            continue;
+        }
+        let bit = 1u128 << source.fragment;
+        if !source.healthy || fragments & bit != 0 {
+            return None;
+        }
+        fragments |= bit;
+        zones.insert(source.zone.as_str());
+        cost = cost.checked_add(source.transfer_cost)?;
+    }
+    (zones.len() >= min_zones).then_some(cost)
+}
+
 /// Pick exactly required distinct fragments from separate source nodes.
 /// At least min_zones different zones must be represented.
 pub fn choose_erasure_sources(
@@ -75,29 +94,10 @@ pub fn choose_erasure_sources(
         if mask.count_ones() as usize != required {
             continue;
         }
-        let mut fragments = 0u128;
-        let mut zones = HashSet::new();
-        let mut cost = 0u64;
-        let mut good = true;
-        for (index, source) in ordered.iter().enumerate() {
-            if mask & (1u32 << index) == 0 {
-                continue;
+        if let Some(cost) = selection_cost(&ordered, mask, min_zones) {
+            if chosen.is_none_or(|best| (cost, mask) < best) {
+                chosen = Some((cost, mask));
             }
-            let bit = 1u128 << source.fragment;
-            if !source.healthy || fragments & bit != 0 {
-                good = false;
-                break;
-            }
-            fragments |= bit;
-            zones.insert(source.zone.as_str());
-            let Some(next) = cost.checked_add(source.transfer_cost) else {
-                good = false;
-                break;
-            };
-            cost = next;
-        }
-        if good && zones.len() >= min_zones && chosen.is_none_or(|best| (cost, mask) < best) {
-            chosen = Some((cost, mask));
         }
     }
     let (chosen_cost, mask) = chosen.ok_or("no feasible erasure fragment source set")?;
