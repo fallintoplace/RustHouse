@@ -455,6 +455,12 @@ fn scalar_projection_ahead(parser: &Parser) -> bool {
         {
             return true;
         }
+        Some(Token::Word(word))
+            if word.eq_ignore_ascii_case("ROUND")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            return true;
+        }
         _ => {}
     }
 
@@ -925,6 +931,7 @@ fn numeric_join_expression(expression: &crate::ScalarExpr) -> bool {
         crate::ScalarExpr::TextLiteral(_)
         | crate::ScalarExpr::TextConcat(_)
         | crate::ScalarExpr::TextSubstring { .. } => false,
+        crate::ScalarExpr::Round { value, .. } => numeric_join_expression(value),
         crate::ScalarExpr::Case {
             branches,
             else_expr,
@@ -2609,9 +2616,9 @@ fn parse_join_tokens_internal(
     let mut in_subquery = None;
     if parser.keyword("WHERE") {
         let where_tokens = parser.tokens[parser.index..].iter().take_while(|token| !matches!(token, Token::Word(word) if ["GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))).collect::<Vec<_>>();
-        let chained_boolean = kind == JoinType::Inner
-            && steps.iter().all(|step| step.kind == JoinType::Inner)
-            && where_tokens.iter().any(|token| matches!(token, Token::Word(word) if ["LIKE", "ILIKE", "OR", "BETWEEN", "IN", "CASE"].iter().any(|keyword| word.eq_ignore_ascii_case(keyword))))
+        let boolean_filter = where_tokens
+            .iter()
+            .any(|token| matches!(token, Token::Word(word) if ["LIKE", "ILIKE", "OR", "BETWEEN", "IN", "CASE"].iter().any(|keyword| word.eq_ignore_ascii_case(keyword))))
             && !where_tokens.iter().any(|token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("SELECT")));
         let scalar_expression_filter = where_tokens
             .iter()
@@ -2635,7 +2642,7 @@ fn parse_join_tokens_internal(
             };
         let complex = scalar_expression_filter
             || grouped_distinct.is_some()
-            || chained_boolean
+            || boolean_filter
             || where_tokens.iter().any(|token| {
                 matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("BETWEEN"))
             })
@@ -3065,6 +3072,11 @@ fn parse_join_tokens_internal(
                 Some((scalar_index, consumed))
             });
             let next_scalar_expression_order = next_scalar_expression_order.flatten();
+            let next_scalar_alias_order = scalar_projections.iter().position(|projection| {
+                matches!(parser.tokens.get(parser.index), Some(Token::Word(name) | Token::QuotedAlias(name))
+                    if name.eq_ignore_ascii_case(&projection.alias))
+                    && !matches!(parser.tokens.get(parser.index + 1), Some(Token::Dot | Token::LParen))
+            });
             let scalar_count_distinct_order =
                 !scalar_aggregates.is_empty() && parser.keyword("COUNT");
             let key = if scalar_count_distinct_order {
@@ -3116,6 +3128,9 @@ fn parse_join_tokens_internal(
             } else if next_is_window_ratio_alias {
                 parser.index += 1;
                 JoinColumn::window_ratio_order()
+            } else if let Some(index) = next_scalar_alias_order {
+                parser.index += 1;
+                JoinColumn::scalar_order(index)
             } else if next_is_count_alias {
                 parser.index += 1;
                 JoinColumn::count_order()
@@ -3638,13 +3653,24 @@ fn parse_join_tokens_internal(
             "JOIN ON LIKE requires grouped LEFT JOIN COUNT(column)".into(),
         ));
     }
-    if (grouped_sum.is_some()
-        || grouped_min.is_some()
+    let grouped_sum_outer_chain = grouped_sum.is_some()
+        && grouped_count_projection
+        && columns.as_ref().is_some_and(|keys| !keys.is_empty())
+        && group_by.is_some()
+        && matches!(kind, JoinType::Inner | JoinType::Left)
+        && steps
+            .iter()
+            .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left));
+    if (grouped_min.is_some()
         || !grouped_max_metrics.is_empty()
-        || grouped_formula.is_some())
+        || grouped_formula.is_some()
+        || (grouped_sum.is_some() && !grouped_sum_outer_chain))
         && (kind != JoinType::Inner || steps.iter().any(|step| step.kind != JoinType::Inner))
     {
-        return Err(ParseError("grouped SUM or MIN requires INNER joins".into()));
+        return Err(ParseError(
+            "grouped SUM requires a keyed INNER or LEFT join chain; grouped MIN/MAX requires INNER joins"
+                .into(),
+        ));
     }
     if !grouped_key_aliases.is_empty() {
         let simple_projection = !grouped_count_projection
@@ -3656,9 +3682,15 @@ fn parse_join_tokens_internal(
             && grouped_min.is_none()
             && !grouped_keys_only
             && group_by.is_none();
+        let simple_projection_outer_chain = simple_projection
+            && matches!(kind, JoinType::Inner | JoinType::Left)
+            && steps
+                .iter()
+                .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left));
         if !(grouped_count_projection || simple_projection)
-            || kind != JoinType::Inner
-            || steps.iter().any(|step| step.kind != JoinType::Inner)
+            || (!(grouped_sum_outer_chain || simple_projection_outer_chain)
+                && (kind != JoinType::Inner
+                    || steps.iter().any(|step| step.kind != JoinType::Inner)))
             || grouped_count_column.is_some()
             || !grouped_case_counts.is_empty()
         {
@@ -3868,7 +3900,7 @@ fn parse_join_tokens_internal(
                 || (global_case_aggregate && kind == JoinType::Full && steps.is_empty()));
         if (!matches!(kind, JoinType::Inner | JoinType::Left | JoinType::Full)
             || (kind == JoinType::Full && !grouped_case_outer_join))
-            || (!grouped_case_outer_join
+            || (!(grouped_case_outer_join || grouped_sum_outer_chain)
                 && ((projected_keys.len() > 1 && kind != JoinType::Inner)
                     || (!steps.is_empty()
                         && (kind != JoinType::Inner

@@ -180,6 +180,33 @@ fn source_type(
     Ok(found)
 }
 
+fn grouped_sum_type(
+    query: &JoinSelect,
+    metric: &GroupedSum,
+    resolve: &mut impl FnMut(&str) -> Result<Vec<CteOutputColumn>, ParseError>,
+) -> Result<Option<String>, ParseError> {
+    let data_type = match metric {
+        GroupedSum::Column(column) => {
+            let Some(data_type) = source_type(query, column, resolve)? else {
+                return Ok(None);
+            };
+            data_type
+        }
+        GroupedSum::Expression(_) => return Ok(Some("Nullable(Float64)".into())),
+    };
+    let base_type = data_type
+        .strip_prefix("Nullable(")
+        .and_then(|value| value.strip_suffix(')'))
+        .unwrap_or(&data_type);
+    let result_type = match base_type {
+        "Float32" | "Float64" => "Nullable(Float64)",
+        "Int8" | "Int16" | "Int32" | "Int64" | "Int128" => "Nullable(Int128)",
+        "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" => "Nullable(UInt128)",
+        _ => return Ok(None),
+    };
+    Ok(Some(result_type.into()))
+}
+
 fn output_schema(
     query: &JoinSelect,
     mut resolve: impl FnMut(&str) -> Result<Vec<CteOutputColumn>, ParseError>,
@@ -206,67 +233,89 @@ fn output_schema(
         || query.grouped_year.is_some()
         || query.grouped_sum_having.is_some()
         || query.grouped_count_having.is_some()
+        || !query.scalar_projections.is_empty()
     {
         return Ok(None);
     }
 
     let has_sum = query.grouped_sum.is_some();
     if has_sum {
-        let (Some(grouped_keys), Some(GroupedSum::Column(metric))) =
+        let (Some(grouped_keys), Some(metric)) =
             (query.grouped_count.as_ref(), query.grouped_sum.as_ref())
         else {
             return Ok(None);
         };
         if keys.len() != grouped_keys.len()
-            || query.grouped_sum_extras.len() != 0
             || query.grouped_rollup
-            || query.kind != crate::JoinType::Inner
+            || !matches!(query.kind, crate::JoinType::Inner | crate::JoinType::Left)
             || query
                 .steps
                 .iter()
-                .any(|step| step.kind != crate::JoinType::Inner)
+                .any(|step| !matches!(step.kind, crate::JoinType::Inner | crate::JoinType::Left))
         {
             return Ok(None);
         }
-        let Some(metric_type) = source_type(query, metric, &mut resolve)? else {
-            return Ok(None);
-        };
-        let base_type = metric_type
-            .strip_prefix("Nullable(")
-            .and_then(|value| value.strip_suffix(')'))
-            .unwrap_or(&metric_type);
-        if !matches!(base_type, "Float32" | "Float64") {
+        if query.scalar_sum.is_some()
+            || query.scalar_formula.is_some()
+            || query.grouped_sum_having.is_some()
+            || query.grouped_count_having.is_some()
+            || query.grouped_output.is_empty()
+        {
             return Ok(None);
         }
-        let sum_position = query.grouped_sum_position.unwrap_or(keys.len());
-        if sum_position > keys.len() {
-            return Ok(None);
-        }
-        let sum_name = query
-            .aggregate_alias
-            .clone()
-            .unwrap_or_else(|| format!("sum({})", metric.name));
-        let mut columns = Vec::with_capacity(keys.len() + 1);
-        let mut key_index = 0;
-        for position in 0..=keys.len() {
-            if position == sum_position {
-                columns.push(CteOutputColumn {
-                    name: sum_name.clone(),
-                    data_type: "Nullable(Float64)".into(),
-                });
-                continue;
-            }
-            let key = &keys[key_index];
-            let Some(data_type) = source_type(query, key, &mut resolve)? else {
-                return Ok(None);
+
+        let mut columns = Vec::with_capacity(keys.len() + 1 + query.grouped_sum_extras.len());
+        for item in &query.grouped_output {
+            let column = match item {
+                crate::JoinGroupedOutput::Key(index) => {
+                    let Some(key) = keys.get(*index) else {
+                        return Ok(None);
+                    };
+                    let Some(data_type) = source_type(query, key, &mut resolve)? else {
+                        return Ok(None);
+                    };
+                    let name = query
+                        .grouped_key_aliases
+                        .iter()
+                        .find_map(|(key_index, alias)| {
+                            (*key_index == *index).then(|| alias.clone())
+                        })
+                        .unwrap_or_else(|| key.name.clone());
+                    CteOutputColumn { name, data_type }
+                }
+                crate::JoinGroupedOutput::Sum(name) => {
+                    let Some(data_type) = grouped_sum_type(query, metric, &mut resolve)? else {
+                        return Ok(None);
+                    };
+                    CteOutputColumn {
+                        name: name.clone(),
+                        data_type,
+                    }
+                }
+                crate::JoinGroupedOutput::SumExtra(index, name) => {
+                    let Some((metric, _)) = query.grouped_sum_extras.get(*index) else {
+                        return Ok(None);
+                    };
+                    let Some(data_type) = grouped_sum_type(query, metric, &mut resolve)? else {
+                        return Ok(None);
+                    };
+                    CteOutputColumn {
+                        name: name.clone(),
+                        data_type,
+                    }
+                }
+                _ => return Ok(None),
             };
-            let name = query
-                .grouped_key_aliases
+            if columns
                 .iter()
-                .find_map(|(index, alias)| (*index == key_index).then(|| alias.clone()))
-                .unwrap_or_else(|| key.name.clone());
-            columns.push(CteOutputColumn { name, data_type });
-            key_index += 1;
+                .any(|existing: &CteOutputColumn| existing.name.eq_ignore_ascii_case(&column.name))
+            {
+                return Ok(None);
+            }
+            columns.push(column);
+        }
+        if columns.len() != keys.len() + 1 + query.grouped_sum_extras.len() {
+            return Ok(None);
         }
         return Ok(Some(columns));
     }
@@ -406,13 +455,44 @@ mod tests {
                 ("ss_addr_sk", "Nullable(Int64)"),
                 ("ss_customer_sk", "Nullable(Int64)"),
                 ("ss_item_sk", "Nullable(Int64)"),
+                ("ss_quantity", "Nullable(Int64)"),
                 ("ss_sold_date_sk", "Nullable(Int64)"),
                 ("ss_ext_sales_price", "Nullable(Float64)"),
+                ("ss_sales_price", "Nullable(Float64)"),
+                ("ss_wholesale_cost", "Nullable(Float64)"),
+                ("ss_ticket_number", "Nullable(Int64)"),
+            ],
+            "store_returns" => vec![
+                ("sr_item_sk", "Nullable(Int64)"),
+                ("sr_ticket_number", "Nullable(Int64)"),
             ],
             "web_sales" => vec![
                 ("ws_addr_sk", "Nullable(Int64)"),
+                ("ws_bill_customer_sk", "Nullable(Int64)"),
+                ("ws_item_sk", "Nullable(Int64)"),
+                ("ws_order_number", "Nullable(Int64)"),
+                ("ws_quantity", "Nullable(Int64)"),
                 ("ws_sold_date_sk", "Nullable(Int64)"),
                 ("ws_ext_sales_price", "Nullable(Float64)"),
+                ("ws_sales_price", "Nullable(Float64)"),
+                ("ws_wholesale_cost", "Nullable(Float64)"),
+            ],
+            "web_returns" => vec![
+                ("wr_item_sk", "Nullable(Int64)"),
+                ("wr_order_number", "Nullable(Int64)"),
+            ],
+            "catalog_sales" => vec![
+                ("cs_bill_customer_sk", "Nullable(Int64)"),
+                ("cs_item_sk", "Nullable(Int64)"),
+                ("cs_order_number", "Nullable(Int64)"),
+                ("cs_quantity", "Nullable(Int64)"),
+                ("cs_sold_date_sk", "Nullable(Int64)"),
+                ("cs_sales_price", "Nullable(Float64)"),
+                ("cs_wholesale_cost", "Nullable(Float64)"),
+            ],
+            "catalog_returns" => vec![
+                ("cr_item_sk", "Nullable(Int64)"),
+                ("cr_order_number", "Nullable(Int64)"),
             ],
             "date_dim" => vec![
                 ("d_date_sk", "Nullable(Int64)"),
@@ -458,6 +538,69 @@ mod tests {
         );
         assert_eq!(plan.outer().left, "ss");
         assert_eq!(plan.outer().right, "ws");
+    }
+
+    #[test]
+    fn parses_left_anti_join_cte_with_multiple_grouped_sums() {
+        let sql = "WITH ws AS (SELECT d_year AS ws_sold_year, ws_item_sk, ws_bill_customer_sk AS ws_customer_sk, SUM(ws_quantity) AS ws_qty, SUM(ws_wholesale_cost) AS ws_wc, SUM(ws_ext_sales_price) AS ws_sp FROM web_sales LEFT JOIN web_returns ON wr_order_number = ws_order_number AND wr_item_sk = ws_item_sk JOIN date_dim ON ws_sold_date_sk = d_date_sk WHERE wr_order_number IS NULL GROUP BY d_year, ws_item_sk, ws_bill_customer_sk) SELECT current_ws.ws_sold_year, current_ws.ws_item_sk, current_ws.ws_qty FROM ws current_ws, ws previous_ws WHERE current_ws.ws_sold_year = previous_ws.ws_sold_year";
+        let (definitions, _outer_sql) = split_ctes(sql).unwrap().unwrap();
+        let body_result = parse_join_with_schema(&definitions[0].1, |table| {
+            schema(table).map(|columns| columns.into_iter().map(|column| column.name).collect())
+        })
+        .unwrap();
+        assert!(body_result.is_some(), "CTE body parse: {body_result:?}");
+        let body = body_result.unwrap();
+        let schema_result = output_schema(&body, schema).unwrap();
+        assert!(
+            schema_result.is_some(),
+            "CTE output schema: {schema_result:?}"
+        );
+        let plan = parse_cte_multi_join_with_schema(sql, schema)
+            .unwrap()
+            .expect("left anti-join CTE query");
+
+        assert_eq!(plan.sources().len(), 1);
+        assert_eq!(
+            plan.sources()[0]
+                .columns()
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "ws_sold_year",
+                "ws_item_sk",
+                "ws_customer_sk",
+                "ws_qty",
+                "ws_wc",
+                "ws_sp"
+            ]
+        );
+        assert_eq!(plan.sources()[0].columns()[3].data_type, "Nullable(Int128)");
+        assert_eq!(
+            plan.sources()[0].columns()[4].data_type,
+            "Nullable(Float64)"
+        );
+        assert_eq!(plan.sources()[0].query().kind, crate::JoinType::Left);
+        assert_eq!(plan.sources()[0].query().steps.len(), 1);
+        assert_eq!(
+            plan.sources()[0].query().steps[0].kind,
+            crate::JoinType::Inner
+        );
+    }
+
+    #[test]
+    fn parses_coalesce_or_filter_after_a_left_join_chain() {
+        let sql = "SELECT ss.ss_customer_sk, ROUND(ss.ss_quantity / 3, 2) AS ratio FROM store_sales ss LEFT JOIN web_sales ws ON ws.ws_item_sk = ss.ss_item_sk LEFT JOIN catalog_sales cs ON cs.cs_item_sk = ss.ss_item_sk WHERE (COALESCE(ws.ws_quantity, 0) > 0 OR COALESCE(cs.cs_quantity, 0) > 0) AND ss.ss_customer_sk = 2000 ORDER BY ratio LIMIT 100";
+        let query = parse_join_with_schema(sql, |table| {
+            schema(table).map(|columns| columns.into_iter().map(|column| column.name).collect())
+        })
+        .unwrap()
+        .expect("LEFT JOIN chain with a parenthesized COALESCE filter");
+
+        assert_eq!(query.scalar_where.as_ref().unwrap().len(), 2);
+        assert_eq!(query.scalar_projections.len(), 1);
+        assert_eq!(query.scalar_projections[0].alias, "ratio");
+        assert_eq!(query.order_by[0].0.scalar_order_index(), Some(0));
     }
 
     #[test]

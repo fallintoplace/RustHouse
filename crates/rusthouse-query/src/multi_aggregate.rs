@@ -68,6 +68,11 @@ fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
             }
             output.push(')');
         }
+        ScalarExpr::Round { value, precision } => {
+            output.push_str("round(");
+            render_expr_into(value, output);
+            write!(output, ", {precision})").expect("writing to String cannot fail");
+        }
         ScalarExpr::TextLength(name) => {
             output.push_str("length(");
             output.push_str(name);

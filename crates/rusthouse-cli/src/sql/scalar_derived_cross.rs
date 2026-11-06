@@ -710,6 +710,28 @@ fn numeric(value: EvalValue) -> Option<f64> {
     }
 }
 
+fn round_numeric(value: f64, precision: i32) -> f64 {
+    if precision >= 0 {
+        let factor = 10_f64.powi(precision);
+        if !factor.is_finite() {
+            return value;
+        }
+        let scaled = value * factor;
+        if scaled.is_finite() {
+            scaled.round() / factor
+        } else {
+            value
+        }
+    } else {
+        let factor = 10_f64.powi(precision.saturating_neg());
+        if factor.is_finite() {
+            (value / factor).round() * factor
+        } else {
+            0.0
+        }
+    }
+}
+
 fn truthy(value: EvalValue) -> bool {
     match value {
         EvalValue::Boolean(value) => value,
@@ -754,6 +776,10 @@ fn eval_scalar(
                 .parse::<f64>()
                 .map_err(|_| "invalid decimal in scalar derived expression".to_owned())?,
         ),
+        Expr::Round { value, precision } => match numeric(eval_scalar(value, inputs)?) {
+            Some(value) => EvalValue::Number(round_numeric(value, *precision)),
+            None => EvalValue::Null,
+        },
         Expr::Add(left, right)
         | Expr::Subtract(left, right)
         | Expr::Multiply(left, right)
@@ -1008,6 +1034,27 @@ mod tests {
             eval_output(&output.expression, &inputs).unwrap(),
             Some("1.5".into())
         );
+    }
+
+    #[test]
+    fn evaluates_round_for_numeric_and_null_scalar_outputs() {
+        let plan = parse(
+            "SELECT ROUND(value, 2) cents, ROUND(value, -1) tens FROM (SELECT count(*) value FROM sales) s",
+        )
+        .unwrap()
+        .unwrap();
+        let outputs = plan.outputs.unwrap();
+        let mut inputs = HashMap::from([("value".into(), Some("126.56".into()))]);
+        assert_eq!(
+            eval_output(&outputs[0].expression, &inputs).unwrap(),
+            Some("126.56".into())
+        );
+        assert_eq!(
+            eval_output(&outputs[1].expression, &inputs).unwrap(),
+            Some("130".into())
+        );
+        inputs.insert("value".into(), None);
+        assert_eq!(eval_output(&outputs[0].expression, &inputs).unwrap(), None);
     }
 
     #[test]

@@ -17,6 +17,10 @@ pub enum ScalarExpr {
         start: usize,
         length: Option<usize>,
     },
+    Round {
+        value: Box<ScalarExpr>,
+        precision: i32,
+    },
     Integer(i64),
     /// Parsed exact lexeme for a decimal literal; converted once when bound.
     Decimal(String),
@@ -83,6 +87,7 @@ impl ScalarExpr {
             Self::TextSubstring { value, .. } => {
                 value.collect_unique_referenced_columns(out, seen);
             }
+            Self::Round { value, .. } => value.collect_unique_referenced_columns(out, seen),
             Self::TextLiteral(_) | Self::Integer(_) | Self::Decimal(_) => {}
             Self::TextConcat(arguments) => {
                 for argument in arguments {
@@ -207,7 +212,9 @@ fn check_expression_budget(root: &ScalarExpr) -> Result<(), ParseError> {
                     pending.push((argument, depth + 1));
                 }
             }
-            ScalarExpr::TextSubstring { value, .. } => pending.push((value, depth + 1)),
+            ScalarExpr::TextSubstring { value, .. } | ScalarExpr::Round { value, .. } => {
+                pending.push((value, depth + 1));
+            }
         }
     }
     Ok(())

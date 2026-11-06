@@ -69,6 +69,42 @@ fn parse_substring(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, Pars
     })
 }
 
+fn parse_round(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
+    parser.index += 1;
+    if !parser.take(Token::LParen) {
+        return Err(ParseError("ROUND requires '('".into()));
+    }
+    let value = Box::new(parse_expression_tokens_at_depth(parser, depth + 1)?);
+    let precision = if parser.take(Token::Comma) {
+        let has_minus_token = parser.take(Token::Minus);
+        let number = parser.number()?;
+        let (negative, digits) = if let Some(digits) = number.strip_prefix('-') {
+            if has_minus_token {
+                return Err(ParseError("ROUND precision is invalid".into()));
+            }
+            (true, digits)
+        } else {
+            (has_minus_token, number.as_str())
+        };
+        if digits.is_empty() || !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+            return Err(ParseError("ROUND precision requires an integer".into()));
+        }
+        let precision = digits
+            .parse::<i32>()
+            .map_err(|_| ParseError("ROUND precision is out of range".into()))?;
+        if precision > 308 {
+            return Err(ParseError("ROUND precision is out of range".into()));
+        }
+        if negative { -precision } else { precision }
+    } else {
+        0
+    };
+    if !parser.take(Token::RParen) {
+        return Err(ParseError("ROUND requires ')'".into()));
+    }
+    Ok(ScalarExpr::Round { value, precision })
+}
+
 fn parse_coalesce(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, ParseError> {
     parser.index += 1;
     if !parser.take(Token::LParen) {
@@ -309,6 +345,12 @@ pub(super) fn primary(parser: &mut Parser, depth: usize) -> Result<ScalarExpr, P
             parse_coalesce(parser, depth)
         }
         Some(Token::Word(name))
+            if name.eq_ignore_ascii_case("round")
+                && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
+        {
+            parse_round(parser, depth)
+        }
+        Some(Token::Word(name))
             if name.eq_ignore_ascii_case("CAST")
                 && parser.tokens.get(parser.index + 1) == Some(&Token::LParen) =>
         {
@@ -540,6 +582,28 @@ mod text_concat_expression_tests {
 
         assert!(matches!(expression, ScalarExpr::TextConcat(arguments) if arguments.len() == 2));
         assert_eq!(columns, ["last_name", "first_name"]);
+    }
+
+    #[test]
+    fn parses_round_with_optional_precision() {
+        assert_eq!(
+            parse_scalar_expression("round((amount / 3), 2)").unwrap(),
+            ScalarExpr::Round {
+                value: Box::new(ScalarExpr::Divide(
+                    Box::new(ScalarExpr::Column("amount".into())),
+                    Box::new(ScalarExpr::Integer(3)),
+                )),
+                precision: 2,
+            }
+        );
+        assert_eq!(
+            parse_scalar_expression("round(amount)").unwrap(),
+            ScalarExpr::Round {
+                value: Box::new(ScalarExpr::Column("amount".into())),
+                precision: 0,
+            }
+        );
+        assert!(parse_scalar_expression("round(amount, 1.5)").is_err());
     }
 
     #[test]

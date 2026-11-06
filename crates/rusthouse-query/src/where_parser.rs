@@ -334,7 +334,9 @@ fn parse_atom(
         parser.tokens.get(parser.index),
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE")
     ) || (parser.tokens.get(parser.index) == Some(&Token::LParen)
-        && matches!(parser.tokens.get(parser.index + 1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE")));
+        && matches!(parser.tokens.get(parser.index + 1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE")))
+        || (matches!(parser.tokens.get(parser.index), Some(Token::Word(word)) if ["COALESCE", "ROUND"].iter().any(|name| word.eq_ignore_ascii_case(name)))
+            && parser.tokens.get(parser.index + 1) == Some(&Token::LParen));
     let mut expression_index = parser.index;
     let mut expression_depth = 0usize;
     let mut arithmetic_starts_here = false;

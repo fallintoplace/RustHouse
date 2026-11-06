@@ -292,6 +292,7 @@ fn validate_sum_expression(
         BoundExpr::TextLiteral(_) | BoundExpr::TextConcat(_) | BoundExpr::TextSubstring { .. } => {
             Err(invalid("SUM expression cannot use a text projection"))
         }
+        BoundExpr::Round { value, .. } => validate_sum_expression(value, relations),
         BoundExpr::IsNull { .. } => Ok(()),
         BoundExpr::Integer(_) | BoundExpr::Float(_) => Ok(()),
         BoundExpr::Add(a, b)
@@ -1555,9 +1556,27 @@ fn execute_multi_join_inner<W: Write>(
             && query.grouped_min.is_none()
             && query.grouped_formula.is_none()
             && query.grouped_window_ratio.is_none();
+        let simple_projection_outer_chain = simple_projection
+            && matches!(query.kind, JoinType::Inner | JoinType::Left)
+            && query
+                .steps
+                .iter()
+                .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left));
+        let grouped_sum_outer_chain = query.grouped_sum.is_some()
+            && query.grouped_count.is_some()
+            && query
+                .columns
+                .as_ref()
+                .is_some_and(|columns| !columns.is_empty())
+            && matches!(query.kind, JoinType::Inner | JoinType::Left)
+            && query
+                .steps
+                .iter()
+                .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left));
         if !(query.grouped_count.is_some() || simple_projection)
-            || query.kind != JoinType::Inner
-            || query.steps.iter().any(|step| step.kind != JoinType::Inner)
+            || (!(simple_projection_outer_chain || grouped_sum_outer_chain)
+                && (query.kind != JoinType::Inner
+                    || query.steps.iter().any(|step| step.kind != JoinType::Inner)))
         {
             return Err(invalid(
                 "JOIN key aliases require a simple or grouped INNER join",
@@ -1944,6 +1963,13 @@ fn execute_multi_join_inner<W: Write>(
             && query
                 .steps
                 .iter()
+                .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left)))
+        || (query.grouped_sum.is_some()
+            && query.grouped_count.is_some()
+            && matches!(query.kind, JoinType::Inner | JoinType::Left)
+            && query
+                .steps
+                .iter()
                 .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left)));
     if streamable_join_chain
         && (query.order_by.is_empty()
@@ -2227,7 +2253,14 @@ fn execute_multi_join_inner<W: Write>(
                 let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
                 joined.extend_from_slice(row);
                 joined.resize(left_width + right_relation.names.len(), typed::Cell::Null);
-                push_visible_row(&mut next, joined, &mut retained, filter)?;
+                let passes_filter = step_index != query.steps.len()
+                    || match &row_filters {
+                        Some(filters) => filters.passes(&joined)?,
+                        None => true,
+                    };
+                if passes_filter {
+                    push_visible_row(&mut next, joined, &mut retained, filter)?;
+                }
             }
         }
         if let Some(matched_right) = matched_right {
@@ -2235,7 +2268,14 @@ fn execute_multi_join_inner<W: Write>(
                 if !matched {
                     let mut joined = vec![typed::Cell::Null; left_width];
                     joined.extend_from_slice(&right_rows[right_index]);
-                    push_visible_row(&mut next, joined, &mut retained, filter)?;
+                    let passes_filter = step_index != query.steps.len()
+                        || match &row_filters {
+                            Some(filters) => filters.passes(&joined)?,
+                            None => true,
+                        };
+                    if passes_filter {
+                        push_visible_row(&mut next, joined, &mut retained, filter)?;
+                    }
                 }
             }
         }
