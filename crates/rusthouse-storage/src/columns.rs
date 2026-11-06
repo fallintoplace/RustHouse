@@ -1,6 +1,21 @@
 use crate::{Column, PartError};
 use std::collections::HashSet;
 
+fn duplicate_column_name(
+    columns: &[Column],
+    names: &mut Option<HashSet<String>>,
+    candidate: &str,
+) -> bool {
+    if columns.len() < 8 {
+        columns.iter().any(|existing| existing.name == candidate)
+    } else {
+        let seen = names.get_or_insert_with(|| {
+            columns.iter().map(|existing| existing.name.clone()).collect()
+        });
+        !seen.insert(candidate.to_owned())
+    }
+}
+
 pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
     let mut lines = content.lines();
     if lines.next() != Some("columns format version: 1") {
@@ -29,20 +44,7 @@ pub fn parse_columns(content: &str) -> Result<Vec<Column>, PartError> {
             invalid_columns_format_error(line_number, "fewer columns than declared")
         })?;
         let column = parse_column(line, line_number)?;
-        let duplicated = if columns.len() < 8 {
-            columns
-                .iter()
-                .any(|existing: &Column| existing.name == column.name)
-        } else {
-            let seen = names.get_or_insert_with(|| {
-                columns
-                    .iter()
-                    .map(|existing: &Column| existing.name.clone())
-                    .collect()
-            });
-            !seen.insert(column.name.clone())
-        };
-        if duplicated {
+        if duplicate_column_name(&columns, &mut names, &column.name) {
             return Err(invalid_columns_format_error(
                 line_number,
                 "duplicate column name",
