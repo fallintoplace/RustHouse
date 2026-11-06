@@ -62,7 +62,8 @@ pub fn minimum_cost_assignment(
             continue;
         };
         for (worker, cost) in costs[task].iter().enumerate() {
-            if mask & (1 << worker) != 0 {
+            let worker_bit = 1usize << worker;
+            if mask & worker_bit != 0 {
                 continue;
             }
             let Some(cost) = *cost else {
@@ -71,7 +72,7 @@ pub fn minimum_cost_assignment(
             let Some(next_cost) = current.checked_add(cost) else {
                 continue;
             };
-            let next = mask | (1 << worker);
+            let next = mask | worker_bit;
             if best[next].is_none_or(|existing| next_cost < existing) {
                 best[next] = Some(next_cost);
                 predecessor[next] = Some((mask, worker));
