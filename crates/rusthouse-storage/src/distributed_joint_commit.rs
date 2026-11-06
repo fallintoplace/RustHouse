@@ -27,6 +27,33 @@ fn member_weight(members: &[Member], node: &str) -> Option<u64> {
         .map(|member| u64::from(member.weight))
 }
 
+fn acknowledged_weights(
+    old_members: &[Member],
+    new_members: &[Member],
+    proposed: SnapshotVersion,
+    acknowledgements: &[SnapshotAck<'_>],
+) -> Result<(u64, u64), &'static str> {
+let mut old_weight = 0u64;
+    let mut new_weight = 0u64;
+    let mut seen = HashSet::new();
+    for ack in acknowledgements {
+        if ack.snapshot != proposed {
+            return Err("joint ACK references conflicting snapshot");
+        }
+        if !seen.insert(ack.node) {
+            return Err("duplicate joint commit acknowledgement");
+        }
+        let old = member_weight(old_members, ack.node);
+        let new = member_weight(new_members, ack.node);
+        if old.is_none() && new.is_none() {
+            return Err("joint ACK from unrecognized replica");
+        }
+        old_weight += old.unwrap_or(0);
+        new_weight += new.unwrap_or(0);
+    }
+    Ok((old_weight, new_weight))
+}
+
 /// Verify every accepted acknowledgement refers to the exact proposed
 /// immutable generation and fingerprint, not only the generation number.
 /// Shared members contribute their own configured weight in each membership.
@@ -48,24 +75,8 @@ pub fn observe_joint_commit(
     {
         return Err("invalid proposed snapshot or joint ACK count");
     }
-    let mut old_weight = 0u64;
-    let mut new_weight = 0u64;
-    let mut seen = HashSet::new();
-    for ack in acknowledgements {
-        if ack.snapshot != proposed {
-            return Err("joint ACK references conflicting snapshot");
-        }
-        if !seen.insert(ack.node) {
-            return Err("duplicate joint commit acknowledgement");
-        }
-        let old = member_weight(old_members, ack.node);
-        let new = member_weight(new_members, ack.node);
-        if old.is_none() && new.is_none() {
-            return Err("joint ACK from unrecognized replica");
-        }
-        old_weight += old.unwrap_or(0);
-        new_weight += new.unwrap_or(0);
-    }
+    let (old_weight, new_weight) =
+        acknowledged_weights(old_members, new_members, proposed, acknowledgements)?;
     let old_quorum = old_weight >= old_policy.writes;
     let new_quorum = new_weight >= new_policy.writes;
     Ok(JointCommitObservation {
