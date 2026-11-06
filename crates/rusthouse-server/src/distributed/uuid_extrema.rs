@@ -75,6 +75,18 @@ fn parse_peer_uuid<'a>(
     Ok(Some(uuid_value(raw).ok_or(MergeError::InvalidExtremum)?))
 }
 
+fn reduce_uuid_extremum(
+    previous: Option<u128>,
+    value: u128,
+    function: AggregateFunction,
+) -> u128 {
+    previous.map_or(value, |previous| match function {
+        AggregateFunction::Min => previous.min(value),
+        AggregateFunction::Max => previous.max(value),
+        _ => unreachable!("validated aggregate"),
+    })
+}
+
 pub(super) fn merge_uuid_extrema(
     shards: &[(usize, Vec<u8>)],
     function: AggregateFunction,
@@ -88,11 +100,7 @@ pub(super) fn merge_uuid_extrema(
         let Some(value) = parse_peer_uuid(body, &mut header)? else {
             continue;
         };
-        best = Some(best.map_or(value, |previous| match function {
-            AggregateFunction::Min => previous.min(value),
-            AggregateFunction::Max => previous.max(value),
-            _ => unreachable!("validated aggregate"),
-        }));
+        best = Some(reduce_uuid_extremum(best, value, function));
     }
     let mut result = header.ok_or(MergeError::InvalidExtremum)?.to_vec();
     if let Some(best) = best {
