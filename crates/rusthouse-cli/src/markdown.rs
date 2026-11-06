@@ -81,12 +81,16 @@ fn write_framed_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     output.write_all(b" |")
 }
 
+fn validate_markdown_utf8(field: &[u8]) -> io::Result<()> {
+    std::str::from_utf8(field)
+        .map(|_| ())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8"))
+}
+
 fn write_tsv_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
     if !data_row || !line.contains(&b'\\') {
         // Validate every field before writing so malformed UTF-8 is atomic.
-        std::str::from_utf8(line).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
-        })?;
+        validate_markdown_utf8(line)?;
         output.write_all(b"|")?;
         for field in line.split(|&byte| byte == b'\t') {
             write_framed_cell(output, field)?;
@@ -95,9 +99,7 @@ fn write_tsv_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool)
     }
     let fields = decode_markdown_fields(line, data_row)?;
     for field in &fields {
-        std::str::from_utf8(field.as_ref()).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
-        })?;
+        validate_markdown_utf8(field.as_ref())?;
     }
     output.write_all(b"|")?;
     for field in fields {
