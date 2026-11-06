@@ -143,10 +143,7 @@ fn format_calendar_day(days: i64) -> String {
     if (0..=9999).contains(&year) {
         let year = year as u32;
         let mut output = *b"0000-00-00";
-        output[0] = b'0' + (year / 1000) as u8;
-        output[1] = b'0' + ((year / 100) % 10) as u8;
-        output[2] = b'0' + ((year / 10) % 10) as u8;
-        output[3] = b'0' + (year % 10) as u8;
+        put_four_digits(&mut output, 0, year);
         put_two_digits(&mut output, 5, month as u32);
         put_two_digits(&mut output, 8, day as u32);
         return String::from_utf8(output.to_vec()).expect("calendar date formatting emits ASCII");
@@ -156,6 +153,13 @@ fn format_calendar_day(days: i64) -> String {
 
 pub fn format_date(days: u16) -> String {
     format_calendar_day(i64::from(days))
+}
+
+fn put_four_digits<const N: usize>(output: &mut [u8; N], offset: usize, number: u32) {
+    output[offset] = b'0' + (number / 1000) as u8;
+    output[offset + 1] = b'0' + ((number / 100) % 10) as u8;
+    output[offset + 2] = b'0' + ((number / 10) % 10) as u8;
+    output[offset + 3] = b'0' + (number % 10) as u8;
 }
 
 fn put_two_digits<const N: usize>(output: &mut [u8; N], offset: usize, number: u32) {
@@ -170,10 +174,7 @@ pub fn format_datetime(seconds: u32) -> String {
     // UInt32 timestamps cover 1970-2106, so the year always has four digits.
     let year = year as u32;
     let mut output = *b"0000-00-00 00:00:00";
-    output[0] = b'0' + (year / 1000) as u8;
-    output[1] = b'0' + ((year / 100) % 10) as u8;
-    output[2] = b'0' + ((year / 10) % 10) as u8;
-    output[3] = b'0' + (year % 10) as u8;
+    put_four_digits(&mut output, 0, year);
     put_two_digits(&mut output, 5, month as u32);
     put_two_digits(&mut output, 8, day as u32);
     put_two_digits(&mut output, 11, remainder / 3_600);
