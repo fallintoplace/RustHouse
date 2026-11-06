@@ -37,7 +37,9 @@ fn parse_page_number(parser: &mut Parser) -> Result<usize, ParseError> {
         .map_err(|_| ParseError("LIMIT or OFFSET is too large".into()))
 }
 
-fn parse_outer_order(parser: &mut Parser) -> Result<Option<(String, bool, Option<bool>)>, ParseError> {
+fn parse_outer_order(
+    parser: &mut Parser,
+) -> Result<Option<(String, bool, Option<bool>)>, ParseError> {
     if !parser.keyword("ORDER") {
         return Ok(None);
     }
@@ -65,11 +67,39 @@ fn parse_outer_order(parser: &mut Parser) -> Result<Option<(String, bool, Option
     Ok(Some((column, descending, nulls_first)))
 }
 
-/// Whether a statement starts with WITH. Unsupported CTE shapes are rejected.
+/// Whether a statement starts with WITH so the bounded CTE parsers can inspect it.
 pub fn has_cte_max_join(sql: &str) -> Result<bool, ParseError> {
     Ok(
         matches!(tokenize(sql)?.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("WITH")),
     )
+}
+
+fn has_max_from_cte(tokens: &[Token], start: usize, cte: &str) -> bool {
+    tokens.get(start).is_some_and(
+        |token| matches!(token, Token::Word(word) if word.eq_ignore_ascii_case("SELECT")),
+    ) && tokens[start..].windows(12).any(|window| {
+        matches!(window,
+            [
+                Token::Word(and),
+                Token::Word(_metric),
+                Token::Operator(crate::Operator::Eq),
+                Token::LParen,
+                Token::Word(select),
+                Token::Word(max),
+                Token::LParen,
+                Token::Word(metric),
+                Token::RParen,
+                Token::Word(from),
+                Token::Word(source),
+                Token::RParen,
+            ] if and.eq_ignore_ascii_case("AND")
+                && select.eq_ignore_ascii_case("SELECT")
+                && max.eq_ignore_ascii_case("MAX")
+                && metric.eq_ignore_ascii_case(_metric)
+                && from.eq_ignore_ascii_case("FROM")
+                && source.eq_ignore_ascii_case(cte)
+        )
+    })
 }
 
 /// Parse a single grouped SUM CTE joined to a table at the CTE's MAX value.
@@ -95,6 +125,11 @@ pub fn parse_cte_max_join(sql: &str) -> Result<Option<CteMaxJoin>, ParseError> {
     }
     if depth != 0 {
         return Err(ParseError("CTE requires closing ')'".into()));
+    }
+    if matches!(parser.tokens.get(parser.index), Some(Token::Comma))
+        || !has_max_from_cte(&parser.tokens, parser.index, &cte)
+    {
+        return Ok(None);
     }
     let mut inner = parser.tokens[start..parser.index - 1].to_vec();
     let mut prefix = Parser {
@@ -255,4 +290,31 @@ pub fn parse_cte_max_join(sql: &str) -> Result<Option<CteMaxJoin>, ParseError> {
         limit,
         offset,
     }))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn leaves_unrelated_ctes_for_the_other_cte_parsers() {
+        let sql = "WITH source AS (SELECT value FROM items) SELECT value FROM source";
+
+        assert!(has_cte_max_join(sql).unwrap());
+        assert_eq!(parse_cte_max_join(sql).unwrap(), None);
+    }
+
+    #[test]
+    fn leaves_multiple_ctes_for_the_multi_cte_parser() {
+        let sql = "WITH source AS (SELECT value FROM items), totals AS (SELECT group_id AS group_key, SUM(value) AS total FROM items GROUP BY group_key) SELECT group_key FROM source, totals WHERE source.value = totals.group_key AND total = (SELECT MAX(total) FROM totals)";
+
+        assert_eq!(parse_cte_max_join(sql).unwrap(), None);
+    }
+
+    #[test]
+    fn recognizes_a_grouped_cte_joined_at_its_maximum() {
+        let sql = "WITH totals AS (SELECT region AS region_key, SUM(revenue * 2) AS total FROM sales GROUP BY region_key) SELECT store_name FROM stores, totals WHERE store_region = region_key AND total = (SELECT MAX(total) FROM totals)";
+
+        assert!(parse_cte_max_join(sql).unwrap().is_some());
+    }
 }
