@@ -2,7 +2,7 @@
 use crate::distributed_lineage::SnapshotVersion;
 use crate::distributed_membership::{Member, validate_membership};
 use crate::distributed_weighted_quorum::WeightedQuorumPolicy;
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, hash_map::Entry};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct SnapshotObservation<'a> {
@@ -42,12 +42,14 @@ pub fn newest_weighted_observed_snapshot(
             return Err("invalid or conflicting snapshot epoch");
         }
         epoch = Some(version.epoch);
-        if let Some(&existing) = fingerprints.get(&version.generation) {
-            if existing != version.fingerprint {
+        match fingerprints.entry(version.generation) {
+            Entry::Occupied(entry) if *entry.get() != version.fingerprint => {
                 return Err("conflicting snapshot generation fingerprints");
             }
-        } else {
-            fingerprints.insert(version.generation, version.fingerprint);
+            Entry::Vacant(entry) => {
+                entry.insert(version.fingerprint);
+            }
+            Entry::Occupied(_) => {}
         }
         *totals
             .entry((version.generation, version.fingerprint))
