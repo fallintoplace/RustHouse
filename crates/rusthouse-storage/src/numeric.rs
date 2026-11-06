@@ -88,6 +88,10 @@ fn check_batch_size(rows: usize, width: usize) -> Result<(), NumericReadError> {
     Ok(())
 }
 
+fn valid_timezone(zone: &str) -> bool {
+    !zone.is_empty() && !zone.contains('\'')
+}
+
 pub(crate) fn numeric_storage_type(data_type: &str) -> Option<&str> {
     match data_type {
         "UInt8" | "UInt16" | "UInt32" | "UInt64" | "UInt128" | "Int8" | "Int16" | "Int32"
@@ -100,7 +104,7 @@ pub(crate) fn numeric_storage_type(data_type: &str) -> Option<&str> {
                 .strip_prefix("DateTime('")
                 .and_then(|value| value.strip_suffix("')"))
             {
-                return (!zone.is_empty() && !zone.contains('\'')).then_some("UInt32");
+                return valid_timezone(zone).then_some("UInt32");
             }
 
             let value = data_type.strip_prefix("DateTime64(")?.strip_suffix(')')?;
@@ -115,7 +119,7 @@ pub(crate) fn numeric_storage_type(data_type: &str) -> Option<&str> {
                 let zone = zone
                     .strip_prefix('\'')
                     .and_then(|zone| zone.strip_suffix('\''))?;
-                if zone.is_empty() || zone.contains('\'') {
+                if !valid_timezone(zone) {
                     return None;
                 }
             }
