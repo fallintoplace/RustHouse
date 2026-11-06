@@ -173,8 +173,11 @@ fn rewrite_mixed_join(
         }
         relations.push((table, relation_alias));
         added.push(relations.len() - 1);
-        if relations.len() > 16 {
-            return Err(ParseError("JOIN supports at most 16 tables".into()));
+        if relations.len() > super::MAX_JOIN_TABLES {
+            return Err(ParseError(format!(
+                "JOIN supports at most {} tables",
+                super::MAX_JOIN_TABLES
+            )));
         }
         if !source_parser.take(Token::Comma) {
             break;
@@ -609,8 +612,11 @@ pub(super) fn rewrite(
             return Err(ParseError("joined tables require distinct aliases".into()));
         }
         tables.push((name, alias));
-        if tables.len() > 8 {
-            return Err(ParseError("JOIN supports at most 8 tables".into()));
+        if tables.len() > super::MAX_JOIN_TABLES {
+            return Err(ParseError(format!(
+                "JOIN supports at most {} tables",
+                super::MAX_JOIN_TABLES
+            )));
         }
         if !parser.take(Token::Comma) {
             break;
@@ -974,6 +980,27 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(chained.steps.len(), 1);
+    }
+
+    #[test]
+    fn supports_job_sized_comma_joins_with_a_bounded_table_count() {
+        let query_for_tables = |table_count: usize| {
+            let mut sql = String::from("SELECT t0.id FROM t0 AS t0");
+            for index in 1..table_count {
+                sql.push_str(&format!(", t{index} AS t{index}"));
+            }
+            sql.push_str(" WHERE t0.id = t1.id");
+            for index in 2..table_count {
+                sql.push_str(&format!(" AND t{}.id = t{index}.id", index - 1));
+            }
+            sql
+        };
+
+        let query = parse_join(&query_for_tables(super::super::MAX_JOIN_TABLES))
+            .unwrap()
+            .unwrap();
+        assert_eq!(query.steps.len(), super::super::MAX_JOIN_TABLES - 2);
+        assert!(parse_join(&query_for_tables(super::super::MAX_JOIN_TABLES + 1)).is_err());
     }
 
     #[test]

@@ -163,7 +163,7 @@ mod bounded_join_column_tests {
     }
 
     #[test]
-    fn supports_tpcds_sized_join_chains_with_a_bounded_table_count() {
+    fn supports_job_sized_join_chains_with_a_bounded_table_count() {
         let query_for_tables = |table_count: usize| {
             let mut query = String::from("SELECT t0.id FROM t0");
             for index in 1..table_count {
@@ -175,8 +175,10 @@ mod bounded_join_column_tests {
             query
         };
 
-        let query = parse_join(&query_for_tables(16)).unwrap().unwrap();
-        assert_eq!(query.steps.len(), 14);
-        assert!(parse_join(&query_for_tables(17)).is_err());
+        let query = parse_join(&query_for_tables(super::super::MAX_JOIN_TABLES))
+            .unwrap()
+            .unwrap();
+        assert_eq!(query.steps.len(), super::super::MAX_JOIN_TABLES - 2);
+        assert!(parse_join(&query_for_tables(super::super::MAX_JOIN_TABLES + 1)).is_err());
     }
 }
