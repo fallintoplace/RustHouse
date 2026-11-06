@@ -9,10 +9,10 @@ pub use derived_group_join::{execute_derived_grouped_join, execute_derived_group
 pub use derived_group_join::{execute_derived_union_join, execute_derived_union_select};
 pub use nested_sum::execute_nested_join_sum;
 mod exists;
+mod inner_engine;
 mod reorder;
 mod row_filters;
 mod streaming;
-mod inner_engine;
 use inner_engine::execute_multi_join_inner;
 use super::{ExecutionError, typed};
 use crate::{JoinColumn, JoinProjectionOrder, JoinSelect, JoinStep, JoinType};
