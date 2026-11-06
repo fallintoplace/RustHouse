@@ -13,6 +13,14 @@ pub struct JournalReceipt {
     pub payload_crc32c: u32,
 }
 
+fn canonical_receipt(
+    receipt: &JournalReceipt,
+    expected_sequence: u64,
+    seen: &mut HashSet<u64>,
+) -> bool {
+    receipt.sequence == expected_sequence && seen.insert(receipt.chunk_index)
+}
+
 pub fn encode_transfer_journal(records: &[JournalReceipt]) -> Result<Vec<u8>, &'static str> {
     if records.len() > MAX_RECORDS {
         return Err("transfer journal exceeds record bound");
@@ -21,7 +29,7 @@ pub fn encode_transfer_journal(records: &[JournalReceipt]) -> Result<Vec<u8>, &'
     let mut out = Vec::with_capacity(4 + records.len() * FRAME_SIZE);
     out.extend_from_slice(MAGIC);
     for (index, record) in records.iter().enumerate() {
-        if record.sequence != index as u64 + 1 || !seen.insert(record.chunk_index) {
+        if !canonical_receipt(record, index as u64 + 1, &mut seen) {
             return Err("noncanonical transfer receipt sequence");
         }
         let begin = out.len();
@@ -61,7 +69,7 @@ pub fn decode_transfer_journal(input: &[u8]) -> Result<Vec<JournalReceipt>, &'st
     let mut seen = HashSet::new();
     for frame in frames.chunks_exact(FRAME_SIZE) {
         let record = decode_receipt_frame(frame)?;
-        if record.sequence != records.len() as u64 + 1 || !seen.insert(record.chunk_index) {
+        if !canonical_receipt(&record, records.len() as u64 + 1, &mut seen) {
             return Err("corrupt, duplicated, or reordered transfer receipt");
         }
         records.push(record);
