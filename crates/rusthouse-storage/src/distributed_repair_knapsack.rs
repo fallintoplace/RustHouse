@@ -81,6 +81,33 @@ fn best_prefix_choices(ordered: &[Choice]) -> Vec<Choice> {
     prefix
 }
 
+fn best_combined_choice(
+    left: &[Choice],
+    prefix: &[Choice],
+    right_choices: &[Choice],
+    mid: usize,
+    budget: u64,
+) -> Choice {
+    let mut best = Choice::default();
+    for &right in right_choices {
+        let remaining = budget - right.bytes;
+        let count = left.partition_point(|candidate| candidate.bytes <= remaining);
+        if count == 0 {
+            continue;
+        }
+        let paired = prefix[count - 1];
+        let combined = Choice {
+            mask: paired.mask | (right.mask << mid),
+            bytes: paired.bytes + right.bytes,
+            priority: paired.priority + right.priority,
+        };
+        if better(combined, best) {
+            best = combined;
+        }
+    }
+    best
+}
+
 pub fn select_repair_batch(
     candidates: &[RepairCandidate],
     budget: u64,
@@ -106,23 +133,8 @@ pub fn select_repair_batch(
     let mut left = choices(&candidates[..mid], budget);
     left.sort_unstable_by_key(|c| (c.bytes, std::cmp::Reverse(c.priority), c.mask));
     let prefix = best_prefix_choices(&left);
-    let mut best = Choice::default();
-    for right in choices(&candidates[mid..], budget) {
-        let remaining = budget - right.bytes;
-        let count = left.partition_point(|candidate| candidate.bytes <= remaining);
-        if count == 0 {
-            continue;
-        }
-        let paired = prefix[count - 1];
-        let combined = Choice {
-            mask: paired.mask | (right.mask << mid),
-            bytes: paired.bytes + right.bytes,
-            priority: paired.priority + right.priority,
-        };
-        if better(combined, best) {
-            best = combined;
-        }
-    }
+    let right = choices(&candidates[mid..], budget);
+    let best = best_combined_choice(&left, &prefix, &right, mid, budget);
     let ids = candidates
         .iter()
         .enumerate()
