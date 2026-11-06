@@ -17,7 +17,7 @@ pub struct RepairSelection {
     pub priority: u64,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Default)]
 struct Choice {
     mask: u64,
     bytes: u64,
@@ -71,11 +71,7 @@ fn choices(items: &[RepairCandidate], budget: u64) -> Vec<Choice> {
 
 fn best_prefix_choices(ordered: &[Choice]) -> Vec<Choice> {
     let mut prefix = Vec::with_capacity(ordered.len());
-    let mut best = Choice {
-        mask: 0,
-        bytes: 0,
-        priority: 0,
-    };
+    let mut best = Choice::default();
     for choice in ordered {
         if better(*choice, best) {
             best = *choice;
@@ -110,11 +106,7 @@ pub fn select_repair_batch(
     let mut left = choices(&candidates[..mid], budget);
     left.sort_unstable_by_key(|c| (c.bytes, std::cmp::Reverse(c.priority), c.mask));
     let prefix = best_prefix_choices(&left);
-    let mut best = Choice {
-        mask: 0,
-        bytes: 0,
-        priority: 0,
-    };
+    let mut best = Choice::default();
     for right in choices(&candidates[mid..], budget) {
         let remaining = budget - right.bytes;
         let count = left.partition_point(|candidate| candidate.bytes <= remaining);
