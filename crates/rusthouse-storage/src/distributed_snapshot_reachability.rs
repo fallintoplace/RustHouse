@@ -44,15 +44,10 @@ pub fn plan_snapshot_reachability(
             }
         }
     }
-    let mut keep = Vec::new();
-    let mut candidates = Vec::new();
-    for record in records {
-        if reachable.contains(&(record.snapshot.epoch, record.snapshot.generation)) {
-            keep.push(record.snapshot);
-        } else {
-            candidates.push(record.snapshot);
-        }
-    }
+    let (mut keep, mut candidates): (Vec<_>, Vec<_>) = records
+        .iter()
+        .map(|record| record.snapshot)
+        .partition(|snapshot| reachable.contains(&(snapshot.epoch, snapshot.generation)));
     keep.sort_unstable_by_key(|v| (v.epoch, v.generation));
     candidates.sort_unstable_by_key(|v| (v.epoch, v.generation));
     Ok(ReachabilityPlan { keep, candidates })
