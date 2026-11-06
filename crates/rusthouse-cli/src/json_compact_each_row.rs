@@ -26,6 +26,33 @@ impl<W: Write> JsonCompactEachRowWriter<W> {
         }
     }
 
+    fn write_fragment(&mut self, fragment: &[u8], complete: bool) -> io::Result<()> {
+        // Normalize CRLF only when LF completes the record. An escaped
+        // TSV carriage return inside a field remains meaningful data.
+        let fragment = if complete && self.line.is_empty() {
+            fragment.strip_suffix(b"\r").unwrap_or(fragment)
+        } else {
+            fragment
+        };
+        if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "JSON row exceeds 1 MiB",
+            ));
+        }
+        if complete && self.line.is_empty() {
+            if let Some(columns) = self.columns {
+                write_complete_row(&mut self.output, &mut self.encoded, fragment, columns)?;
+                return Ok(());
+            }
+        }
+        self.line.extend_from_slice(fragment);
+        if complete {
+            self.finish_line()?;
+        }
+        Ok(())
+    }
+
     fn finish_line(&mut self) -> io::Result<()> {
         // Discard the physical CRLF separator across fragmented writes.
         if self.line.last() == Some(&b'\r') {
@@ -117,29 +144,7 @@ impl<W: Write> Write for JsonCompactEachRowWriter<W> {
             } else {
                 chunk
             };
-            // Normalize CRLF only when LF completes the record. An escaped
-            // TSV carriage return inside a field remains meaningful data.
-            let fragment = if complete && self.line.is_empty() {
-                fragment.strip_suffix(b"\r").unwrap_or(fragment)
-            } else {
-                fragment
-            };
-            if fragment.len() > MAX_LINE_BYTES.saturating_sub(self.line.len()) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "JSON row exceeds 1 MiB",
-                ));
-            }
-            if complete && self.line.is_empty() {
-                if let Some(columns) = self.columns {
-                    write_complete_row(&mut self.output, &mut self.encoded, fragment, columns)?;
-                    continue;
-                }
-            }
-            self.line.extend_from_slice(fragment);
-            if complete {
-                self.finish_line()?;
-            }
+            self.write_fragment(fragment, complete)?;
         }
         Ok(bytes.len())
     }
