@@ -240,6 +240,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "STRIP_SUFFIX"
                 | "SUBTRACTMONTHS"
                 | "TOSTRINGCUTTOZERO"
+                | "TO_BASE"
                 | "REPEAT"
                 | "BASE58DECODE"
                 | "BASE64_DECODE"
@@ -4577,6 +4578,36 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         .get(..prefix.len())
                         .is_some_and(|bytes| bytes.eq_ignore_ascii_case(prefix.as_bytes()));
                     ConstantValue::Integer(i64::from(matched))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "TO_BASE" => {
+            let input = integer_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "to_base requires a radix")?;
+            let radix = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "to_base requires two arguments")?;
+            match (input, radix) {
+                (Some(input), Some(radix)) => {
+                    if !(2..=36).contains(&radix) {
+                        return Err(ParseError("to_base radix must be 2..36".into()));
+                    }
+                    const DIGITS: &[u8] = b"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+                    let radix = radix as u64;
+                    let mut value = input.unsigned_abs();
+                    let mut digits = Vec::new();
+                    loop {
+                        digits.push(char::from(DIGITS[(value % radix) as usize]));
+                        value /= radix;
+                        if value == 0 {
+                            break;
+                        }
+                    }
+                    if input < 0 {
+                        digits.push('-');
+                    }
+                    digits.reverse();
+                    ConstantValue::Text(digits.into_iter().collect())
                 }
                 _ => ConstantValue::Null,
             }
