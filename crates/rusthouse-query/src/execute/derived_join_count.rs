@@ -21,20 +21,8 @@ impl Write for LimitedRows {
     }
 }
 
-/// Execute the two grouping stages while the caller holds the database read lock.
-pub fn execute_derived_join_count<W: Write>(
-    plan: &DerivedJoinCount,
-    left: &Path,
-    right: &Path,
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    let mut intermediate = LimitedRows(Vec::new());
-    let mut inner = plan.inner.clone();
-    if plan.limit == Some(0) {
-        inner.limit = Some(0);
-    }
-    execute_join(&inner, left, right, &mut intermediate)?;
-    let text = std::str::from_utf8(&intermediate.0)
+fn parse_group_counts(output: &[u8]) -> Result<BTreeMap<u64, u64>, ExecutionError> {
+    let text = std::str::from_utf8(output)
         .map_err(|_| ExecutionError::Invalid("invalid derived JOIN output".into()))?;
     let mut lines = text.lines();
     lines
@@ -53,6 +41,23 @@ pub fn execute_derived_join_count<W: Write>(
             .checked_add(1)
             .ok_or_else(|| ExecutionError::Invalid("derived JOIN group count overflow".into()))?;
     }
+    Ok(groups)
+}
+
+/// Execute the two grouping stages while the caller holds the database read lock.
+pub fn execute_derived_join_count<W: Write>(
+    plan: &DerivedJoinCount,
+    left: &Path,
+    right: &Path,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let mut intermediate = LimitedRows(Vec::new());
+    let mut inner = plan.inner.clone();
+    if plan.limit == Some(0) {
+        inner.limit = Some(0);
+    }
+    execute_join(&inner, left, right, &mut intermediate)?;
+    let groups = parse_group_counts(&intermediate.0)?;
     let mut rows = groups.into_iter().collect::<Vec<_>>();
     if !plan.order.is_empty() {
         rows.sort_by(|left, right| {
