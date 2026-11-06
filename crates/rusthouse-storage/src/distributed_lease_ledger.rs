@@ -26,6 +26,13 @@ fn identifier(value: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
 }
 
+fn conflicts_with_existing(existing: &TimedLease, proposed: &TimedLease) -> bool {
+    proposed.token < existing.token
+        || (proposed.token == existing.token
+            && (proposed.holder != existing.holder
+                || proposed.expires_at_ms < existing.expires_at_ms))
+}
+
 impl TimedLeaseLedger {
     pub fn new() -> Self {
         Self::default()
@@ -59,11 +66,7 @@ impl TimedLeaseLedger {
     ) -> Result<(), &'static str> {
         self.validate_proposed_lease(&proposed, now_ms, max_ttl_ms)?;
         if let Some(existing) = self.entries.get(&proposed.resource) {
-            if proposed.token < existing.token
-                || (proposed.token == existing.token
-                    && (proposed.holder != existing.holder
-                        || proposed.expires_at_ms < existing.expires_at_ms))
-            {
+            if conflicts_with_existing(existing, &proposed) {
                 return Err("stale or conflicting replica lease");
             }
         } else if self.entries.len() == MAX_LEASES {
