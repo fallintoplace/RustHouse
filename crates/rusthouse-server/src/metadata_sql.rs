@@ -14,10 +14,7 @@ fn write_schema_rows(output: &mut dyn Write, schema: &PartMetadata) -> io::Resul
 }
 
 pub(super) fn handle(config: &Config, format: QueryFormat, table: &str) -> Response {
-    if config.part.is_some() {
-        return Response::text("400 Bad Request", "DESCRIBE requires --database\n");
-    }
-    let Some(database) = config.database.as_deref() else {
+    let Some(database) = config.database.as_deref().filter(|_| config.part.is_none()) else {
         return Response::text("400 Bad Request", "DESCRIBE requires --database\n");
     };
     let _lock = match acquire_database_lock(database, false) {
