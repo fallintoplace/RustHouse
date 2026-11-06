@@ -5,8 +5,8 @@ mod correlated_min;
 mod correlated_sum;
 mod derived_group_join;
 mod nested_sum;
-pub use derived_group_join::execute_derived_union_join;
 pub use derived_group_join::{execute_derived_grouped_join, execute_derived_grouped_select};
+pub use derived_group_join::{execute_derived_union_join, execute_derived_union_select};
 pub use nested_sum::execute_nested_join_sum;
 mod exists;
 mod reorder;
@@ -25,12 +25,95 @@ use super::join::multi_join_row_key as row_key;
 use super::join::{
     MAX_INPUT_ROWS, MAX_RESULT_ROWS, MAX_STREAM_BUILD_BYTES,
     multi_join_row_key_into as row_key_into, read_projected_build_rows,
+    read_projected_build_rows_matching,
 };
 
 const MAX_CHAIN_BYTES: usize = crate::join::MAX_JOIN_CHAIN_BYTES;
 const MAX_CHAIN_COLUMNS: usize = 256;
 const MAX_CHAIN_HASH_BYTES: usize = MAX_CHAIN_BYTES;
 const SCALAR_OUTPUT_INDEX_BASE: usize = usize::MAX;
+
+type RelationComparison = (usize, crate::Operator, typed::Cell);
+
+fn relation_comparison_filters(
+    comparisons: &[(usize, crate::Operator, typed::Cell)],
+    relation_start: usize,
+    physical_columns: usize,
+) -> Vec<RelationComparison> {
+    comparisons
+        .iter()
+        .filter_map(|(index, operator, value)| {
+            index
+                .checked_sub(relation_start)
+                .filter(|local| *local < physical_columns)
+                .map(|local| (local, *operator, value.clone()))
+        })
+        .collect()
+}
+
+fn passes_relation_comparison_filters(row: &[typed::Cell], filters: &[RelationComparison]) -> bool {
+    filters.iter().all(|(index, operator, value)| {
+        row.get(*index)
+            .is_some_and(|candidate| typed::matches_comparison(candidate, value, *operator))
+    })
+}
+
+#[cfg(test)]
+mod relation_comparison_filter_tests {
+    use super::*;
+
+    #[test]
+    fn comparison_filters_are_local_and_all_must_pass() {
+        let comparisons = [
+            (
+                1,
+                crate::Operator::Eq,
+                typed::Cell::Numeric(super::super::Number::Unsigned(1)),
+            ),
+            (
+                2,
+                crate::Operator::Gt,
+                typed::Cell::Numeric(super::super::Number::Unsigned(10)),
+            ),
+            (
+                3,
+                crate::Operator::Le,
+                typed::Cell::Numeric(super::super::Number::Unsigned(20)),
+            ),
+            (
+                4,
+                crate::Operator::Eq,
+                typed::Cell::Numeric(super::super::Number::Unsigned(4)),
+            ),
+        ];
+        let filters = relation_comparison_filters(&comparisons, 2, 2);
+
+        assert_eq!(filters.len(), 2);
+        assert_eq!(filters[0].0, 0);
+        assert_eq!(filters[1].0, 1);
+        assert!(passes_relation_comparison_filters(
+            &[
+                typed::Cell::Numeric(super::super::Number::Unsigned(11)),
+                typed::Cell::Numeric(super::super::Number::Unsigned(20)),
+            ],
+            &filters,
+        ));
+        assert!(!passes_relation_comparison_filters(
+            &[
+                typed::Cell::Numeric(super::super::Number::Unsigned(10)),
+                typed::Cell::Numeric(super::super::Number::Unsigned(20)),
+            ],
+            &filters,
+        ));
+        assert!(!passes_relation_comparison_filters(
+            &[
+                typed::Cell::Null,
+                typed::Cell::Numeric(super::super::Number::Unsigned(20))
+            ],
+            &filters,
+        ));
+    }
+}
 
 fn scalar_output_index(index: usize, projection_count: usize) -> Option<usize> {
     SCALAR_OUTPUT_INDEX_BASE
@@ -289,6 +372,10 @@ fn validate_sum_expression(
         BoundExpr::TextLength(index)
         | BoundExpr::TextCompare { index, .. }
         | BoundExpr::TextLike { index, .. } => check(*index, true),
+        BoundExpr::TextLiteral(_) | BoundExpr::TextConcat(_) | BoundExpr::TextSubstring { .. } => {
+            Err(invalid("SUM expression cannot use a text projection"))
+        }
+        BoundExpr::Round { value, .. } => validate_sum_expression(value, relations),
         BoundExpr::IsNull { .. } => Ok(()),
         BoundExpr::Integer(_) | BoundExpr::Float(_) => Ok(()),
         BoundExpr::Add(a, b)
@@ -913,6 +1000,7 @@ fn required_physical_columns(
             && (query.aggregate == Some(crate::JoinAggregate::CountStar)
                 || !query.scalar_aggregates.is_empty()
                 || query.scalar_sum.is_some()))
+            && column.scalar_order_index().is_none()
         {
             retain_absolute(column_index(relations, column)?);
         }
@@ -1106,6 +1194,11 @@ pub fn bind_join_in_subquery(
         {
             &columns[0]
         }
+        (crate::Projection::Columns(columns), false)
+            if columns.len() == 1 && !inner.hidden_aggregate =>
+        {
+            &columns[0]
+        }
         _ => return Err(invalid("JOIN IN subquery has an unsupported projection")),
     };
     if !matches!(inner.source, Some(crate::Source::Table(_)))
@@ -1140,23 +1233,22 @@ pub fn bind_join_in_subquery(
     }
     let outer_type = outer_type.ok_or_else(|| invalid("unknown JOIN IN column"))?;
     let kind = typed::base_type(&inner_column.data_type);
-    if kind != typed::base_type(&outer_type)
-        || !matches!(
-            kind,
-            "UInt8"
-                | "UInt16"
-                | "UInt32"
-                | "UInt64"
-                | "UInt128"
-                | "Int8"
-                | "Int16"
-                | "Int32"
-                | "Int64"
-                | "Int128"
-        )
-    {
+    let integer_key = matches!(
+        kind,
+        "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "UInt128"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Int128"
+    );
+    if kind != typed::base_type(&outer_type) || (!integer_key && kind != "String") {
         return Err(invalid(
-            "JOIN IN subquery requires matching integer key types",
+            "JOIN IN subquery requires matching integer or String key types",
         ));
     }
     let mut inner = (**inner).clone();
@@ -1173,19 +1265,28 @@ pub fn bind_join_in_subquery(
             contains_null = true;
             continue;
         }
-        if value.is_empty()
-            || !value
-                .bytes()
-                .enumerate()
-                .all(|(i, byte)| byte.is_ascii_digit() || (i == 0 && byte == b'-'))
-        {
-            return Err(invalid("invalid JOIN IN subquery integer"));
-        }
-        if seen.insert(value.to_owned()) {
+        let key = if kind == "String" {
+            String::from_utf8(
+                rusthouse_format::decode_tsv_field(value.as_bytes())
+                    .map_err(|_| invalid("invalid JOIN IN subquery text"))?,
+            )
+            .map_err(|_| invalid("invalid JOIN IN subquery text"))?
+        } else {
+            if value.is_empty()
+                || !value
+                    .bytes()
+                    .enumerate()
+                    .all(|(i, byte)| byte.is_ascii_digit() || (i == 0 && byte == b'-'))
+            {
+                return Err(invalid("invalid JOIN IN subquery integer"));
+            }
+            value.to_owned()
+        };
+        if seen.insert(key.clone()) {
             if values.len() >= MAX_IN_SUBQUERY_KEYS {
                 return Err(invalid("JOIN IN subquery supports at most 100000 keys"));
             }
-            values.push(value.to_owned());
+            values.push(key);
         }
     }
     let name = subquery.column.name.clone();
@@ -1551,9 +1652,27 @@ fn execute_multi_join_inner<W: Write>(
             && query.grouped_min.is_none()
             && query.grouped_formula.is_none()
             && query.grouped_window_ratio.is_none();
+        let simple_projection_outer_chain = simple_projection
+            && matches!(query.kind, JoinType::Inner | JoinType::Left)
+            && query
+                .steps
+                .iter()
+                .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left));
+        let grouped_sum_outer_chain = query.grouped_sum.is_some()
+            && query.grouped_count.is_some()
+            && query
+                .columns
+                .as_ref()
+                .is_some_and(|columns| !columns.is_empty())
+            && matches!(query.kind, JoinType::Inner | JoinType::Left)
+            && query
+                .steps
+                .iter()
+                .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left));
         if !(query.grouped_count.is_some() || simple_projection)
-            || query.kind != JoinType::Inner
-            || query.steps.iter().any(|step| step.kind != JoinType::Inner)
+            || (!(simple_projection_outer_chain || grouped_sum_outer_chain)
+                && (query.kind != JoinType::Inner
+                    || query.steps.iter().any(|step| step.kind != JoinType::Inner)))
         {
             return Err(invalid(
                 "JOIN key aliases require a simple or grouped INNER join",
@@ -1902,6 +2021,7 @@ fn execute_multi_join_inner<W: Write>(
                     || query.aggregate == Some(crate::JoinAggregate::CountStar)
                     || !query.scalar_aggregates.is_empty()
                     || query.scalar_sum.is_some()))
+                && column.scalar_order_index().is_none()
             {
                 column_index(&relations, column)?;
             }
@@ -1935,6 +2055,13 @@ fn execute_multi_join_inner<W: Write>(
     let streamable_join_chain = (query.kind == JoinType::Inner
         && query.steps.iter().all(|step| step.kind == JoinType::Inner))
         || (!query.grouped_case_counts.is_empty()
+            && matches!(query.kind, JoinType::Inner | JoinType::Left)
+            && query
+                .steps
+                .iter()
+                .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left)))
+        || (query.grouped_sum.is_some()
+            && query.grouped_count.is_some()
             && matches!(query.kind, JoinType::Inner | JoinType::Left)
             && query
                 .steps
@@ -2018,14 +2145,50 @@ fn execute_multi_join_inner<W: Write>(
     } else {
         MAX_INPUT_ROWS
     };
-    let mut rows = read_projected_build_rows(
-        &paths[0],
-        &relations[0].names,
-        &required[0],
-        relations[0].rows,
-        input_row_limit,
-        MAX_STREAM_BUILD_BYTES,
-    )?;
+    let inner_join_plan = query.kind == JoinType::Inner
+        && query.steps.iter().all(|step| step.kind == JoinType::Inner);
+    let first_relation_filters = if inner_join_plan {
+        relation_comparison_filters(&comparisons, 0, relations[0].physical_columns)
+    } else {
+        Vec::new()
+    };
+    let first_row_filter = row_filters
+        .as_ref()
+        .filter(|filters| {
+            inner_join_plan && filters.can_prefilter_relation(0, relations[0].names.len())
+        })
+        .map(|filters| {
+            let conditions = filters.prefilter_conditions(0, relations[0].names.len());
+            (filters, conditions)
+        });
+    let mut rows = if first_relation_filters.is_empty() && first_row_filter.is_none() {
+        read_projected_build_rows(
+            &paths[0],
+            &relations[0].names,
+            &required[0],
+            relations[0].rows,
+            input_row_limit,
+            MAX_STREAM_BUILD_BYTES,
+        )?
+    } else {
+        let mut predicate = |row: &[typed::Cell]| {
+            passes_relation_comparison_filters(row, &first_relation_filters)
+                && first_row_filter
+                    .as_ref()
+                    .map_or(true, |(filters, conditions)| {
+                        filters.passes_relation(row, 0, conditions)
+                    })
+        };
+        read_projected_build_rows_matching(
+            &paths[0],
+            &relations[0].names,
+            &required[0],
+            relations[0].rows,
+            input_row_limit,
+            MAX_STREAM_BUILD_BYTES,
+            &mut predicate,
+        )?
+    };
     if min_filter_relation == Some(0) {
         let filter = min_filter
             .as_ref()
@@ -2056,14 +2219,55 @@ fn execute_multi_join_inner<W: Write>(
             }
             continue;
         }
-        let right_rows = read_projected_build_rows(
-            &paths[step_index + 1],
-            &right_relation.names,
-            &required[step_index + 1],
-            right_relation.rows,
-            input_row_limit,
-            MAX_STREAM_BUILD_BYTES,
-        )?;
+        let right_filters = if inner_join_plan {
+            relation_comparison_filters(
+                &comparisons,
+                right_relation.start,
+                right_relation.physical_columns,
+            )
+        } else {
+            Vec::new()
+        };
+        let right_row_filter = row_filters
+            .as_ref()
+            .filter(|filters| {
+                inner_join_plan
+                    && filters
+                        .can_prefilter_relation(right_relation.start, right_relation.names.len())
+            })
+            .map(|filters| {
+                let conditions =
+                    filters.prefilter_conditions(right_relation.start, right_relation.names.len());
+                (filters, conditions)
+            });
+        let right_rows = if right_filters.is_empty() && right_row_filter.is_none() {
+            read_projected_build_rows(
+                &paths[step_index + 1],
+                &right_relation.names,
+                &required[step_index + 1],
+                right_relation.rows,
+                input_row_limit,
+                MAX_STREAM_BUILD_BYTES,
+            )?
+        } else {
+            let mut predicate = |row: &[typed::Cell]| {
+                passes_relation_comparison_filters(row, &right_filters)
+                    && right_row_filter
+                        .as_ref()
+                        .map_or(true, |(filters, conditions)| {
+                            filters.passes_relation(row, right_relation.start, conditions)
+                        })
+            };
+            read_projected_build_rows_matching(
+                &paths[step_index + 1],
+                &right_relation.names,
+                &required[step_index + 1],
+                right_relation.rows,
+                input_row_limit,
+                MAX_STREAM_BUILD_BYTES,
+                &mut predicate,
+            )?
+        };
         let mut hash: HashMap<Vec<typed::Key>, Bucket> = HashMap::new();
         let mut hash_bytes = 0usize;
         let mut build_key = Vec::with_capacity(right_keys.len());
@@ -2222,7 +2426,14 @@ fn execute_multi_join_inner<W: Write>(
                 let mut joined = Vec::with_capacity(left_width + right_relation.names.len());
                 joined.extend_from_slice(row);
                 joined.resize(left_width + right_relation.names.len(), typed::Cell::Null);
-                push_visible_row(&mut next, joined, &mut retained, filter)?;
+                let passes_filter = step_index != query.steps.len()
+                    || match &row_filters {
+                        Some(filters) => filters.passes(&joined)?,
+                        None => true,
+                    };
+                if passes_filter {
+                    push_visible_row(&mut next, joined, &mut retained, filter)?;
+                }
             }
         }
         if let Some(matched_right) = matched_right {
@@ -2230,7 +2441,14 @@ fn execute_multi_join_inner<W: Write>(
                 if !matched {
                     let mut joined = vec![typed::Cell::Null; left_width];
                     joined.extend_from_slice(&right_rows[right_index]);
-                    push_visible_row(&mut next, joined, &mut retained, filter)?;
+                    let passes_filter = step_index != query.steps.len()
+                        || match &row_filters {
+                            Some(filters) => filters.passes(&joined)?,
+                            None => true,
+                        };
+                    if passes_filter {
+                        push_visible_row(&mut next, joined, &mut retained, filter)?;
+                    }
                 }
             }
         }
@@ -2238,13 +2456,35 @@ fn execute_multi_join_inner<W: Write>(
     }
 
     if !query.order_by.is_empty() && query.aggregate != Some(crate::JoinAggregate::CountStar) {
+        let scalar_projections = bind_scalar_projections(query, &relations)?;
+        let sort_base = relations
+            .iter()
+            .map(|relation| relation.names.len())
+            .sum::<usize>();
         let ordering_columns = query
             .order_by
             .iter()
             .map(|(column, descending, nulls_first)| {
-                column_index(&relations, column).map(|index| (index, *descending, *nulls_first))
+                let index = column
+                    .scalar_order_index()
+                    .map(|index| sort_base + index)
+                    .map_or_else(|| column_index(&relations, column), Ok)?;
+                Ok((index, *descending, *nulls_first))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Result<Vec<_>, ExecutionError>>()?;
+        if query
+            .order_by
+            .iter()
+            .any(|(column, _, _)| column.scalar_order_index().is_some())
+        {
+            for row in &mut rows {
+                let values = scalar_projections
+                    .iter()
+                    .map(|expression| super::multi_aggregate::eval_row_value(expression, row))
+                    .collect::<Result<Vec<_>, _>>()?;
+                row.extend(values);
+            }
+        }
         rows.sort_by(|left, right| {
             for (index, descending, nulls_first) in &ordering_columns {
                 let ordering = typed::compare_order_cells(
@@ -2295,14 +2535,9 @@ fn execute_multi_join_inner<W: Write>(
                 output.write_all(b"\t")?;
             }
             if let Some(expression) = scalar_output_index(*index, scalar_projections.len()) {
-                let value = super::multi_aggregate::eval_row_arithmetic(
-                    &scalar_projections[expression],
-                    row,
-                )?;
-                typed::write_value(
-                    output,
-                    &value.map_or(typed::Cell::Null, typed::Cell::Numeric),
-                )?;
+                let value =
+                    super::multi_aggregate::eval_row_value(&scalar_projections[expression], row)?;
+                typed::write_value(output, &value)?;
                 continue;
             }
             let source = if matches!(row[*index], typed::Cell::Null) {
