@@ -75,8 +75,11 @@ impl VersionVector {
             return Err("merged version-vector membership limit reached");
         }
         for (node, &count) in &other.counters {
-            let entry = self.counters.entry(node.clone()).or_insert(0);
-            *entry = (*entry).max(count);
+            if let Some(existing) = self.counters.get_mut(node) {
+                *existing = (*existing).max(count);
+            } else {
+                self.counters.insert(node.clone(), count);
+            }
         }
         Ok(())
     }
