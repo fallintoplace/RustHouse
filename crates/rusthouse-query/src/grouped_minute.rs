@@ -35,6 +35,21 @@ fn top_level_group_order(tokens: &[Token]) -> (Option<usize>, Option<usize>) {
     (group, order)
 }
 
+fn valid_count_projection(projection: &Projection, column: &str) -> bool {
+    match projection {
+        Projection::GroupedCount { column: name } => name == column,
+        Projection::GroupedAggregates {
+            column: name,
+            items,
+            ..
+        } => {
+            name == column
+                && matches!(items.as_slice(), [(AggregateFunction::Count, value)] if value == "*")
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError> {
     let (column, label) = match tokens.as_slice() {
         [
@@ -74,18 +89,7 @@ pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError
     tokens.splice(group..group + 6, [Token::Word(column.clone())]);
     tokens.splice(1..9, [Token::Word(column.clone())]);
     let mut select = parse_select_tokens(tokens)?;
-    let valid = match &select.projection {
-        Projection::GroupedCount { column: name } => name == &column,
-        Projection::GroupedAggregates {
-            column: name,
-            items,
-            ..
-        } => {
-            name == &column
-                && matches!(items.as_slice(), [(AggregateFunction::Count, value)] if value == "*")
-        }
-        _ => false,
-    };
+    let valid = valid_count_projection(&select.projection, &column);
     if !valid || select.having.is_some() || !select.order_by_extra.is_empty() {
         return Err(ParseError(
             "minute grouping supports one COUNT and ordering by the minute".into(),
