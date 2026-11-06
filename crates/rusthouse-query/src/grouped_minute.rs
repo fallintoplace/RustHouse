@@ -15,6 +15,26 @@ fn clause_by_at(tokens: &[Token], index: usize, keyword: &str) -> bool {
         && matches!(tokens.get(index + 1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY"))
 }
 
+fn top_level_group_order(tokens: &[Token]) -> (Option<usize>, Option<usize>) {
+    let mut group = None;
+    let mut order = None;
+    let mut depth = 0usize;
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(_) if depth == 0 && clause_by_at(tokens, i, "GROUP") => {
+                group = Some(i + 2)
+            }
+            Token::Word(_) if depth == 0 && clause_by_at(tokens, i, "ORDER") => {
+                order = Some(i + 2)
+            }
+            _ => {}
+        }
+    }
+    (group, order)
+}
+
 pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError> {
     let (column, label) = match tokens.as_slice() {
         [
@@ -40,22 +60,7 @@ pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError
         }
         _ => return Ok(None),
     };
-    let mut group = None;
-    let mut order = None;
-    let mut depth = 0usize;
-    for (i, token) in tokens.iter().enumerate() {
-        match token {
-            Token::LParen => depth += 1,
-            Token::RParen => depth = depth.saturating_sub(1),
-            Token::Word(_) if depth == 0 && clause_by_at(&tokens, i, "GROUP") => {
-                group = Some(i + 2)
-            }
-            Token::Word(_) if depth == 0 && clause_by_at(&tokens, i, "ORDER") => {
-                order = Some(i + 2)
-            }
-            _ => {}
-        }
-    }
+    let (group, order) = top_level_group_order(&tokens);
     let Some(group) = group else { return Ok(None) };
     if !expression(&tokens, group, &column) || matches!(tokens.get(group + 6), Some(Token::Comma)) {
         return Ok(None);
