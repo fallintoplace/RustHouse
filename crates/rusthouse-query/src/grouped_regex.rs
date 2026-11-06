@@ -12,6 +12,38 @@ pub struct GroupedRegex {
     pub count_label: String,
     pub threshold: u64,
 }
+fn grouped_clause_positions(tokens: &[Token]) -> (Option<usize>, Option<usize>, Option<usize>) {
+    let mut group = None;
+    let mut having = None;
+    let mut order = None;
+    let mut depth = 0usize;
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(word)
+                if depth == 0
+                    && word.eq_ignore_ascii_case("GROUP")
+                    && matches!(tokens.get(i+1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
+            {
+                group = Some(i)
+            }
+            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("HAVING") => {
+                having = Some(i)
+            }
+            Token::Word(word)
+                if depth == 0
+                    && word.eq_ignore_ascii_case("ORDER")
+                    && matches!(tokens.get(i+1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
+            {
+                order = Some(i)
+            }
+            _ => {}
+        }
+    }
+    (group, having, order)
+}
+
 pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError> {
     let (column, pattern, replacement, key_label, average_label, count_label) =
         match tokens.as_slice() {
@@ -86,34 +118,7 @@ pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError
     {
         return Err(ParseError("ambiguous REGEXP output alias".into()));
     }
-    let mut group = None;
-    let mut having = None;
-    let mut order = None;
-    let mut depth = 0usize;
-    for (i, token) in tokens.iter().enumerate() {
-        match token {
-            Token::LParen => depth += 1,
-            Token::RParen => depth = depth.saturating_sub(1),
-            Token::Word(word)
-                if depth == 0
-                    && word.eq_ignore_ascii_case("GROUP")
-                    && matches!(tokens.get(i+1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
-            {
-                group = Some(i)
-            }
-            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("HAVING") => {
-                having = Some(i)
-            }
-            Token::Word(word)
-                if depth == 0
-                    && word.eq_ignore_ascii_case("ORDER")
-                    && matches!(tokens.get(i+1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
-            {
-                order = Some(i)
-            }
-            _ => {}
-        }
-    }
+    let (group, having, order) = grouped_clause_positions(&tokens);
     let (Some(group), Some(having), Some(order)) = (group, having, order) else {
         return Ok(None);
     };
