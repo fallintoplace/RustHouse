@@ -4,6 +4,17 @@
 use super::{MAX_RESPONSE_BYTES, MergeError, NormalizedGroupKey, normalized_group_key};
 use std::collections::HashMap;
 
+fn parse_canonical_partial_count(digits: &[u8]) -> Result<u128, MergeError> {
+    let text = std::str::from_utf8(digits).map_err(|_| MergeError::InvalidGroupedCount)?;
+    let partial = text
+        .parse::<u128>()
+        .map_err(|_| MergeError::InvalidGroupedCount)?;
+    if partial.to_string() != text {
+        return Err(MergeError::InvalidGroupedCount);
+    }
+    Ok(partial)
+}
+
 pub(super) fn merge_multi_key_count_column(
     shards: &[(usize, Vec<u8>)],
     columns: &[String],
@@ -37,14 +48,8 @@ pub(super) fn merge_multi_key_count_column(
             if fields.len() != columns.len() + 1 {
                 return Err(MergeError::InvalidGroupedCount);
             }
-            let digits = std::str::from_utf8(fields[columns.len()])
-                .map_err(|_| MergeError::InvalidGroupedCount)?;
-            let partial = digits
-                .parse::<u128>()
-                .map_err(|_| MergeError::InvalidGroupedCount)?;
-            if partial.to_string() != digits {
-                return Err(MergeError::InvalidGroupedCount);
-            }
+            let digits = fields[columns.len()];
+            let partial = parse_canonical_partial_count(digits)?;
             let tuple = fields[..columns.len()]
                 .iter()
                 .map(|field| {
