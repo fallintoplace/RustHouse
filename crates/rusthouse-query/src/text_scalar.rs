@@ -199,6 +199,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "EXTRACTURLPARAMETER"
                 | "NULLIF"
                 | "IF"
+                | "LOCATE"
                 | "IFNULL"
                 | "LAST_INDEX_OF"
                 | "DATEADD"
@@ -3693,6 +3694,46 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     ConstantValue::Text(format!("{datetime}.{fraction:0width$}", width = 9))
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "LOCATE" => {
+            let needle = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "locate requires a haystack")?;
+            let haystack = text_arg(parser, depth + 1)?;
+            let start = if parser.take(Token::Comma) {
+                integer_arg(parser, depth + 1)?
+            } else {
+                Some(1)
+            };
+            require(
+                parser,
+                Token::RParen,
+                "locate requires two or three arguments",
+            )?;
+            match (needle, haystack, start) {
+                (Some(needle), Some(haystack), Some(start)) => {
+                    let position = start
+                        .checked_sub(1)
+                        .and_then(|value| usize::try_from(value).ok())
+                        .and_then(|skip| {
+                            if skip > haystack.chars().count() {
+                                return None;
+                            }
+                            let offset = haystack
+                                .char_indices()
+                                .nth(skip)
+                                .map_or(haystack.len(), |(index, _)| index);
+                            haystack[offset..]
+                                .find(&needle)
+                                .map(|index| haystack[..offset + index].chars().count() + 1)
+                        })
+                        .unwrap_or(0);
+                    ConstantValue::Integer(
+                        i64::try_from(position)
+                            .map_err(|_| ParseError("locate position exceeds Int64".into()))?,
+                    )
+                }
+                _ => ConstantValue::Null,
             }
         }
         "PROTOCOL" => {
