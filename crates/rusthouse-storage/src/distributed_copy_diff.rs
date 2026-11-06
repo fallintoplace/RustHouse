@@ -1,7 +1,10 @@
 //! Copy-only reconciliation plan for trusted immutable object inventories.
 mod key_validation;
 mod copy_planner;
-pub use copy_planner::{ReplicaCopyPlanner, ReplicaCopyPage, plan_replica_copy_page, plan_replica_copy_batch, plan_replica_copy_batch_after};
+pub use copy_planner::{
+    ReplicaCopyPage, ReplicaCopyPlanner, plan_replica_copy_batch, plan_replica_copy_batch_after,
+    plan_replica_copy_page,
+};
 #[cfg(test)]
 use copy_planner::select_copy_batch;
 use self::key_validation::*;
