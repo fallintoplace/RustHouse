@@ -9,16 +9,17 @@ pub struct GroupedExtractMinute {
 }
 fn valid_grouped_count(
     projection: &Projection,
-    first: &String,
-    column: &String,
-    third: &String,
+    first: &str,
+    column: &str,
+    third: &str,
 ) -> bool {
+    let expected = [first, column, third];
     match projection {
         Projection::GroupedMultiCount { columns } => {
-            columns == &[first.clone(), column.clone(), third.clone()]
+            columns.iter().map(String::as_str).eq(expected)
         }
         Projection::GroupedMultiAggregates { columns, items, .. } => {
-            columns == &[first.clone(), column.clone(), third.clone()]
+            columns.iter().map(String::as_str).eq(expected)
                 && matches!(items.as_slice(), [(AggregateFunction::Count, value)] if value == "*")
         }
         _ => false,
