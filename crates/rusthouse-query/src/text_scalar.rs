@@ -226,6 +226,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "BASE64_ENCODE"
                 | "BASE64URLENCODE"
                 | "BASE64ENCODE"
+                | "FIND_IN_SET"
                 | "BASE58ENCODE"
                 | "HASTOKENCASEINSENSITIVE"
                 | "ENDS_WITH"
@@ -4358,6 +4359,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                         }
                     }
                     ConstantValue::Text(result)
+                }
+                _ => ConstantValue::Null,
+            }
+        }
+        "FIND_IN_SET" => {
+            let needle = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::Comma,
+                "find_in_set requires a comma-separated string",
+            )?;
+            let values = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "find_in_set requires two arguments")?;
+            match (needle, values) {
+                (Some(needle), Some(values)) => {
+                    let position = if needle.contains(',') {
+                        0
+                    } else {
+                        values
+                            .split(',')
+                            .position(|item| item == needle)
+                            .map_or(0, |index| index + 1)
+                    };
+                    ConstantValue::Integer(
+                        i64::try_from(position)
+                            .map_err(|_| ParseError("find_in_set position exceeds Int64".into()))?,
+                    )
                 }
                 _ => ConstantValue::Null,
             }
