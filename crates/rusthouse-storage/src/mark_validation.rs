@@ -50,6 +50,10 @@ fn checked_compressed_end(offset: u64, compressed_size: u32) -> Option<u64> {
         .checked_add(u64::from(compressed_size))
 }
 
+fn terminal_mark(mark: &WideMark) -> bool {
+    mark.rows == Some(0)
+}
+
 fn validate_wide_mark_target(
     marks: &WideMarks,
     index: usize,
@@ -57,7 +61,7 @@ fn validate_wide_mark_target(
     block: Option<crate::CompressedBlock>,
     preceding_end: u64,
 ) -> Result<(), PartError> {
-    let terminal = mark.rows == Some(0);
+    let terminal = terminal_mark(mark);
     match block {
         Some(current) if current.offset == mark.compressed_offset => {
             let size = u64::from(current.decompressed_size);
@@ -93,7 +97,7 @@ fn validate_mark_sequence(
     mark: &WideMark,
     previous: Option<&WideMark>,
 ) -> Result<(), PartError> {
-    if mark.rows == Some(0) && index + 1 != marks.marks.len() {
+    if terminal_mark(mark) && index + 1 != marks.marks.len() {
         return Err(invalid_mark(marks, index, "zero-row mark must be last"));
     }
     if let Some(previous) = previous {
@@ -102,7 +106,7 @@ fn validate_mark_sequence(
         if current_offset < previous_offset {
             return Err(invalid_mark(marks, index, "mark offsets are not ordered"));
         }
-        if current_offset == previous_offset && mark.rows != Some(0) {
+        if current_offset == previous_offset && !terminal_mark(mark) {
             return Err(invalid_mark(marks, index, "nonterminal mark must advance"));
         }
     }
