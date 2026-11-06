@@ -138,6 +138,31 @@ pub(in crate::execute) fn read_projected_build_rows(
     )
 }
 
+/// Retain full-width rows while rejecting rows with a safe conjunctive filter.
+/// Keeping the uncompressed width preserves the chained JOIN key indices.
+pub(in crate::execute) fn read_projected_build_rows_matching(
+    path: &Path,
+    names: &[String],
+    indices: &[usize],
+    expected_rows: u64,
+    row_limit: u64,
+    byte_limit: usize,
+    predicate: &mut RowPredicate<'_>,
+) -> Result<Vec<Vec<typed::Cell>>, ExecutionError> {
+    read_projected_build_rows_filtered(
+        path,
+        names,
+        indices,
+        expected_rows,
+        row_limit,
+        byte_limit,
+        None,
+        None,
+        Some(predicate),
+        false,
+    )
+}
+
 /// Retain only projected cells while preserving their projection order.
 pub(in crate::execute) fn read_filtered_compact_projected_build_rows(
     path: &Path,
@@ -486,6 +511,27 @@ mod row_filter_limit_tests {
             Err(error) => error,
         };
         assert!(error.to_string().contains("JOIN input row limit exceeded"));
+        fs::remove_dir_all(part).unwrap();
+    }
+
+    #[test]
+    fn full_width_matching_rows_preserve_join_positions_and_apply_limits_after_filtering() {
+        let part = write_rows(&["1", "0", "1"]);
+        let names = vec!["id".into()];
+        let mut predicate = matches_one;
+        let rows =
+            read_projected_build_rows_matching(&part, &names, &[0], 3, 2, 1024, &mut predicate)
+                .unwrap();
+
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(
+            rows[0][0],
+            typed::Cell::Numeric(Number::Unsigned(1))
+        ));
+        assert!(matches!(
+            rows[1][0],
+            typed::Cell::Numeric(Number::Unsigned(1))
+        ));
         fs::remove_dir_all(part).unwrap();
     }
 }
