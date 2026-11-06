@@ -24,6 +24,18 @@ fn reconstruct_workers(
     Ok(chosen)
 }
 
+fn validate_matrix(costs: &[Vec<Option<u64>>]) -> Result<usize, &'static str> {
+    let workers = costs[0].len();
+    if workers == 0
+        || workers > MAX_WORKERS
+        || costs.len() > workers
+        || costs.iter().any(|row| row.len() != workers)
+    {
+        return Err("invalid repair assignment matrix");
+    }
+    Ok(workers)
+}
+
 /// None forbids an assignment. A worker can serve at most one task.
 /// Runs in O(workers * 2^workers) memory and O(tasks * workers * 2^workers)
 /// time, with an explicit 16-worker bound.
@@ -36,14 +48,7 @@ pub fn minimum_cost_assignment(
             total_cost: 0,
         });
     }
-    let workers = costs[0].len();
-    if workers == 0
-        || workers > MAX_WORKERS
-        || costs.len() > workers
-        || costs.iter().any(|row| row.len() != workers)
-    {
-        return Err("invalid repair assignment matrix");
-    }
+    let workers = validate_matrix(costs)?;
     let states = 1usize << workers;
     let mut best = vec![None::<u64>; states];
     let mut predecessor = vec![None::<(usize, usize)>; states];
