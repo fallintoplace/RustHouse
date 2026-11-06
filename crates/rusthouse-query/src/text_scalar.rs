@@ -2479,9 +2479,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "replaceregexpall requires a pattern")?;
             let pattern = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "replaceregexpall requires a replacement")?;
+            require(
+                parser,
+                Token::Comma,
+                "replaceregexpall requires a replacement",
+            )?;
             let replacement = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "replaceregexpall requires three arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "replaceregexpall requires three arguments",
+            )?;
             match (input, pattern, replacement) {
                 (Some(input), Some(pattern), Some(replacement)) => {
                     if pattern.len() > 4096 || replacement.len() > 4096 {
@@ -2531,7 +2539,6 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                             return Err(ParseError("replaceregexpall output is too large".into()));
                         }
                         cursor = found.end();
-                        
                     }
                     result.push_str(&input[cursor..]);
                     if result.len() > MAX_TEXT_BYTES {
