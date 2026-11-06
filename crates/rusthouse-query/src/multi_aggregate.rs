@@ -40,6 +40,39 @@ pub(crate) fn render_expr(expr: &ScalarExpr) -> String {
 fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
     match expr {
         ScalarExpr::Column(name) | ScalarExpr::Decimal(name) => output.push_str(name),
+        ScalarExpr::TextLiteral(value) => {
+            output.push('\'');
+            output.push_str(&value.replace('\'', "''"));
+            output.push('\'');
+        }
+        ScalarExpr::TextConcat(arguments) => {
+            output.push_str("concat(");
+            for (index, argument) in arguments.iter().enumerate() {
+                if index != 0 {
+                    output.push_str(", ");
+                }
+                render_expr_into(argument, output);
+            }
+            output.push(')');
+        }
+        ScalarExpr::TextSubstring {
+            value,
+            start,
+            length,
+        } => {
+            output.push_str("substring(");
+            render_expr_into(value, output);
+            write!(output, ", {start}").expect("writing to String cannot fail");
+            if let Some(length) = length {
+                write!(output, ", {length}").expect("writing to String cannot fail");
+            }
+            output.push(')');
+        }
+        ScalarExpr::Round { value, precision } => {
+            output.push_str("round(");
+            render_expr_into(value, output);
+            write!(output, ", {precision})").expect("writing to String cannot fail");
+        }
         ScalarExpr::TextLength(name) => {
             output.push_str("length(");
             output.push_str(name);
