@@ -1,0 +1,42 @@
+use rusthouse_query::{ConstantValue, Projection, parse_select};
+
+fn value(sql: &str) -> ConstantValue {
+    match parse_select(sql).unwrap().projection {
+        Projection::Constants(items) if items.len() == 1 => items[0].value.clone(),
+        other => panic!("unexpected projection: {other:?}"),
+    }
+}
+
+#[test]
+fn regexp_count_supports_constant_patterns() {
+    for (sql, expected) in [
+        (
+            "SELECT regexp_count('abc123def456','[0-9]+')",
+            ConstantValue::Integer(2),
+        ),
+        (
+            "SELECT regexp_count('abc','[0-9]+')",
+            ConstantValue::Integer(0),
+        ),
+        (
+            "SELECT regexp_count('ababa','a')",
+            ConstantValue::Integer(3),
+        ),
+    ] {
+        assert_eq!(value(sql), expected, "{sql}");
+    }
+    assert_eq!(value("SELECT regexp_count(NULL, 'x')"), ConstantValue::Null);
+    assert_eq!(value("SELECT regexp_count('x', NULL)"), ConstantValue::Null);
+}
+
+#[test]
+fn regexp_count_rejects_bad_patterns_and_arguments() {
+    for sql in [
+        "SELECT regexp_count('x', '[')",
+        "SELECT regexp_count('x')",
+        "SELECT regexp_count('x', 'x', 'y')",
+        "SELECT regexp_count(1, 'x')",
+    ] {
+        assert!(parse_select(sql).is_err(), "{sql}");
+    }
+}
