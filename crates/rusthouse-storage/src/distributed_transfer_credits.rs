@@ -86,9 +86,7 @@ impl TransferCreditWindow {
         acknowledgements: &[(u64, u32)],
     ) -> Result<u64, &'static str> {
         let bytes = self.verified_prefix_bytes(acknowledgements)?;
-        for _ in acknowledgements {
-            self.frames.pop_front();
-        }
+        drop(self.frames.drain(..acknowledgements.len()));
         self.in_flight -= bytes;
         Ok(bytes)
     }
