@@ -1,9 +1,10 @@
 mod exists;
 mod input;
 mod runner;
-pub(super) use runner::run_sql_args;
 mod scalar_derived_cross;
 mod scalar_subquery;
+
+pub(super) use runner::run_sql_args;
 
 use self::input::*;
 
