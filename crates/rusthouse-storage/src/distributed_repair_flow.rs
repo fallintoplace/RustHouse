@@ -71,10 +71,7 @@ pub fn maximum_replica_flow(
     }
 
     let mut total_flow = 0u64;
-    loop {
-        let Some(parent) = find_augmenting_path(&residual, source, sink) else {
-            return Ok(total_flow);
-        };
+    while let Some(parent) = find_augmenting_path(&residual, source, sink) {
         let mut bottleneck = u128::MAX;
         let mut cursor = sink;
         while cursor != source {
@@ -98,6 +95,7 @@ pub fn maximum_replica_flow(
             cursor = previous;
         }
     }
+    Ok(total_flow)
 }
 
 #[cfg(test)]
