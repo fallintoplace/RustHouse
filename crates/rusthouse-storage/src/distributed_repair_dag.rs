@@ -46,11 +46,7 @@ fn build_dependency_graph(
     Ok((edges, indegree))
 }
 
-fn ready_task_indices(
-    tasks: &[RepairTask],
-    completed: &[bool],
-    indegree: &[usize],
-) -> Vec<usize> {
+fn ready_task_indices(tasks: &[RepairTask], completed: &[bool], indegree: &[usize]) -> Vec<usize> {
     let mut ready: Vec<usize> = (0..tasks.len())
         .filter(|&index| !completed[index] && indegree[index] == 0)
         .collect();
