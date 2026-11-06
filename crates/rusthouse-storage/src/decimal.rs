@@ -65,6 +65,10 @@ impl Error for DecimalReadError {
     }
 }
 
+fn outside_decimal_precision(value: i128, limit: i128) -> bool {
+    value <= -limit || value >= limit
+}
+
 /// Read the physical values of Decimal32, Decimal64, Decimal128, or Decimal(P, S).
 /// Decimal256 is intentionally unsupported until 256-bit decoding is available.
 pub fn read_decimal_column<R: Read>(
@@ -76,11 +80,10 @@ pub fn read_decimal_column<R: Read>(
         .ok_or_else(|| DecimalReadError::InvalidType(data_type.to_owned()))?;
     let unscaled = read_numeric_column(reader, storage, rows).map_err(DecimalReadError::Numeric)?;
     let limit = 10i128.pow(u32::from(precision));
-    let outside = |value: i128| value <= -limit || value >= limit;
     let invalid_row = match &unscaled {
-        NumericColumn::Int32(values) => values.iter().position(|&v| outside(i128::from(v))),
-        NumericColumn::Int64(values) => values.iter().position(|&v| outside(i128::from(v))),
-        NumericColumn::Int128(values) => values.iter().position(|&v| outside(v)),
+        NumericColumn::Int32(values) => values.iter().position(|&v| outside_decimal_precision(i128::from(v), limit)),
+        NumericColumn::Int64(values) => values.iter().position(|&v| outside_decimal_precision(i128::from(v), limit)),
+        NumericColumn::Int128(values) => values.iter().position(|&v| outside_decimal_precision(v, limit)),
         _ => None,
     };
     if let Some(row) = invalid_row {
@@ -126,7 +129,7 @@ pub fn write_decimal_values<W: Write>(
     let limit = 10i128.pow(u32::from(precision));
     if values
         .iter()
-        .any(|&value| value <= -limit || value >= limit)
+        .any(|&value| outside_decimal_precision(value, limit))
     {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
