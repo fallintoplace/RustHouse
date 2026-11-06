@@ -71,24 +71,24 @@ impl StringColumn {
         Ok(())
     }
 
-    pub fn get(&self, row: usize) -> Option<&[u8]> {
-        // One row-bound check covers both offsets. Decoding guarantees that
-        // the private offset array has len() + 1 monotone entries.
+    fn row_bounds(&self, row: usize) -> Option<(usize, usize)> {
+        // Decoding keeps an extra terminal offset for every valid row.
         if row >= self.len() {
             return None;
         }
-        let begin = self.offsets[row];
-        let end = self.offsets[row + 1];
+        Some((self.offsets[row], self.offsets[row + 1]))
+    }
+
+    pub fn get(&self, row: usize) -> Option<&[u8]> {
+        let (begin, end) = self.row_bounds(row)?;
         self.data.get(begin..end)
     }
 
     /// Return a string's byte length without touching its payload.
     /// The decoder validates monotone offsets when building the column.
     pub fn byte_length(&self, row: usize) -> Option<usize> {
-        if row >= self.len() {
-            return None;
-        }
-        Some(self.offsets[row + 1] - self.offsets[row])
+        let (begin, end) = self.row_bounds(row)?;
+        Some(end - begin)
     }
 
     fn push<R: Read>(&mut self, reader: &mut R, length: u64) -> Result<(), StringReadError> {
