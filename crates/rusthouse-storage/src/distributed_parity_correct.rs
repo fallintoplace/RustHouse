@@ -20,6 +20,10 @@ fn gf256_mul(mut left: u8, mut right: u8) -> u8 {
     result
 }
 
+fn syndrome_byte_matches(p: u8, q: u8, product: u8, offset: usize, length: usize) -> bool {
+    product == q && (offset < length || p == 0)
+}
+
 fn verify_syndrome(
     current: &DoubleParity,
     parity: &DoubleParity,
@@ -31,7 +35,7 @@ fn verify_syndrome(
         for offset in 0..width {
             let p = current.xor[offset] ^ parity.xor[offset];
             let q = current.weighted[offset] ^ parity.weighted[offset];
-            if gf256_mul(coefficient, p) != q || (offset >= candidate_len && p != 0) {
+            if !syndrome_byte_matches(p, q, gf256_mul(coefficient, p), offset, candidate_len) {
                 return Err("uncorrectable dual-parity syndrome");
             }
         }
@@ -40,7 +44,7 @@ fn verify_syndrome(
         for offset in 0..width {
             let p = current.xor[offset] ^ parity.xor[offset];
             let q = current.weighted[offset] ^ parity.weighted[offset];
-            if products[usize::from(p)] != q || (offset >= candidate_len && p != 0) {
+            if !syndrome_byte_matches(p, q, products[usize::from(p)], offset, candidate_len) {
                 return Err("uncorrectable dual-parity syndrome");
             }
         }
