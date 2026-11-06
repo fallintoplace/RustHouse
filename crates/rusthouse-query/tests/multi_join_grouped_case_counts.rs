@@ -35,6 +35,70 @@ fn grouped_case_metrics_allow_aliased_keys_on_inner_join_chains() {
 }
 
 #[test]
+fn grouped_case_numeric_sums_run_on_two_inner_join_inputs() {
+    let root = std::env::temp_dir().join(format!(
+        "rusthouse-tpcds-group-case-two-inputs-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let dates = root.join("dates");
+    let sales = root.join("sales");
+    write_wide_part(
+        &dates,
+        &[
+            Column {
+                name: "date_id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "weekday".into(),
+                data_type: "String".into(),
+            },
+        ],
+        &[
+            vec![Some("1".into()), Some("Sunday".into())],
+            vec![Some("2".into()), Some("Monday".into())],
+        ],
+    )
+    .unwrap();
+    write_wide_part(
+        &sales,
+        &[
+            Column {
+                name: "date_id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "store_id".into(),
+                data_type: "UInt64".into(),
+            },
+            Column {
+                name: "price".into(),
+                data_type: "Float64".into(),
+            },
+        ],
+        &[
+            vec![Some("1".into()), Some("8".into()), Some("12.5".into())],
+            vec![Some("2".into()), Some("8".into()), Some("7".into())],
+            vec![Some("2".into()), Some("9".into()), Some("4".into())],
+        ],
+    )
+    .unwrap();
+
+    let sql = "SELECT d.weekday, s.store_id, SUM(CASE WHEN d.weekday = 'Sunday' THEN s.price ELSE NULL END) AS sun_sales, SUM(CASE WHEN d.weekday = 'Monday' THEN s.price ELSE NULL END) AS mon_sales FROM dates d JOIN sales s ON d.date_id = s.date_id GROUP BY d.weekday, s.store_id ORDER BY d.weekday, s.store_id";
+    let query = parse_join(sql).unwrap().unwrap();
+    let mut output = Vec::new();
+    execute_multi_join(&query, &[dates, sales], &mut output).unwrap();
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "weekday\tstore_id\tsun_sales\tmon_sales\nMonday\t8\t\\N\t7\nMonday\t9\t\\N\t4\nSunday\t8\t12.5\t\\N\n"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn grouped_case_counts_evaluate_numeric_expressions_across_join_chains() {
     let root = std::env::temp_dir().join(format!(
         "rusthouse-tpcds-group-case-{}-{}",

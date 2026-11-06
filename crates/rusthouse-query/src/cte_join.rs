@@ -140,6 +140,81 @@ fn split_ctes(sql: &str) -> Result<Option<(Vec<(String, String)>, String)>, Pars
     Ok(Some((sources, outer)))
 }
 
+fn source_name(token: &Token) -> Option<String> {
+    match token {
+        Token::Word(name) | Token::QuotedWord(name) | Token::QuotedAlias(name) => {
+            Some(name.clone())
+        }
+        _ => None,
+    }
+}
+
+fn derived_source(tokens: &[Token], start: usize) -> Option<(String, String, usize)> {
+    if tokens.get(start) != Some(&Token::LParen) {
+        return None;
+    }
+    let mut depth = 1usize;
+    let mut close = start + 1;
+    while close < tokens.len() && depth > 0 {
+        match tokens[close] {
+            Token::LParen => depth += 1,
+            Token::RParen => depth -= 1,
+            _ => {}
+        }
+        close += 1;
+    }
+    if depth != 0
+        || !matches!(tokens.get(start + 1), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT"))
+    {
+        return None;
+    }
+    let mut alias_index = close;
+    if matches!(tokens.get(alias_index), Some(Token::Word(word)) if word.eq_ignore_ascii_case("AS"))
+    {
+        alias_index += 1;
+    }
+    let alias = source_name(tokens.get(alias_index)?)?;
+    let body = render_tokens(&tokens[start + 1..close - 1]);
+    Some((alias, body, alias_index + 1))
+}
+
+/// Replace two top-level derived tables with names so they can be materialized in order.
+fn split_two_derived_sources(tokens: &[Token]) -> Option<(Vec<(String, String)>, String)> {
+    let mut depth = 0usize;
+    let from = tokens.iter().position(|token| match token {
+        Token::LParen => {
+            depth += 1;
+            false
+        }
+        Token::RParen => {
+            depth = depth.saturating_sub(1);
+            false
+        }
+        Token::Word(word) => depth == 0 && word.eq_ignore_ascii_case("FROM"),
+        _ => false,
+    })?;
+    let (left_name, left_query, after_left) = derived_source(tokens, from + 1)?;
+    if tokens.get(after_left) != Some(&Token::Comma) {
+        return None;
+    }
+    let (right_name, right_query, after_right) = derived_source(tokens, after_left + 1)?;
+    if left_name.eq_ignore_ascii_case(&right_name)
+        || matches!(tokens.get(after_right), Some(Token::Comma))
+    {
+        return None;
+    }
+
+    let mut rewritten = tokens[..from + 1].to_vec();
+    rewritten.push(Token::Word(left_name.clone()));
+    rewritten.push(Token::Comma);
+    rewritten.push(Token::Word(right_name.clone()));
+    rewritten.extend_from_slice(&tokens[after_right..]);
+    Some((
+        vec![(left_name, left_query), (right_name, right_query)],
+        render_tokens(&rewritten),
+    ))
+}
+
 fn split_union_all(tokens: &[Token]) -> Option<Vec<&[Token]>> {
     let mut branches = Vec::new();
     let mut depth = 0usize;
@@ -342,7 +417,6 @@ fn output_schema(
         || query.scalar_formula.is_some()
         || query.grouped_count_column.is_some()
         || query.grouped_distinct.is_some()
-        || !query.grouped_case_counts.is_empty()
         || query.grouped_min.is_some()
         || !query.grouped_min_metrics.is_empty()
         || !query.grouped_max_metrics.is_empty()
@@ -356,6 +430,76 @@ fn output_schema(
         || !query.scalar_projections.is_empty()
     {
         return Ok(None);
+    }
+
+    if !query.grouped_case_counts.is_empty() {
+        let (Some(grouped_keys), Some(keys)) =
+            (query.grouped_count.as_ref(), query.columns.as_ref())
+        else {
+            return Ok(None);
+        };
+        if keys.is_empty()
+            || keys.len() != grouped_keys.len()
+            || query.grouped_rollup
+            || query.grouped_sum.is_some()
+            || !query.grouped_sum_extras.is_empty()
+            || !matches!(query.kind, crate::JoinType::Inner)
+            || query
+                .steps
+                .iter()
+                .any(|step| step.kind != crate::JoinType::Inner)
+        {
+            return Ok(None);
+        }
+
+        let mut columns = Vec::with_capacity(keys.len() + query.grouped_case_counts.len());
+        for (index, key) in keys.iter().enumerate() {
+            let Some(data_type) = source_type(query, key, &mut resolve)? else {
+                return Ok(None);
+            };
+            let name = query
+                .grouped_key_aliases
+                .iter()
+                .find_map(|(key_index, alias)| (*key_index == index).then(|| alias.clone()))
+                .unwrap_or_else(|| key.name.clone());
+            columns.push(CteOutputColumn { name, data_type });
+        }
+        for (_, value, alias) in &query.grouped_case_counts {
+            let data_type = match value {
+                crate::GroupedCaseValue::Count => "Nullable(UInt64)".into(),
+                crate::GroupedCaseValue::Column(column) => {
+                    let Some(data_type) =
+                        grouped_sum_type(query, &GroupedSum::Column(column.clone()), &mut resolve)?
+                    else {
+                        return Ok(None);
+                    };
+                    data_type
+                }
+                crate::GroupedCaseValue::Expression(expression) => {
+                    let Some(data_type) = grouped_sum_type(
+                        query,
+                        &GroupedSum::Expression(expression.clone()),
+                        &mut resolve,
+                    )?
+                    else {
+                        return Ok(None);
+                    };
+                    data_type
+                }
+            };
+            columns.push(CteOutputColumn {
+                name: alias.clone(),
+                data_type,
+            });
+        }
+        if columns.iter().enumerate().any(|(index, column)| {
+            columns[..index]
+                .iter()
+                .any(|previous| previous.name.eq_ignore_ascii_case(&column.name))
+        }) {
+            return Ok(None);
+        }
+        return Ok(Some(columns));
     }
 
     let has_sum = query.grouped_sum.is_some();
@@ -499,7 +643,7 @@ pub fn parse_cte_multi_join_with_schema(
     sql: &str,
     mut resolve: impl FnMut(&str) -> Result<Vec<CteOutputColumn>, ParseError>,
 ) -> Result<Option<CteMultiJoin>, ParseError> {
-    let Some((definitions, outer_sql)) = split_ctes(sql)? else {
+    let Some((definitions, mut outer_sql)) = split_ctes(sql)? else {
         return Ok(None);
     };
     let mut sources: Vec<CteMultiJoinSource> = Vec::with_capacity(definitions.len());
@@ -542,6 +686,56 @@ pub fn parse_cte_multi_join_with_schema(
         });
     }
 
+    if let Some((derived_sources, rewritten_outer)) =
+        split_two_derived_sources(&tokenize(&outer_sql)?)
+    {
+        for (name, body) in derived_sources {
+            if sources
+                .iter()
+                .any(|source| source.name.eq_ignore_ascii_case(&name))
+            {
+                return Ok(None);
+            }
+            let parse_result = parse_join_with_schema(&body, |table| {
+                if let Some(source) = sources
+                    .iter()
+                    .find(|source| source.name.eq_ignore_ascii_case(table))
+                {
+                    Ok(source
+                        .columns
+                        .iter()
+                        .map(|column| column.name.clone())
+                        .collect())
+                } else {
+                    resolve(table)
+                        .map(|columns| columns.into_iter().map(|column| column.name).collect())
+                }
+            });
+            let Ok(Some(query)) = parse_result else {
+                return Ok(None);
+            };
+            let schema_result = output_schema(&query, |table| {
+                if let Some(source) = sources
+                    .iter()
+                    .find(|source| source.name.eq_ignore_ascii_case(table))
+                {
+                    Ok(source.columns.clone())
+                } else {
+                    resolve(table)
+                }
+            });
+            let Ok(Some(columns)) = schema_result else {
+                return Ok(None);
+            };
+            sources.push(CteMultiJoinSource {
+                name,
+                query,
+                columns,
+            });
+        }
+        outer_sql = rewritten_outer;
+    }
+
     let parse_result = parse_join_with_schema(&outer_sql, |table| {
         if let Some(source) = sources
             .iter()
@@ -576,6 +770,7 @@ mod tests {
                 ("ss_customer_sk", "Nullable(Int64)"),
                 ("ss_item_sk", "Nullable(Int64)"),
                 ("ss_quantity", "Nullable(Int64)"),
+                ("ss_store_sk", "Nullable(Int64)"),
                 ("ss_sold_date_sk", "Nullable(Int64)"),
                 ("ss_ext_sales_price", "Nullable(Float64)"),
                 ("ss_sales_price", "Nullable(Float64)"),
@@ -616,9 +811,16 @@ mod tests {
             ],
             "date_dim" => vec![
                 ("d_date_sk", "Nullable(Int64)"),
+                ("d_week_seq", "Nullable(Int64)"),
+                ("d_day_name", "Nullable(String)"),
                 ("d_qoy", "Nullable(Int64)"),
                 ("d_year", "Nullable(Int64)"),
                 ("d_month_seq", "Nullable(Int64)"),
+            ],
+            "store" => vec![
+                ("s_store_sk", "Nullable(Int64)"),
+                ("s_store_name", "Nullable(String)"),
+                ("s_store_id", "Nullable(String)"),
             ],
             "customer_address" => vec![
                 ("ca_address_sk", "Nullable(Int64)"),
@@ -658,6 +860,83 @@ mod tests {
         );
         assert_eq!(plan.outer().left, "ss");
         assert_eq!(plan.outer().right, "ws");
+    }
+
+    #[test]
+    fn parses_grouped_case_sum_cte_and_binds_metric_schema() {
+        let sql = "WITH wss AS (SELECT d_week_seq, ss_store_sk, SUM(CASE WHEN d_day_name = 'Sunday' THEN ss_sales_price ELSE NULL END) AS sun_sales, SUM(CASE WHEN d_day_name = 'Monday' THEN ss_sales_price ELSE NULL END) AS mon_sales FROM store_sales, date_dim WHERE ss_sold_date_sk = d_date_sk GROUP BY d_week_seq, ss_store_sk) SELECT wss.d_week_seq, wss.sun_sales, s.s_store_name FROM wss, store s WHERE wss.ss_store_sk = s.s_store_sk";
+        let plan = parse_cte_multi_join_with_schema(sql, schema)
+            .unwrap()
+            .expect("grouped CASE CTE query");
+
+        assert_eq!(plan.sources().len(), 1);
+        assert_eq!(
+            plan.sources()[0]
+                .columns()
+                .iter()
+                .map(|column| column.name.as_str())
+                .collect::<Vec<_>>(),
+            ["d_week_seq", "ss_store_sk", "sun_sales", "mon_sales"]
+        );
+        assert_eq!(
+            plan.sources()[0].columns()[2].data_type,
+            "Nullable(Float64)"
+        );
+        assert_eq!(
+            plan.sources()[0].columns()[3].data_type,
+            "Nullable(Float64)"
+        );
+    }
+
+    #[test]
+    fn materializes_two_derived_selects_that_read_a_grouped_cte() {
+        let sql = "WITH weekly AS (SELECT d_week_seq, ss_store_sk, SUM(CASE WHEN (d_day_name='Sunday') THEN ss_sales_price ELSE NULL END) AS sun_sales, SUM(CASE WHEN (d_day_name='Monday') THEN ss_sales_price ELSE NULL END) AS mon_sales, SUM(CASE WHEN (d_day_name='Tuesday') THEN ss_sales_price ELSE NULL END) AS tue_sales, SUM(CASE WHEN (d_day_name='Wednesday') THEN ss_sales_price ELSE NULL END) AS wed_sales, SUM(CASE WHEN (d_day_name='Thursday') THEN ss_sales_price ELSE NULL END) AS thu_sales, SUM(CASE WHEN (d_day_name='Friday') THEN ss_sales_price ELSE NULL END) AS fri_sales, SUM(CASE WHEN (d_day_name='Saturday') THEN ss_sales_price ELSE NULL END) AS sat_sales FROM store_sales, date_dim WHERE ss_sold_date_sk = d_date_sk GROUP BY d_week_seq, ss_store_sk) SELECT s_store_name1, s_store_id1, d_week_seq1, sun_sales1 / sun_sales2 AS ratio FROM (SELECT s_store_name AS s_store_name1, wss.d_week_seq AS d_week_seq1, s_store_id AS s_store_id1, sun_sales AS sun_sales1 FROM weekly wss, store, date_dim d WHERE d.d_week_seq = wss.d_week_seq AND ss_store_sk = s_store_sk AND d_month_seq BETWEEN 1212 AND 1212 + 11) y, (SELECT s_store_name AS s_store_name2, wss.d_week_seq AS d_week_seq2, s_store_id AS s_store_id2, sun_sales AS sun_sales2 FROM weekly wss, store, date_dim d WHERE d.d_week_seq = wss.d_week_seq AND ss_store_sk = s_store_sk AND d_month_seq BETWEEN 1212 + 12 AND 1212 + 23) x WHERE s_store_id1 = s_store_id2 AND d_week_seq1 = d_week_seq2 - 52 ORDER BY s_store_name1 NULLS FIRST, s_store_id1 NULLS FIRST, d_week_seq1 NULLS FIRST LIMIT 100";
+        let (definitions, outer_sql) = split_ctes(sql).unwrap().unwrap();
+        let grouped = parse_join_with_schema(&definitions[0].1, |table| {
+            schema(table).map(|columns| columns.into_iter().map(|column| column.name).collect())
+        })
+        .unwrap()
+        .expect("weekly CTE query parses");
+        let weekly_columns = output_schema(&grouped, schema)
+            .unwrap()
+            .expect("weekly CTE schema binds");
+        let (derived_sources, _) =
+            split_two_derived_sources(&tokenize(&outer_sql).unwrap()).expect("two branches");
+        for (name, body) in &derived_sources {
+            let parsed = parse_join_with_schema(body, |table| {
+                if table.eq_ignore_ascii_case("weekly") {
+                    Ok(weekly_columns
+                        .iter()
+                        .map(|column| column.name.clone())
+                        .collect())
+                } else {
+                    schema(table)
+                        .map(|columns| columns.into_iter().map(|column| column.name).collect())
+                }
+            })
+            .unwrap()
+            .unwrap_or_else(|| panic!("derived source {name} parses"));
+            output_schema(&parsed, |table| {
+                if table.eq_ignore_ascii_case("weekly") {
+                    Ok(weekly_columns.clone())
+                } else {
+                    schema(table)
+                }
+            })
+            .unwrap()
+            .unwrap_or_else(|| panic!("derived source {name} has output schema"));
+        }
+        let plan = parse_cte_multi_join_with_schema(sql, schema)
+            .unwrap()
+            .expect("two derived CTE inputs");
+
+        assert_eq!(plan.sources().len(), 3);
+        assert_eq!(plan.sources()[0].name(), "weekly");
+        assert_eq!(plan.sources()[1].name(), "y");
+        assert_eq!(plan.sources()[2].name(), "x");
+        assert_eq!(plan.outer().left, "y");
+        assert_eq!(plan.outer().right, "x");
+        assert_eq!(plan.outer().scalar_projections.len(), 1);
     }
 
     #[test]

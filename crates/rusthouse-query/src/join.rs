@@ -3606,6 +3606,7 @@ fn parse_join_tokens_internal(
         .iter()
         .any(|(_, value, _)| !matches!(value, GroupedCaseValue::Count))
         && steps.is_empty()
+        && kind != JoinType::Inner
     {
         return Err(ParseError(
             "conditional numeric SUM requires an INNER join chain".into(),

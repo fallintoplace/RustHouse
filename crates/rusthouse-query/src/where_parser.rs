@@ -343,7 +343,7 @@ fn parse_atom(
     let mut case_starts_here = false;
     while let Some(token) = parser.tokens.get(expression_index) {
         if expression_depth == 0
-            && matches!(token, Token::Word(word) if ["AND", "OR", "GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))
+            && matches!(token, Token::Word(word) if ["AND", "OR", "BETWEEN", "GROUP", "ORDER", "LIMIT", "OFFSET"].iter().any(|name| word.eq_ignore_ascii_case(name)))
         {
             break;
         }

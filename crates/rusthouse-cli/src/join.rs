@@ -111,7 +111,12 @@ fn execute_selected_join<W: std::io::Write>(
     paths: &[PathBuf],
     output: &mut W,
 ) -> Result<(), rusthouse_query::ExecutionError> {
-    if paths.len() == 2 {
+    let needs_multi_join = query
+        .grouped_case_counts
+        .iter()
+        .any(|(_, value, _)| !matches!(value, rusthouse_query::GroupedCaseValue::Count))
+        || !query.scalar_projections.is_empty();
+    if paths.len() == 2 && !needs_multi_join {
         execute_join(query, &paths[0], &paths[1], output)
     } else {
         execute_multi_join(query, paths, output)
