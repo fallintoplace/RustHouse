@@ -55,6 +55,25 @@ fn path_bottleneck(
     bottleneck
 }
 
+fn apply_residual_path(
+    residual: &mut [Vec<u128>],
+    parent: &[usize; MAX_VERTICES],
+    source: usize,
+    sink: usize,
+    bottleneck: u128,
+) -> Result<(), &'static str> {
+    let mut cursor = sink;
+    while cursor != source {
+        let previous = parent[cursor];
+        residual[previous][cursor] -= bottleneck;
+        residual[cursor][previous] = residual[cursor][previous]
+            .checked_add(bottleneck)
+            .ok_or("replica reverse capacity overflow")?;
+        cursor = previous;
+    }
+    Ok(())
+}
+
 /// Return the maximum aggregate source-to-sink capacity in bytes per second.
 /// Antiparallel and repeated links are allowed and combined without overflow.
 pub fn maximum_replica_flow(
@@ -95,15 +114,7 @@ pub fn maximum_replica_flow(
         total_flow = total_flow
             .checked_add(added_flow)
             .ok_or("replica total flow overflow")?;
-        let mut cursor = sink;
-        while cursor != source {
-            let previous = parent[cursor];
-            residual[previous][cursor] -= bottleneck;
-            residual[cursor][previous] = residual[cursor][previous]
-                .checked_add(bottleneck)
-                .ok_or("replica reverse capacity overflow")?;
-            cursor = previous;
-        }
+        apply_residual_path(&mut residual, &parent, source, sink, bottleneck)?;
     }
     Ok(total_flow)
 }
