@@ -1,5 +1,5 @@
-mod helpers;
 mod dispatch;
+mod helpers;
 use dispatch::parse_at_depth;
 use self::helpers::*;
 use super::{ConstantValue, ParseError, Parser, Token};
