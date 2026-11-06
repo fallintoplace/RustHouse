@@ -32,10 +32,10 @@ impl VersionVector {
         }
         let mut counters = BTreeMap::new();
         for &(node, count) in entries {
-            if !valid_node(node) || count == 0 || counters.insert(node.to_owned(), count).is_some()
-            {
+            if !valid_node(node) || count == 0 || counters.contains_key(node) {
                 return Err("invalid or duplicate version-vector entry");
             }
+            counters.insert(node.to_owned(), count);
         }
         Ok(Self { counters })
     }
