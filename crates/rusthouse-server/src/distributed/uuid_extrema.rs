@@ -75,11 +75,7 @@ fn parse_peer_uuid<'a>(
     Ok(Some(uuid_value(raw).ok_or(MergeError::InvalidExtremum)?))
 }
 
-fn reduce_uuid_extremum(
-    previous: Option<u128>,
-    value: u128,
-    function: AggregateFunction,
-) -> u128 {
+fn reduce_uuid_extremum(previous: Option<u128>, value: u128, function: AggregateFunction) -> u128 {
     previous.map_or(value, |previous| match function {
         AggregateFunction::Min => previous.min(value),
         AggregateFunction::Max => previous.max(value),
