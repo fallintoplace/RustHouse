@@ -42,7 +42,10 @@ pub use correlated_exists::{CorrelatedExists, parse_correlated_exists};
 pub use cte_correlated_avg::{
     CteCorrelatedAvg, CteOutputColumn, parse_cte_correlated_avg_with_schema,
 };
-pub use cte_join::{CteMultiJoin, CteMultiJoinSource, parse_cte_multi_join_with_schema};
+pub use cte_join::{
+    CteMultiJoin, CteMultiJoinSource, parse_cte_multi_join_with_schema,
+    parse_cte_union_select_with_schema,
+};
 pub use cte_max::{CteMaxJoin, has_cte_max_join, parse_cte_max_join};
 pub use ddl::{ColumnDef, Ddl, parse_ddl};
 pub use delete::parse_delete;
@@ -51,8 +54,8 @@ pub use execute::{
     execute_correlated_avg, execute_correlated_avg_with_paths, execute_correlated_join,
     execute_correlated_min, execute_correlated_sum, execute_cte_max_join,
     execute_derived_grouped_join, execute_derived_grouped_select, execute_derived_join_count,
-    execute_derived_union_join, execute_join, execute_multi_join, execute_nested_join_sum,
-    execute_substring_antijoin, merge_uniq_states,
+    execute_derived_union_join, execute_derived_union_select, execute_join, execute_multi_join,
+    execute_nested_join_sum, execute_substring_antijoin, merge_uniq_states,
 };
 pub use explain::explain_select;
 pub use expression::{ScalarExpr, parse_scalar_expression};
@@ -61,16 +64,17 @@ pub use insert_select::{InsertSelect, parse_insert_select};
 pub(crate) use join::JoinExistsLookupPair;
 pub use join::{
     DerivedColumn, DerivedGroupedJoin, DerivedGroupedSelect, DerivedJoinCount, DerivedUnionJoin,
-    GroupedCaseValue, GroupedSum, GroupedWindowRatio, JoinAggregate, JoinColumn, JoinCorrelatedAvg,
-    JoinCorrelatedExists, JoinCorrelatedMin, JoinCorrelatedSum, JoinExistsDateFilter,
-    JoinExistsFilter, JoinExistsKey, JoinExistsLookup, JoinGroupedOutput, JoinProjectionOrder,
-    JoinScalarAggregate, JoinScalarProjection, JoinSelect, JoinStep, JoinType, JoinVirtualColumn,
-    NestedJoinSum, SubstringAntiJoin, explain_join, has_derived_join_count, has_derived_union,
-    has_explicit_join, has_implicit_join, has_join_correlated_avg, has_join_correlated_min,
-    has_join_correlated_sum, has_nested_join_sum, has_substring_antijoin, has_top_level_exists,
-    parse_derived_grouped_join_with_schema, parse_derived_grouped_select_with_schema,
-    parse_derived_join_count_with_schema, parse_derived_join_sum_with_schema,
-    parse_derived_union_join_with_schema, parse_join, parse_join_correlated_avg_with_schema,
+    DerivedUnionSelect, GroupedCaseValue, GroupedSum, GroupedWindowRatio, JoinAggregate,
+    JoinColumn, JoinCorrelatedAvg, JoinCorrelatedExists, JoinCorrelatedMin, JoinCorrelatedSum,
+    JoinExistsDateFilter, JoinExistsFilter, JoinExistsKey, JoinExistsLookup, JoinGroupedOutput,
+    JoinProjectionOrder, JoinScalarAggregate, JoinScalarProjection, JoinSelect, JoinStep, JoinType,
+    JoinVirtualColumn, NestedJoinSum, SubstringAntiJoin, explain_join, has_derived_join_count,
+    has_derived_union, has_explicit_join, has_implicit_join, has_join_correlated_avg,
+    has_join_correlated_min, has_join_correlated_sum, has_nested_join_sum, has_substring_antijoin,
+    has_top_level_exists, parse_derived_grouped_join_with_schema,
+    parse_derived_grouped_select_with_schema, parse_derived_join_count_with_schema,
+    parse_derived_join_sum_with_schema, parse_derived_union_join_with_schema,
+    parse_derived_union_select_with_schema, parse_join, parse_join_correlated_avg_with_schema,
     parse_join_correlated_exists_with_schema, parse_join_correlated_min_with_schema,
     parse_join_correlated_sum_with_schema, parse_join_with_schema,
     parse_nested_join_sum_with_schema, parse_substring_antijoin_with_schema,

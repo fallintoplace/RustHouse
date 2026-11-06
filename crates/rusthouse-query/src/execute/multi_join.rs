@@ -5,8 +5,8 @@ mod correlated_min;
 mod correlated_sum;
 mod derived_group_join;
 mod nested_sum;
-pub use derived_group_join::execute_derived_union_join;
 pub use derived_group_join::{execute_derived_grouped_join, execute_derived_grouped_select};
+pub use derived_group_join::{execute_derived_union_join, execute_derived_union_select};
 pub use nested_sum::execute_nested_join_sum;
 mod exists;
 mod reorder;
@@ -1111,6 +1111,11 @@ pub fn bind_join_in_subquery(
         {
             &columns[0]
         }
+        (crate::Projection::Columns(columns), false)
+            if columns.len() == 1 && !inner.hidden_aggregate =>
+        {
+            &columns[0]
+        }
         _ => return Err(invalid("JOIN IN subquery has an unsupported projection")),
     };
     if !matches!(inner.source, Some(crate::Source::Table(_)))
@@ -1145,23 +1150,22 @@ pub fn bind_join_in_subquery(
     }
     let outer_type = outer_type.ok_or_else(|| invalid("unknown JOIN IN column"))?;
     let kind = typed::base_type(&inner_column.data_type);
-    if kind != typed::base_type(&outer_type)
-        || !matches!(
-            kind,
-            "UInt8"
-                | "UInt16"
-                | "UInt32"
-                | "UInt64"
-                | "UInt128"
-                | "Int8"
-                | "Int16"
-                | "Int32"
-                | "Int64"
-                | "Int128"
-        )
-    {
+    let integer_key = matches!(
+        kind,
+        "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "UInt128"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Int128"
+    );
+    if kind != typed::base_type(&outer_type) || (!integer_key && kind != "String") {
         return Err(invalid(
-            "JOIN IN subquery requires matching integer key types",
+            "JOIN IN subquery requires matching integer or String key types",
         ));
     }
     let mut inner = (**inner).clone();
@@ -1178,19 +1182,28 @@ pub fn bind_join_in_subquery(
             contains_null = true;
             continue;
         }
-        if value.is_empty()
-            || !value
-                .bytes()
-                .enumerate()
-                .all(|(i, byte)| byte.is_ascii_digit() || (i == 0 && byte == b'-'))
-        {
-            return Err(invalid("invalid JOIN IN subquery integer"));
-        }
-        if seen.insert(value.to_owned()) {
+        let key = if kind == "String" {
+            String::from_utf8(
+                rusthouse_format::decode_tsv_field(value.as_bytes())
+                    .map_err(|_| invalid("invalid JOIN IN subquery text"))?,
+            )
+            .map_err(|_| invalid("invalid JOIN IN subquery text"))?
+        } else {
+            if value.is_empty()
+                || !value
+                    .bytes()
+                    .enumerate()
+                    .all(|(i, byte)| byte.is_ascii_digit() || (i == 0 && byte == b'-'))
+            {
+                return Err(invalid("invalid JOIN IN subquery integer"));
+            }
+            value.to_owned()
+        };
+        if seen.insert(key.clone()) {
             if values.len() >= MAX_IN_SUBQUERY_KEYS {
                 return Err(invalid("JOIN IN subquery supports at most 100000 keys"));
             }
-            values.push(value.to_owned());
+            values.push(key);
         }
     }
     let name = subquery.column.name.clone();

@@ -1,7 +1,10 @@
 //! Materialize a bounded grouped derived source before its outer join.
 use super::ExecutionError;
 use crate::join::{DerivedGroupedFilter, DerivedGroupedOrderKey};
-use crate::{DerivedGroupedJoin, DerivedGroupedSelect, DerivedUnionJoin, execute_multi_join};
+use crate::{
+    DerivedGroupedJoin, DerivedGroupedSelect, DerivedUnionJoin, DerivedUnionSelect,
+    execute_multi_join,
+};
 use rusthouse_storage::{Column, write_wide_part};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -397,21 +400,18 @@ pub fn execute_derived_grouped_select<W: Write>(
     Ok(())
 }
 
-/// Execute each UNION ALL branch into a bounded temporary source, then join it.
-pub fn execute_derived_union_join<W: Write>(
-    plan: &DerivedUnionJoin,
+fn materialize_union_branches(
+    branches: &[crate::JoinSelect],
     branch_paths: &[Vec<PathBuf>],
-    outer_paths: &[PathBuf],
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    let branches = plan.branches();
+    columns: &[crate::DerivedColumn],
+) -> Result<TemporaryPart, ExecutionError> {
     if branch_paths.len() != branches.len() {
         return Err(invalid("derived UNION branch count differs from its plan"));
     }
     let mut combined = BoundedOutput(Vec::new());
     let expected_header = format!(
         "{}\n",
-        plan.columns()
+        columns
             .iter()
             .map(|column| column.name.as_str())
             .collect::<Vec<_>>()
@@ -422,7 +422,24 @@ pub fn execute_derived_union_join<W: Write>(
             return Err(invalid("derived UNION source count differs from its plan"));
         }
         let mut branch_output = BoundedOutput(Vec::new());
-        execute_multi_join(branch, paths, &mut branch_output)?;
+        let mut bound_branch = branch.clone();
+        if let Some(subquery) = branch.in_subquery.as_ref() {
+            let Some(crate::Source::Table(inner_table)) = &subquery.inner.source else {
+                return Err(invalid("derived UNION IN requires a stored table"));
+            };
+            let inner_path = [&branch.left, &branch.right]
+                .into_iter()
+                .chain(branch.steps.iter().map(|step| &step.table))
+                .zip(paths)
+                .find_map(|(table, path)| {
+                    table
+                        .eq_ignore_ascii_case(inner_table)
+                        .then_some(path.as_path())
+                })
+                .ok_or_else(|| invalid("derived UNION IN table is not a branch source"))?;
+            super::bind_join_in_subquery(&mut bound_branch, inner_path, paths)?;
+        }
+        execute_multi_join(&bound_branch, paths, &mut branch_output)?;
         let header_end = branch_output
             .0
             .iter()
@@ -431,7 +448,7 @@ pub fn execute_derived_union_join<W: Write>(
         let header = std::str::from_utf8(&branch_output.0[..header_end])
             .map_err(|_| invalid("derived UNION branch header is not valid UTF-8"))?;
         if (branch_index == 0 && branch_output.0[..=header_end] != expected_header.as_bytes()[..])
-            || (branch_index != 0 && header.split('\t').count() != plan.columns().len())
+            || (branch_index != 0 && header.split('\t').count() != columns.len())
         {
             return Err(invalid("derived UNION branch columns differ from its plan"));
         }
@@ -440,7 +457,17 @@ pub fn execute_derived_union_join<W: Write>(
         }
         combined.write_all(&branch_output.0[header_end + 1..])?;
     }
-    let temporary = materialize(&combined.0, plan.columns())?;
+    materialize(&combined.0, columns)
+}
+
+/// Execute each UNION ALL branch into a bounded temporary source, then join it.
+pub fn execute_derived_union_join<W: Write>(
+    plan: &DerivedUnionJoin,
+    branch_paths: &[Vec<PathBuf>],
+    outer_paths: &[PathBuf],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let temporary = materialize_union_branches(plan.branches(), branch_paths, plan.columns())?;
 
     let outer = plan.outer();
     if outer_paths.len() != outer.steps.len() + 2 {
@@ -460,4 +487,14 @@ pub fn execute_derived_union_join<W: Write>(
         })
         .collect::<Vec<_>>();
     execute_multi_join(outer, &paths, output)
+}
+
+/// Execute a bounded UNION ALL source followed by a single-table SELECT.
+pub fn execute_derived_union_select<W: Write>(
+    plan: &DerivedUnionSelect,
+    branch_paths: &[Vec<PathBuf>],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let temporary = materialize_union_branches(plan.branches(), branch_paths, plan.columns())?;
+    crate::execute(plan.outer(), Some(&temporary.path), output)
 }

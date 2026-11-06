@@ -20,6 +20,7 @@ pub(crate) const MAX_STREAM_JOIN_BUILD_ROWS: u64 = 262_144;
 pub(crate) const MAX_JOIN_RESULT_ROWS: usize = 131_072;
 pub(crate) const MAX_JOIN_BUILD_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_JOIN_CHAIN_BYTES: usize = 128 * 1024 * 1024;
+const MAX_JOIN_GROUPED_CASE_METRICS: usize = 32;
 
 use self::syntax::*;
 pub use correlated::{
@@ -41,9 +42,10 @@ pub use derived_count::{
 pub(crate) use derived_group::DerivedGroupedFilter;
 pub(crate) use derived_group::DerivedGroupedOrderKey;
 pub use derived_group::{
-    DerivedColumn, DerivedGroupedJoin, DerivedGroupedSelect, DerivedUnionJoin, has_derived_union,
-    parse_derived_grouped_join_with_schema, parse_derived_grouped_select_with_schema,
-    parse_derived_union_join_with_schema,
+    DerivedColumn, DerivedGroupedJoin, DerivedGroupedSelect, DerivedUnionJoin, DerivedUnionSelect,
+    has_derived_union, parse_derived_grouped_join_with_schema,
+    parse_derived_grouped_select_with_schema, parse_derived_union_join_with_schema,
+    parse_derived_union_select_with_schema,
 };
 pub use derived_sum::parse_derived_join_sum_with_schema;
 pub(crate) use exists_lookup::JoinExistsLookupPair;
@@ -441,7 +443,7 @@ fn scalar_projection_ahead(parser: &Parser) -> bool {
         return false;
     }
     match parser.tokens.get(parser.index) {
-        Some(Token::LParen | Token::Plus | Token::Minus) => return true,
+        Some(Token::LParen | Token::Plus | Token::Minus | Token::String(_)) => return true,
         Some(Token::Word(word)) if word.eq_ignore_ascii_case("CASE") => return true,
         Some(Token::Word(word))
             if word.eq_ignore_ascii_case("CONCAT")
@@ -1464,10 +1466,10 @@ fn parse_global_case_metrics(
     metrics: &mut Vec<(crate::GroupedFilter, GroupedCaseValue, String)>,
 ) -> Result<(), ParseError> {
     loop {
-        if metrics.len() == 8 {
-            return Err(ParseError(
-                "JOIN supports at most 8 grouped CASE metrics".into(),
-            ));
+        if metrics.len() >= MAX_JOIN_GROUPED_CASE_METRICS {
+            return Err(ParseError(format!(
+                "JOIN supports at most {MAX_JOIN_GROUPED_CASE_METRICS} grouped CASE metrics"
+            )));
         }
         if !parser.keyword("SUM") || !parser.take(Token::LParen) {
             return Err(ParseError("global JOIN CASE expects SUM(CASE ...)".into()));
@@ -2157,10 +2159,10 @@ fn parse_join_tokens_internal(
                     break;
                 }
                 loop {
-                    if grouped_case_counts.len() == 8 {
-                        return Err(ParseError(
-                            "JOIN supports at most 8 grouped CASE metrics".into(),
-                        ));
+                    if grouped_case_counts.len() >= MAX_JOIN_GROUPED_CASE_METRICS {
+                        return Err(ParseError(format!(
+                            "JOIN supports at most {MAX_JOIN_GROUPED_CASE_METRICS} grouped CASE metrics"
+                        )));
                     }
                     if !parser.take(Token::LParen) {
                         return Err(ParseError("JOIN SUM requires '('".into()));
@@ -2740,7 +2742,20 @@ fn parse_join_tokens_internal(
                             let inner = crate::parse_select_tokens(
                                 parser.tokens[start..parser.index - 1].to_vec(),
                             )?;
-                            if !inner.hidden_aggregate
+                            let supported_projection = inner.hidden_aggregate
+                                && matches!(
+                                    &inner.projection,
+                                    crate::Projection::GroupedAggregate {
+                                        function: crate::AggregateFunction::Sum,
+                                        ..
+                                    }
+                                )
+                                || !inner.hidden_aggregate
+                                    && matches!(
+                                        &inner.projection,
+                                        crate::Projection::Columns(columns) if columns.len() == 1
+                                    );
+                            if !supported_projection
                                 || !matches!(inner.source, Some(crate::Source::Table(_)))
                                 || inner
                                     .predicates
@@ -3661,6 +3676,12 @@ fn parse_join_tokens_internal(
         && steps
             .iter()
             .all(|step| matches!(step.kind, JoinType::Inner | JoinType::Left));
+    let grouped_case_inner_chain = !grouped_case_counts.is_empty()
+        && grouped_count_projection
+        && columns.as_ref().is_some_and(|keys| !keys.is_empty())
+        && group_by.is_some()
+        && kind == JoinType::Inner
+        && steps.iter().all(|step| step.kind == JoinType::Inner);
     if (grouped_min.is_some()
         || !grouped_max_metrics.is_empty()
         || grouped_formula.is_some()
@@ -3692,7 +3713,7 @@ fn parse_join_tokens_internal(
                 && (kind != JoinType::Inner
                     || steps.iter().any(|step| step.kind != JoinType::Inner)))
             || grouped_count_column.is_some()
-            || !grouped_case_counts.is_empty()
+            || (!grouped_case_counts.is_empty() && !grouped_case_inner_chain)
         {
             return Err(ParseError(
                 "JOIN key aliases require a simple or grouped INNER join".into(),
@@ -3942,7 +3963,10 @@ fn parse_join_tokens_internal(
         let supported = if subquery.negated {
             grouped_distinct.is_some() && scalar_where.is_some()
         } else {
-            !steps.is_empty() && grouped_sum.is_some() && scalar_where.is_none()
+            !steps.is_empty()
+                && grouped_sum.is_some()
+                && scalar_where.is_none()
+                && grouped_count_projection
         };
         if !supported
             || kind != JoinType::Inner
@@ -3994,7 +4018,11 @@ fn parse_join_tokens_internal(
         let projected_columns = columns
             .as_ref()
             .ok_or_else(|| ParseError("JOIN scalar projections require row output".into()))?;
-        if grouped_count_projection
+        let grouped_case_literals = grouped_case_inner_chain
+            && scalar_projections.iter().all(|projection| {
+                matches!(projection.expression, crate::ScalarExpr::TextLiteral(_))
+            });
+        if (grouped_count_projection && !grouped_case_literals)
             || aggregate.is_some()
             || !scalar_aggregates.is_empty()
             || scalar_sum.is_some()

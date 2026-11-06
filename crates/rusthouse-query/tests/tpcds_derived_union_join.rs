@@ -1,6 +1,7 @@
 use rusthouse_query::{
-    DerivedColumn, execute_derived_union_join, has_derived_union,
-    parse_derived_union_join_with_schema,
+    DerivedColumn, execute_derived_union_join, execute_derived_union_select, has_derived_union,
+    parse_cte_union_select_with_schema, parse_derived_union_join_with_schema,
+    parse_derived_union_select_with_schema, parse_join,
 };
 use rusthouse_storage::{Column, write_wide_part};
 use std::fs;
@@ -18,6 +19,9 @@ fn schema(table: &str) -> Result<Vec<DerivedColumn>, rusthouse_query::ParseError
             ("i_brand_id", "UInt64"),
             ("i_brand", "String"),
             ("i_manager_id", "UInt64"),
+            ("i_manufact_id", "UInt64"),
+            ("i_category", "String"),
+            ("i_item_id", "String"),
         ],
         "time_dim" => &[
             ("t_time_sk", "UInt64"),
@@ -29,12 +33,16 @@ fn schema(table: &str) -> Result<Vec<DerivedColumn>, rusthouse_query::ParseError
             ("d_date_sk", "UInt64"),
             ("d_moy", "UInt64"),
             ("d_year", "UInt64"),
+            ("d_date", "Date32"),
         ],
+        "customer_address" => &[("ca_address_sk", "UInt64"), ("ca_gmt_offset", "Float64")],
         "web_sales" => &[
             ("ws_ext_sales_price", "UInt64"),
             ("ws_sold_date_sk", "UInt64"),
             ("ws_item_sk", "UInt64"),
             ("ws_sold_time_sk", "UInt64"),
+            ("ws_sales_price", "UInt64"),
+            ("ws_bill_addr_sk", "UInt64"),
         ],
         "catalog_sales" => &[
             ("cs_ext_sales_price", "UInt64"),
@@ -47,6 +55,8 @@ fn schema(table: &str) -> Result<Vec<DerivedColumn>, rusthouse_query::ParseError
             ("ss_sold_date_sk", "UInt64"),
             ("ss_item_sk", "UInt64"),
             ("ss_sold_time_sk", "UInt64"),
+            ("ss_sales_price", "UInt64"),
+            ("ss_addr_sk", "UInt64"),
         ],
         _ => return Err(rusthouse_query::ParseError("unknown table".into())),
     };
@@ -207,6 +217,226 @@ fn unions_three_projected_sales_branches_before_grouped_join() {
         "brand_id\tbrand\tt_hour\tt_minute\text_price\n7\tBrand A\t19\t0\t50\n7\tBrand A\t8\t15\t20\n"
     );
     fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn unions_text_literal_labels_with_projected_source_columns() {
+    let sql = "SELECT channel, COUNT(*) AS sales_count, SUM(ext_price) AS sales_amount FROM (SELECT 'store' AS channel, ss_ext_sales_price AS ext_price FROM store_sales, date_dim WHERE ss_sold_date_sk = d_date_sk UNION ALL SELECT 'web' AS channel, ws_ext_sales_price AS ext_price FROM web_sales, date_dim WHERE ws_sold_date_sk = d_date_sk) sales GROUP BY channel";
+    let branch = parse_join("SELECT 'store' AS channel, ss_ext_sales_price AS ext_price FROM store_sales JOIN date_dim ON ss_sold_date_sk = d_date_sk")
+        .unwrap()
+        .unwrap();
+    assert_eq!(branch.scalar_projections.len(), 1);
+    assert!(has_derived_union(sql).unwrap());
+    let plan = parse_derived_union_select_with_schema(sql, schema)
+        .unwrap()
+        .unwrap();
+
+    assert_eq!(plan.branches().len(), 2);
+    assert_eq!(plan.columns()[0].name, "channel");
+    assert_eq!(plan.columns()[0].data_type, "String");
+    assert_eq!(plan.columns()[1].name, "ext_price");
+    assert!(
+        plan.branches()[0].scalar_projections[0]
+            .expression
+            .eq(&rusthouse_query::ScalarExpr::TextLiteral("store".into()))
+    );
+}
+
+#[test]
+fn executes_single_select_over_text_labeled_union_branches() {
+    let root = std::env::temp_dir().join(format!(
+        "rusthouse-tpcds-derived-union-select-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let dates = root.join("date_dim");
+    let store = root.join("store_sales");
+    let web = root.join("web_sales");
+    write_part(&dates, &[("d_date_sk", "UInt64")], &[&["1"], &["2"]]);
+    write_part(
+        &store,
+        &[
+            ("ss_sold_date_sk", "UInt64"),
+            ("ss_ext_sales_price", "UInt64"),
+        ],
+        &[&["1", "10"], &["1", "5"], &["2", "7"]],
+    );
+    write_part(
+        &web,
+        &[
+            ("ws_sold_date_sk", "UInt64"),
+            ("ws_ext_sales_price", "UInt64"),
+        ],
+        &[&["1", "20"], &["2", "3"]],
+    );
+
+    let sql = "SELECT channel, COUNT(*) AS sales_count, SUM(ext_price) AS sales_amount FROM (SELECT 'store' AS channel, ss_ext_sales_price AS ext_price FROM store_sales, date_dim WHERE ss_sold_date_sk = d_date_sk UNION ALL SELECT 'web' AS channel, ws_ext_sales_price AS ext_price FROM web_sales, date_dim WHERE ws_sold_date_sk = d_date_sk) sales GROUP BY channel ORDER BY channel";
+    let plan = parse_derived_union_select_with_schema(sql, schema)
+        .unwrap()
+        .unwrap();
+    let branch_paths = vec![vec![store, dates.clone()], vec![web, dates]];
+    let mut output = Vec::new();
+    execute_derived_union_select(&plan, &branch_paths, &mut output).unwrap();
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "channel\tsales_count\tsales_amount\nstore\t3\t22\nweb\t2\t23\n"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn executes_union_of_grouped_case_branches_with_literal_labels() {
+    let root = std::env::temp_dir().join(format!(
+        "rusthouse-tpcds-grouped-union-select-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let dates = root.join("date_dim");
+    let item = root.join("item");
+    let store = root.join("store_sales");
+    let web = root.join("web_sales");
+    write_part(&dates, &[("d_date_sk", "UInt64")], &[&["1"], &["2"]]);
+    write_part(&item, &[("i_item_sk", "UInt64")], &[&["1"]]);
+    write_part(
+        &store,
+        &[
+            ("ss_sold_date_sk", "UInt64"),
+            ("ss_item_sk", "UInt64"),
+            ("ss_ext_sales_price", "UInt64"),
+        ],
+        &[&["1", "1", "10"], &["1", "1", "5"], &["2", "1", "7"]],
+    );
+    write_part(
+        &web,
+        &[
+            ("ws_sold_date_sk", "UInt64"),
+            ("ws_item_sk", "UInt64"),
+            ("ws_ext_sales_price", "UInt64"),
+        ],
+        &[&["1", "1", "20"], &["2", "1", "3"]],
+    );
+
+    let sql = "SELECT channel, SUM(amount) AS sales_amount FROM (SELECT 'store' AS channel, d_date_sk AS day, SUM(CASE WHEN ss_ext_sales_price > 0 THEN ss_ext_sales_price ELSE 0 END) AS amount FROM store_sales, item, date_dim WHERE ss_item_sk = i_item_sk AND ss_sold_date_sk = d_date_sk GROUP BY d_date_sk UNION ALL SELECT 'web' AS channel, d_date_sk AS day, SUM(CASE WHEN ws_ext_sales_price > 0 THEN ws_ext_sales_price ELSE 0 END) AS amount FROM web_sales, item, date_dim WHERE ws_item_sk = i_item_sk AND ws_sold_date_sk = d_date_sk GROUP BY d_date_sk) sales GROUP BY channel ORDER BY channel";
+    let plan = parse_derived_union_select_with_schema(sql, schema)
+        .unwrap()
+        .unwrap();
+    let branch_paths = vec![
+        vec![store, item.clone(), dates.clone()],
+        vec![web, item, dates],
+    ];
+    let mut output = Vec::new();
+    execute_derived_union_select(&plan, &branch_paths, &mut output).unwrap();
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "channel\tsales_amount\nstore\t22\nweb\t23\n"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn executes_grouped_sum_ctes_combined_by_union_all() {
+    let root = std::env::temp_dir().join(format!(
+        "rusthouse-tpcds-grouped-sum-cte-union-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::create_dir_all(&root).unwrap();
+    let dates = root.join("date_dim");
+    let item = root.join("item");
+    let store = root.join("store_sales");
+    let web = root.join("web_sales");
+    write_part(&dates, &[("d_date_sk", "UInt64")], &[&["1"], &["2"]]);
+    write_part(
+        &item,
+        &[
+            ("i_item_sk", "UInt64"),
+            ("i_manufact_id", "UInt64"),
+            ("i_category", "String"),
+            ("i_item_id", "String"),
+        ],
+        &[
+            &["1", "10", "Electronics", "ITEM-10"],
+            &["2", "20", "Books", "ITEM-20"],
+        ],
+    );
+    write_part(
+        &store,
+        &[
+            ("ss_sold_date_sk", "UInt64"),
+            ("ss_item_sk", "UInt64"),
+            ("ss_ext_sales_price", "UInt64"),
+        ],
+        &[&["1", "1", "10"], &["1", "1", "5"], &["2", "2", "7"]],
+    );
+    write_part(
+        &web,
+        &[
+            ("ws_sold_date_sk", "UInt64"),
+            ("ws_item_sk", "UInt64"),
+            ("ws_ext_sales_price", "UInt64"),
+        ],
+        &[&["1", "1", "20"], &["2", "2", "3"]],
+    );
+
+    let sql = "WITH store_totals AS (SELECT i_item_id, SUM(ss_ext_sales_price) AS total_sales FROM store_sales, item, date_dim WHERE i_item_id IN (SELECT i_item_id FROM item WHERE i_category IN ('Electronics')) AND ss_item_sk = i_item_sk AND ss_sold_date_sk = d_date_sk GROUP BY i_item_id), web_totals AS (SELECT i_item_id, SUM(ws_ext_sales_price) AS total_sales FROM web_sales, item, date_dim WHERE i_item_id IN (SELECT i_item_id FROM item WHERE i_category IN ('Electronics')) AND ws_item_sk = i_item_sk AND ws_sold_date_sk = d_date_sk GROUP BY i_item_id) SELECT i_item_id, SUM(total_sales) AS total_sales FROM (SELECT * FROM store_totals UNION ALL SELECT * FROM web_totals) tmp GROUP BY i_item_id ORDER BY i_item_id";
+    let plan = parse_cte_union_select_with_schema(sql, schema)
+        .unwrap()
+        .unwrap();
+    assert_eq!(plan.branches().len(), 2);
+    assert_eq!(plan.columns()[0].name, "i_item_id");
+    assert_eq!(plan.columns()[1].name, "total_sales");
+    assert_eq!(plan.columns()[1].data_type, "Nullable(UInt128)");
+
+    let mut output = Vec::new();
+    execute_derived_union_select(
+        &plan,
+        &[
+            vec![store, item.clone(), dates.clone()],
+            vec![web, item, dates],
+        ],
+        &mut output,
+    )
+    .unwrap();
+    assert_eq!(
+        String::from_utf8(output).unwrap(),
+        "i_item_id\ttotal_sales\nITEM-10\t35\n"
+    );
+
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn rejects_cte_union_that_does_not_select_a_cte_star() {
+    let sql = "WITH store_totals AS (SELECT i_manufact_id, SUM(ss_ext_sales_price) AS total_sales FROM store_sales, item, date_dim WHERE ss_item_sk = i_item_sk AND ss_sold_date_sk = d_date_sk GROUP BY i_manufact_id) SELECT i_manufact_id, SUM(total_sales) AS total_sales FROM (SELECT i_manufact_id, total_sales FROM store_totals UNION ALL SELECT i_manufact_id, total_sales FROM store_totals) tmp GROUP BY i_manufact_id";
+    assert!(
+        parse_cte_union_select_with_schema(sql, schema)
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn parses_tpcds_grouped_cte_union_with_in_subqueries() {
+    let store = "SELECT i_manufact_id, SUM(ss_ext_sales_price) AS total_sales FROM store_sales, date_dim, customer_address, item WHERE i_manufact_id IN (SELECT i_manufact_id FROM item WHERE i_category IN ('Electronics')) AND ss_item_sk = i_item_sk AND ss_sold_date_sk = d_date_sk AND d_year = 1998 AND d_moy = 5 AND ss_addr_sk = ca_address_sk AND ca_gmt_offset = -5 GROUP BY i_manufact_id";
+    let web = "SELECT i_manufact_id, SUM(ws_ext_sales_price) AS total_sales FROM web_sales, date_dim, customer_address, item WHERE i_manufact_id IN (SELECT i_manufact_id FROM item WHERE i_category IN ('Electronics')) AND ws_item_sk = i_item_sk AND ws_sold_date_sk = d_date_sk AND d_year = 1998 AND d_moy = 5 AND ws_bill_addr_sk = ca_address_sk AND ca_gmt_offset = -5 GROUP BY i_manufact_id";
+    let sql = format!(
+        "WITH ss AS ({store}), ws AS ({web}) SELECT i_manufact_id, SUM(total_sales) AS total_sales FROM (SELECT * FROM ss UNION ALL SELECT * FROM ws) tmp GROUP BY i_manufact_id ORDER BY total_sales"
+    );
+    let parsed_store = rusthouse_query::parse_join_with_schema(store, |table| {
+        schema(table).map(|columns| columns.into_iter().map(|column| column.name).collect())
+    });
+    assert!(
+        parsed_store.as_ref().is_ok_and(Option::is_some),
+        "store CTE branch parse: {parsed_store:?}"
+    );
+    let plan = parse_cte_union_select_with_schema(&sql, schema)
+        .unwrap()
+        .expect("TPC-DS grouped CTE UNION shape should be supported");
+    assert_eq!(plan.branches().len(), 2);
 }
 
 #[test]

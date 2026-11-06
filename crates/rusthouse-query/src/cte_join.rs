@@ -140,6 +140,126 @@ fn split_ctes(sql: &str) -> Result<Option<(Vec<(String, String)>, String)>, Pars
     Ok(Some((sources, outer)))
 }
 
+fn split_union_all(tokens: &[Token]) -> Option<Vec<&[Token]>> {
+    let mut branches = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0usize;
+    let mut index = 0usize;
+    while index < tokens.len() {
+        match tokens[index] {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(ref word)
+                if depth == 0
+                    && word.eq_ignore_ascii_case("UNION")
+                    && matches!(tokens.get(index + 1), Some(Token::Word(all)) if all.eq_ignore_ascii_case("ALL")) =>
+            {
+                if start == index {
+                    return None;
+                }
+                branches.push(&tokens[start..index]);
+                index += 1;
+                start = index + 1;
+            }
+            _ => {}
+        }
+        index += 1;
+    }
+    if branches.is_empty() || start >= tokens.len() {
+        return None;
+    }
+    branches.push(&tokens[start..]);
+    Some(branches)
+}
+
+fn cte_union_bounds(tokens: &[Token]) -> Option<(usize, usize)> {
+    let mut depth = 0usize;
+    for (index, token) in tokens.iter().enumerate() {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(word)
+                if depth == 0
+                    && word.eq_ignore_ascii_case("FROM")
+                    && tokens.get(index + 1) == Some(&Token::LParen) =>
+            {
+                let open = index + 1;
+                let mut nested = 1usize;
+                let mut close = open + 1;
+                while close < tokens.len() && nested > 0 {
+                    match tokens[close] {
+                        Token::LParen => nested += 1,
+                        Token::RParen => nested -= 1,
+                        _ => {}
+                    }
+                    close += 1;
+                }
+                if nested == 0 && split_union_all(&tokens[open + 1..close - 1]).is_some() {
+                    return Some((open, close - 1));
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// Parse grouped CTEs combined by UNION ALL and consumed by one grouped SELECT.
+/// Each union branch must select all columns from one grouped CTE.
+pub fn parse_cte_union_select_with_schema(
+    sql: &str,
+    mut resolve: impl FnMut(&str) -> Result<Vec<crate::DerivedColumn>, ParseError>,
+) -> Result<Option<crate::DerivedUnionSelect>, ParseError> {
+    let Some((definitions, outer_sql)) = split_ctes(sql)? else {
+        return Ok(None);
+    };
+    let outer_tokens = tokenize(&outer_sql)?;
+    let Some((open, close)) = cte_union_bounds(&outer_tokens) else {
+        return Ok(None);
+    };
+    let Some(branches) = split_union_all(&outer_tokens[open + 1..close]) else {
+        return Ok(None);
+    };
+
+    let mut expanded = outer_tokens[..open + 1].to_vec();
+    for (index, branch) in branches.into_iter().enumerate() {
+        let [
+            Token::Word(select),
+            Token::Star,
+            Token::Word(from),
+            Token::Word(name),
+        ] = branch
+        else {
+            return Ok(None);
+        };
+        if !select.eq_ignore_ascii_case("SELECT") || !from.eq_ignore_ascii_case("FROM") {
+            return Ok(None);
+        }
+        let Some((_, body)) = definitions
+            .iter()
+            .find(|(defined, _)| defined.eq_ignore_ascii_case(name))
+        else {
+            return Ok(None);
+        };
+        let Ok(body_tokens) = tokenize(body) else {
+            return Ok(None);
+        };
+        if index > 0 {
+            expanded.extend([Token::Word("UNION".into()), Token::Word("ALL".into())]);
+        }
+        expanded.extend(body_tokens);
+    }
+    expanded.push(Token::RParen);
+    expanded.extend_from_slice(&outer_tokens[close + 1..]);
+
+    let expanded_sql = render_tokens(&expanded);
+    let Ok(Some(plan)) = crate::parse_derived_union_select_with_schema(&expanded_sql, &mut resolve)
+    else {
+        return Ok(None);
+    };
+    Ok(Some(plan))
+}
+
 fn table_sources(query: &JoinSelect) -> Vec<(&str, &str)> {
     let mut sources = vec![
         (query.left.as_str(), query.left_alias.as_str()),

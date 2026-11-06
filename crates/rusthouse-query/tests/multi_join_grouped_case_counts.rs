@@ -6,6 +6,35 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 
 #[test]
+fn grouped_case_metrics_accept_tpcds_width_and_keep_a_bound() {
+    let query = |count: usize| {
+        let metrics = (0..count)
+            .map(|index| {
+                format!(
+                    "SUM(CASE WHEN r.amount > {index} THEN r.amount ELSE 0 END) AS month_{index}"
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        format!(
+            "SELECT l.region, {metrics} FROM lefts l JOIN rights r ON l.id = r.id JOIN dates d ON r.date_id = d.id GROUP BY l.region"
+        )
+    };
+
+    let parsed = parse_join(&query(24)).unwrap().unwrap();
+    assert_eq!(parsed.grouped_case_counts.len(), 24);
+    assert!(parse_join(&query(33)).is_err());
+}
+
+#[test]
+fn grouped_case_metrics_allow_aliased_keys_on_inner_join_chains() {
+    let sql = "SELECT d.year AS year_, SUM(CASE WHEN r.amount > 0 THEN r.amount ELSE 0 END) AS amount FROM facts f JOIN returns r ON f.id = r.fact_id JOIN dates d ON r.date_id = d.id GROUP BY d.year";
+    let parsed = parse_join(sql).unwrap().unwrap();
+    assert_eq!(parsed.grouped_key_aliases, [(0, "year_".into())]);
+    assert_eq!(parsed.grouped_case_counts.len(), 1);
+}
+
+#[test]
 fn grouped_case_counts_evaluate_numeric_expressions_across_join_chains() {
     let root = std::env::temp_dir().join(format!(
         "rusthouse-tpcds-group-case-{}-{}",
@@ -83,14 +112,16 @@ fn grouped_case_counts_evaluate_numeric_expressions_across_join_chains() {
     )
     .unwrap();
 
-    let sql = "SELECT s.region, SUM(CASE WHEN (return_sk - sold_sk <= 30) THEN 1 ELSE 0 END) AS within_30, SUM(CASE WHEN (return_sk - sold_sk > 30) AND (return_sk - sold_sk <= 60) THEN 1 ELSE 0 END) AS within_60, SUM(CASE WHEN (return_sk - sold_sk > 60) THEN 1 ELSE 0 END) AS over_60 FROM sales s JOIN returns r ON s.id = r.sale_id JOIN status t ON r.id = t.return_id GROUP BY s.region ORDER BY s.region";
+    let sql = "SELECT s.region AS region_name, 'all' AS carrier, SUM(CASE WHEN (return_sk - sold_sk <= 30) THEN 1 ELSE 0 END) AS within_30, SUM(CASE WHEN (return_sk - sold_sk > 30) AND (return_sk - sold_sk <= 60) THEN 1 ELSE 0 END) AS within_60, SUM(CASE WHEN (return_sk - sold_sk > 60) THEN 1 ELSE 0 END) AS over_60 FROM sales s JOIN returns r ON s.id = r.sale_id JOIN status t ON r.id = t.return_id GROUP BY s.region ORDER BY s.region";
     let query = parse_join(sql).unwrap().unwrap();
     assert_eq!(query.grouped_case_counts.len(), 3);
+    assert!(query.grouped_count.is_some());
+    assert_eq!(query.grouped_key_aliases, [(0, "region_name".into())]);
     let mut output = Vec::new();
     execute_multi_join(&query, &[sales, returns, status], &mut output).unwrap();
     assert_eq!(
         String::from_utf8(output).unwrap(),
-        "region\twithin_30\twithin_60\tover_60\neast\t2\t1\t0\nwest\t0\t0\t1\n"
+        "region_name\tcarrier\twithin_30\twithin_60\tover_60\neast\tall\t2\t1\t0\nwest\tall\t0\t0\t1\n"
     );
 
     fs::remove_dir_all(root).unwrap();
