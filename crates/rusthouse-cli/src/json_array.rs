@@ -66,6 +66,17 @@ fn write_array_item<W: Write>(
     }
 }
 
+fn emit_row<W: Write>(
+    output: &mut W,
+    row: &[u8],
+    first: &mut bool,
+    pretty: bool,
+) -> io::Result<()> {
+    write_array_item(output, row, *first, pretty)?;
+    *first = false;
+    Ok(())
+}
+
 /// Convert a stream of JSONL objects to a valid JSON array without buffering all rows.
 struct JsonArraySink<W: Write> {
     output: W,
@@ -85,9 +96,8 @@ impl<W: Write> JsonArraySink<W> {
     }
 
     fn finish_row(&mut self) -> io::Result<()> {
-        write_array_item(&mut self.output, &self.row, self.first, self.pretty)?;
+        emit_row(&mut self.output, &self.row, &mut self.first, self.pretty)?;
         self.row.clear();
-        self.first = false;
         Ok(())
     }
 
@@ -113,8 +123,7 @@ impl<W: Write> Write for JsonArraySink<W> {
             if let Some(row) = bytes.strip_suffix(b"\n") {
                 if !row.contains(&b'\n') {
                     ensure_row_budget(0, row.len())?;
-                    write_array_item(&mut self.output, row, self.first, self.pretty)?;
-                    self.first = false;
+                    emit_row(&mut self.output, row, &mut self.first, self.pretty)?;
                     return Ok(bytes.len());
                 }
             }
@@ -128,8 +137,7 @@ impl<W: Write> Write for JsonArraySink<W> {
             };
             ensure_row_budget(self.row.len(), fragment.len())?;
             if has_newline && self.row.is_empty() {
-                write_array_item(&mut self.output, fragment, self.first, self.pretty)?;
-                self.first = false;
+                emit_row(&mut self.output, fragment, &mut self.first, self.pretty)?;
                 continue;
             }
             self.row.extend_from_slice(fragment);
