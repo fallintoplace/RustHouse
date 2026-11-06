@@ -8,6 +8,15 @@ pub struct GroupedAffineKey {
     pub offset: i64,
 }
 
+fn parse_affine_offset(number: &str) -> Result<i64, ParseError> {
+    let invalid = || ParseError("grouped arithmetic requires a non-negative Int64 offset".into());
+    let amount = number.parse::<i64>().map_err(|_| invalid())?;
+    if amount < 0 {
+        return Err(invalid());
+    }
+    Ok(amount)
+}
+
 // Ordering by original positional expressions requires separate binding.
 fn has_positional_order(tokens: &[Token], group_end: usize) -> bool {
     let mut depth = 0usize;
@@ -57,14 +66,7 @@ pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError
         if name != &key {
             break;
         }
-        let amount = number.parse::<i64>().map_err(|_| {
-            ParseError("grouped arithmetic requires a non-negative Int64 offset".into())
-        })?;
-        if amount < 0 {
-            return Err(ParseError(
-                "grouped arithmetic requires a non-negative Int64 offset".into(),
-            ));
-        }
+        let amount = parse_affine_offset(number)?;
         let subtract = matches!(op, Token::Minus);
         expressions.push(GroupedAffineKey {
             label: format!("{key} {} {amount}", if subtract { "-" } else { "+" }),
