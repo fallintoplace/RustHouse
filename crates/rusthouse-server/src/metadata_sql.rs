@@ -15,9 +15,7 @@ fn write_schema_rows(output: &mut dyn Write, schema: &PartMetadata) -> io::Resul
 
 fn schema_content_type(format: QueryFormat) -> &'static str {
     match format {
-        QueryFormat::Tsv | QueryFormat::TsvNoHeader => {
-            "text/tab-separated-values; charset=utf-8"
-        }
+        QueryFormat::Tsv | QueryFormat::TsvNoHeader => "text/tab-separated-values; charset=utf-8",
         QueryFormat::Csv | QueryFormat::CsvNoHeader => "text/csv; charset=utf-8",
         QueryFormat::Jsonl | QueryFormat::JsonCompactEachRow => {
             "application/x-ndjson; charset=utf-8"

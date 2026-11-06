@@ -23,12 +23,8 @@ fn top_level_group_order(tokens: &[Token]) -> (Option<usize>, Option<usize>) {
         match token {
             Token::LParen => depth += 1,
             Token::RParen => depth = depth.saturating_sub(1),
-            Token::Word(_) if depth == 0 && clause_by_at(tokens, i, "GROUP") => {
-                group = Some(i + 2)
-            }
-            Token::Word(_) if depth == 0 && clause_by_at(tokens, i, "ORDER") => {
-                order = Some(i + 2)
-            }
+            Token::Word(_) if depth == 0 && clause_by_at(tokens, i, "GROUP") => group = Some(i + 2),
+            Token::Word(_) if depth == 0 && clause_by_at(tokens, i, "ORDER") => order = Some(i + 2),
             _ => {}
         }
     }
