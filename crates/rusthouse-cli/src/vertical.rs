@@ -115,6 +115,13 @@ fn validate_row_width(headers: &[Vec<u8>], line: &[u8]) -> io::Result<()> {
     Ok(())
 }
 
+fn validate_row_utf8(bytes: &[u8]) -> io::Result<()> {
+    std::str::from_utf8(bytes).map_err(|_| {
+        io::Error::new(io::ErrorKind::InvalidData, "vertical row is not valid UTF-8")
+    })?;
+    Ok(())
+}
+
 fn write_row<W: Write>(
     output: &mut W,
     row: usize,
@@ -123,12 +130,7 @@ fn write_row<W: Write>(
 ) -> io::Result<()> {
     if !line.contains(&b'\\') {
         // Do not write arbitrary non-UTF-8 bytes to an interactive terminal.
-        std::str::from_utf8(line).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "vertical row is not valid UTF-8",
-            )
-        })?;
+        validate_row_utf8(line)?;
         writeln!(output, "Row {row}:")?;
         for (header, field) in headers.iter().zip(line.split(|&byte| byte == b'\t')) {
             write_vertical_field(output, header, field)?;
@@ -138,12 +140,7 @@ fn write_row<W: Write>(
     let fields = decode_row_fields(line)?;
     // Check the full decoded record before printing its heading or cells.
     for field in &fields {
-        std::str::from_utf8(field.as_ref()).map_err(|_| {
-            io::Error::new(
-                io::ErrorKind::InvalidData,
-                "vertical row is not valid UTF-8",
-            )
-        })?;
+        validate_row_utf8(field.as_ref())?;
     }
     writeln!(output, "Row {row}:")?;
     for (header, field) in headers.iter().zip(&fields) {
