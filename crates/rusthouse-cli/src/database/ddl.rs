@@ -1,18 +1,31 @@
 use super::*;
 
+fn missing_table_for_action(
+    database: &Path,
+    name: &str,
+    if_exists: bool,
+    action: &str,
+) -> Result<bool, String> {
+    let schema = database.join(format!("{name}.schema"));
+    if existing_path(&schema)? {
+        return Ok(false);
+    }
+    if existing_path(&data_path(database, name))? {
+        return Err(format!("table {name} has orphaned data; refusing {action}"));
+    }
+    if if_exists {
+        return Ok(true);
+    }
+    Err(format!("unknown database table: {name}"))
+}
+
 fn drop_table(database: &Path, name: &str, if_exists: bool) -> Result<(), String> {
     let _lock = lock(database)?;
+    if missing_table_for_action(database, name, if_exists, "DROP")? {
+        return Ok(());
+    }
     let schema = database.join(format!("{name}.schema"));
     let parts = data_path(database, name);
-    if !existing_path(&schema)? {
-        if existing_path(&parts)? {
-            return Err(format!("table {name} has orphaned data; refusing DROP"));
-        }
-        if if_exists {
-            return Ok(());
-        }
-        return Err(format!("unknown database table: {name}"));
-    }
     let cols = columns(database, name)?;
     validated_parts(database, name, &cols)?;
 
@@ -102,15 +115,8 @@ fn rename_table(database: &Path, from: &str, to: &str) -> Result<(), String> {
 /// Publish a new empty snapshot without temporarily removing the active table.
 fn truncate_table(database: &Path, name: &str, if_exists: bool) -> Result<(), String> {
     let _lock = lock(database)?;
-    let schema = database.join(format!("{name}.schema"));
-    if !existing_path(&schema)? {
-        if existing_path(&data_path(database, name))? {
-            return Err(format!("table {name} has orphaned data; refusing TRUNCATE"));
-        }
-        if if_exists {
-            return Ok(());
-        }
-        return Err(format!("unknown database table: {name}"));
+    if missing_table_for_action(database, name, if_exists, "TRUNCATE")? {
+        return Ok(());
     }
     let cols = columns(database, name)?;
     validated_parts(database, name, &cols)?;
