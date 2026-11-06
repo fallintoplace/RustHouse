@@ -28,29 +28,29 @@ impl<W: Write> CsvWriter<W> {
         }
     }
 
-    fn push_field_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
-        if bytes.len() > MAX_FIELD_BYTES - self.field.len() {
+    fn ensure_field_capacity(&self, additional: usize) -> io::Result<()> {
+        if additional > MAX_FIELD_BYTES - self.field.len() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
                 "CSV field exceeds 1 MiB",
             ));
         }
+        Ok(())
+    }
+
+    fn push_field_bytes(&mut self, bytes: &[u8]) -> io::Result<()> {
+        self.ensure_field_capacity(bytes.len())?;
         self.field.extend_from_slice(bytes);
         Ok(())
     }
 
     fn push_field_byte(&mut self, byte: u8) -> io::Result<()> {
-        if self.field.len() >= MAX_FIELD_BYTES {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                "CSV field exceeds 1 MiB",
-            ));
-        }
+        self.ensure_field_capacity(1)?;
         self.field.push(byte);
         Ok(())
     }
 
-    /// Returns true when an LF has completed a previous CRLF row boundary.
+    /// Returns true when an LF has completed a previous CRLF row boundary.    /// Returns true when an LF has completed a previous CRLF row boundary.
     fn consume_pending_cr(&mut self, byte: u8) -> io::Result<bool> {
         if !self.pending_cr {
             return Ok(false);
