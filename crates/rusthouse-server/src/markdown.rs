@@ -98,6 +98,12 @@ fn write_framed_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     output.write_all(b" |")
 }
 
+fn validate_markdown_utf8(field: &[u8]) -> io::Result<()> {
+    std::str::from_utf8(field)
+        .map(|_| ())
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8"))
+}
+
 fn write_markdown_row_into<W: Write>(
     output: &mut W,
     line: &[u8],
@@ -107,9 +113,7 @@ fn write_markdown_row_into<W: Write>(
 ) -> io::Result<()> {
     if !line.contains(&b'\\') {
         // Retain the direct path for plain TSV rows.
-        std::str::from_utf8(line).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
-        })?;
+        validate_markdown_utf8(line)?;
         output.write_all(b"|")?;
         for field in line.split(|&byte| byte == b'\t') {
             write_framed_cell(output, field)?;
@@ -127,9 +131,7 @@ fn write_markdown_row_into<W: Write>(
         } else {
             field
         };
-        std::str::from_utf8(value).map_err(|_| {
-            io::Error::new(io::ErrorKind::InvalidData, "Markdown field is not UTF-8")
-        })?;
+        validate_markdown_utf8(value)?;
         write_framed_cell(encoded, value)?;
     }
     encoded.push(b'\n');
