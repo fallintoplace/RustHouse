@@ -9,10 +9,9 @@ pub(super) fn base_type(kind: &str) -> (&str, bool) {
     }
 }
 
-pub(super) fn numeric_array_inner_type(kind: &str) -> Option<&str> {
-    let inner = kind.strip_prefix("Array(")?.strip_suffix(')')?;
+fn numeric_scalar(kind: &str) -> bool {
     matches!(
-        inner,
+        kind,
         "UInt8"
             | "UInt16"
             | "UInt32"
@@ -26,60 +25,27 @@ pub(super) fn numeric_array_inner_type(kind: &str) -> Option<&str> {
             | "Float32"
             | "Float64"
     )
-    .then_some(inner)
+}
+
+pub(super) fn numeric_array_inner_type(kind: &str) -> Option<&str> {
+    let inner = kind.strip_prefix("Array(")?.strip_suffix(')')?;
+    numeric_scalar(inner).then_some(inner)
 }
 
 pub(super) fn map_string_value_type(kind: &str) -> Option<&str> {
     let value = kind.strip_prefix("Map(String, ")?.strip_suffix(')')?;
-    matches!(
-        value,
-        "String"
-            | "UInt8"
-            | "UInt16"
-            | "UInt32"
-            | "UInt64"
-            | "UInt128"
-            | "Int8"
-            | "Int16"
-            | "Int32"
-            | "Int64"
-            | "Int128"
-            | "Float32"
-            | "Float64"
-    )
-    .then_some(value)
+    (value == "String" || numeric_scalar(value)).then_some(value)
 }
 
 pub(super) fn supported(kind: &str) -> bool {
     let (base, nullable) = base_type(kind);
-    if numeric_array_inner_type(base).is_some() {
+    if numeric_array_inner_type(base).is_some()
+        || map_string_value_type(base).is_some()
+        || base == "UUID"
+    {
         return !nullable;
     }
-    if map_string_value_type(base).is_some() {
-        return !nullable;
-    }
-    if base == "UUID" {
-        return !nullable;
-    }
-    matches!(
-        base,
-        "String"
-            | "Date"
-            | "Date32"
-            | "DateTime"
-            | "UInt8"
-            | "UInt16"
-            | "UInt32"
-            | "UInt64"
-            | "UInt128"
-            | "Int8"
-            | "Int16"
-            | "Int32"
-            | "Int64"
-            | "Int128"
-            | "Float32"
-            | "Float64"
-    )
+    matches!(base, "String" | "Date" | "Date32" | "DateTime") || numeric_scalar(base)
 }
 
 pub(super) fn fixed_width_bytes_per_row(data_type: &str) -> usize {
