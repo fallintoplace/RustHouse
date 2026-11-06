@@ -117,7 +117,10 @@ fn validate_row_width(headers: &[Vec<u8>], line: &[u8]) -> io::Result<()> {
 
 fn validate_row_utf8(bytes: &[u8]) -> io::Result<()> {
     std::str::from_utf8(bytes).map_err(|_| {
-        io::Error::new(io::ErrorKind::InvalidData, "vertical row is not valid UTF-8")
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "vertical row is not valid UTF-8",
+        )
     })?;
     Ok(())
 }
