@@ -13,6 +13,21 @@ fn write_schema_rows(output: &mut dyn Write, schema: &PartMetadata) -> io::Resul
     Ok(())
 }
 
+fn schema_content_type(format: QueryFormat) -> &'static str {
+    match format {
+        QueryFormat::Tsv | QueryFormat::TsvNoHeader => {
+            "text/tab-separated-values; charset=utf-8"
+        }
+        QueryFormat::Csv | QueryFormat::CsvNoHeader => "text/csv; charset=utf-8",
+        QueryFormat::Jsonl | QueryFormat::JsonCompactEachRow => {
+            "application/x-ndjson; charset=utf-8"
+        }
+        QueryFormat::Json | QueryFormat::JsonPretty => "application/json; charset=utf-8",
+        QueryFormat::SqlValues => "text/plain; charset=utf-8",
+        QueryFormat::Markdown => "text/markdown; charset=utf-8",
+    }
+}
+
 pub(super) fn handle(config: &Config, format: QueryFormat, table: &str) -> Response {
     let Some(database) = config.database.as_deref().filter(|_| config.part.is_none()) else {
         return Response::text("400 Bad Request", "DESCRIBE requires --database\n");
@@ -58,18 +73,7 @@ pub(super) fn handle(config: &Config, format: QueryFormat, table: &str) -> Respo
     match result {
         Ok(()) => Response {
             status: "200 OK",
-            content_type: match format {
-                QueryFormat::Tsv | QueryFormat::TsvNoHeader => {
-                    "text/tab-separated-values; charset=utf-8"
-                }
-                QueryFormat::Csv | QueryFormat::CsvNoHeader => "text/csv; charset=utf-8",
-                QueryFormat::Jsonl | QueryFormat::JsonCompactEachRow => {
-                    "application/x-ndjson; charset=utf-8"
-                }
-                QueryFormat::Json | QueryFormat::JsonPretty => "application/json; charset=utf-8",
-                QueryFormat::SqlValues => "text/plain; charset=utf-8",
-                QueryFormat::Markdown => "text/markdown; charset=utf-8",
-            },
+            content_type: schema_content_type(format),
             body: writer.data,
         },
         Err(_) if writer.exceeded => {
