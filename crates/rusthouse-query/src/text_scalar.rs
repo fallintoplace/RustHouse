@@ -254,6 +254,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "RIGHTPAD"
                 | "NOTEMPTY"
                 | "SPACE"
+                | "FROM_BASE"
                 | "INTDIVORNULL"
                 | "MODULOORNULL"
                 | "FIRSTLINE"
@@ -4970,6 +4971,52 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                     }
                 }
                 None => ConstantValue::Null,
+            }
+        }
+        "FROM_BASE" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "from_base requires a radix")?;
+            let radix = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "from_base requires two arguments")?;
+            match (input, radix) {
+                (Some(input), Some(radix)) => {
+                    if !(2..=36).contains(&radix) {
+                        return Err(ParseError("from_base radix must be 2..36".into()));
+                    }
+                    let negative = input.starts_with('-');
+                    let digits = input.strip_prefix('-').unwrap_or(&input);
+                    if digits.is_empty() {
+                        return Err(ParseError("from_base requires digits".into()));
+                    }
+                    let limit = if negative {
+                        (i64::MAX as u64) + 1
+                    } else {
+                        i64::MAX as u64
+                    };
+                    let mut magnitude = 0_u64;
+                    for character in digits.chars() {
+                        let digit = character.to_digit(radix as u32).ok_or_else(|| {
+                            ParseError("from_base contains an invalid digit".into())
+                        })?;
+                        magnitude = magnitude
+                            .checked_mul(radix as u64)
+                            .and_then(|number| number.checked_add(u64::from(digit)))
+                            .ok_or_else(|| ParseError("from_base exceeds Int64".into()))?;
+                        if magnitude > limit {
+                            return Err(ParseError("from_base exceeds Int64".into()));
+                        }
+                    }
+                    let signed = if negative {
+                        -i128::from(magnitude)
+                    } else {
+                        i128::from(magnitude)
+                    };
+                    ConstantValue::Integer(
+                        i64::try_from(signed)
+                            .map_err(|_| ParseError("from_base exceeds Int64".into()))?,
+                    )
+                }
+                _ => ConstantValue::Null,
             }
         }
         "BASE58ENCODE" => {
