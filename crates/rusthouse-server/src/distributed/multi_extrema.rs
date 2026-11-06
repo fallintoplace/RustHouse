@@ -7,11 +7,7 @@ use super::{
 };
 use std::collections::HashMap;
 
-fn combine_extremum<T: Ord + Copy>(
-    prior: &mut Option<T>,
-    value: T,
-    function: AggregateFunction,
-) {
+fn combine_extremum<T: Ord + Copy>(prior: &mut Option<T>, value: T, function: AggregateFunction) {
     *prior = Some(prior.map_or(value, |old| match function {
         AggregateFunction::Min => old.min(value),
         AggregateFunction::Max => old.max(value),
