@@ -17,6 +17,10 @@ fn number_as_i128(number: Number) -> Result<i128, ExecutionError> {
     }
 }
 
+fn unsigned_overflow() -> ExecutionError {
+    ExecutionError::Invalid("unsigned aggregate expression overflow".into())
+}
+
 fn aggregate_overflow() -> ExecutionError {
     ExecutionError::Invalid("aggregate expression overflow".into())
 }
@@ -102,9 +106,7 @@ pub(super) fn checked_binary(
             } else {
                 a.checked_add(b)
             };
-            value.map(Number::Unsigned).ok_or_else(|| {
-                ExecutionError::Invalid("unsigned aggregate expression overflow".into())
-            })
+            value.map(Number::Unsigned).ok_or_else(unsigned_overflow)
         }
         (Number::Unsigned(a), Number::Signed(b)) => unsigned_with_signed(a, b, subtract),
         (Number::Signed(a), Number::Unsigned(b)) if subtract => signed_minus_unsigned(a, b),
@@ -132,9 +134,7 @@ pub(super) fn checked_multiply(left: Number, right: Number) -> Result<Number, Ex
             number_as_float(left) * number_as_float(right),
         )),
         (Number::Unsigned(a), Number::Unsigned(b)) => {
-            a.checked_mul(b).map(Number::Unsigned).ok_or_else(|| {
-                ExecutionError::Invalid("unsigned aggregate expression overflow".into())
-            })
+            a.checked_mul(b).map(Number::Unsigned).ok_or_else(unsigned_overflow)
         }
         (Number::Unsigned(a), Number::Signed(b)) | (Number::Signed(b), Number::Unsigned(a)) => {
             multiply_unsigned_signed(a, b)
