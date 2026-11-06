@@ -48,11 +48,12 @@ impl VersionVector {
         if !valid_node(node) {
             return Err("invalid version-vector member");
         }
-        if !self.counters.contains_key(node) && self.counters.len() == MAX_NODES {
+        let previous = self.counters.get(node).copied();
+        if previous.is_none() && self.counters.len() == MAX_NODES {
             return Err("version-vector membership limit reached");
         }
-        let next = self
-            .counter(node)
+        let next = previous
+            .unwrap_or(0)
             .checked_add(1)
             .ok_or("version-vector counter overflow")?;
         self.counters.insert(node.to_owned(), next);
