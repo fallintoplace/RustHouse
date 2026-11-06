@@ -49,6 +49,23 @@ fn canonical_type(name: &str) -> Option<&'static str> {
     })
 }
 
+fn valid_map_key_type(kind: &str) -> bool {
+    matches!(
+        kind,
+        "String"
+            | "Int8"
+            | "Int16"
+            | "Int32"
+            | "Int64"
+            | "Int128"
+            | "UInt8"
+            | "UInt16"
+            | "UInt32"
+            | "UInt64"
+            | "UInt128"
+    )
+}
+
 pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, ParseError> {
     let name = parser.word()?;
     if name.eq_ignore_ascii_case("NATIONAL") {
@@ -96,20 +113,7 @@ pub(super) fn data_type(parser: &mut Parser, nesting: usize) -> Result<String, P
         }
         let first = data_type(parser, nesting + 1)?;
         let result = if canonical == "Map" {
-            if !matches!(
-                first.as_str(),
-                "String"
-                    | "Int8"
-                    | "Int16"
-                    | "Int32"
-                    | "Int64"
-                    | "Int128"
-                    | "UInt8"
-                    | "UInt16"
-                    | "UInt32"
-                    | "UInt64"
-                    | "UInt128"
-            ) {
+            if !valid_map_key_type(&first) {
                 return Err(ParseError(
                     "Map keys must be non-nullable String or integer types".into(),
                 ));
