@@ -34,6 +34,21 @@ pub fn encode_transfer_journal(records: &[JournalReceipt]) -> Result<Vec<u8>, &'
     Ok(out)
 }
 
+fn decode_receipt_frame(frame: &[u8]) -> Result<JournalReceipt, &'static str> {
+    let sequence = u64::from_le_bytes(frame[0..8].try_into().expect("eight bytes"));
+    let chunk_index = u64::from_le_bytes(frame[8..16].try_into().expect("eight bytes"));
+    let payload_crc32c = u32::from_le_bytes(frame[16..20].try_into().expect("four bytes"));
+    let record_crc32c = u32::from_le_bytes(frame[20..24].try_into().expect("four bytes"));
+    if record_crc32c != crc32c(&frame[..20]) {
+        return Err("corrupt, duplicated, or reordered transfer receipt");
+    }
+    Ok(JournalReceipt {
+        sequence,
+        chunk_index,
+        payload_crc32c,
+    })
+}
+
 pub fn decode_transfer_journal(input: &[u8]) -> Result<Vec<JournalReceipt>, &'static str> {
     if !input.starts_with(MAGIC) || input.len() < MAGIC.len() {
         return Err("invalid transfer journal version");
@@ -45,21 +60,11 @@ pub fn decode_transfer_journal(input: &[u8]) -> Result<Vec<JournalReceipt>, &'st
     let mut records = Vec::with_capacity(frames.len() / FRAME_SIZE);
     let mut seen = HashSet::new();
     for frame in frames.chunks_exact(FRAME_SIZE) {
-        let sequence = u64::from_le_bytes(frame[0..8].try_into().expect("eight bytes"));
-        let chunk_index = u64::from_le_bytes(frame[8..16].try_into().expect("eight bytes"));
-        let payload_crc32c = u32::from_le_bytes(frame[16..20].try_into().expect("four bytes"));
-        let record_crc32c = u32::from_le_bytes(frame[20..24].try_into().expect("four bytes"));
-        if record_crc32c != crc32c(&frame[..20])
-            || sequence != records.len() as u64 + 1
-            || !seen.insert(chunk_index)
-        {
+        let record = decode_receipt_frame(frame)?;
+        if record.sequence != records.len() as u64 + 1 || !seen.insert(record.chunk_index) {
             return Err("corrupt, duplicated, or reordered transfer receipt");
         }
-        records.push(JournalReceipt {
-            sequence,
-            chunk_index,
-            payload_crc32c,
-        });
+        records.push(record);
     }
     Ok(records)
 }
