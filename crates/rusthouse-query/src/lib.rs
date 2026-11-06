@@ -458,6 +458,16 @@ pub struct Having {
     pub aggregate_index: Option<usize>,
 }
 
+/// A bounded, uncorrelated single-column filter subquery used inside a JOIN IN
+/// subquery. The nested query is materialized before its parent query runs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SelectInSubquery {
+    pub column: String,
+    /// Scalar equality subqueries must return at most one row.
+    pub scalar: bool,
+    pub inner: Box<Select>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Select {
     pub projection: Projection,
@@ -485,6 +495,8 @@ pub struct Select {
     pub predicates: Vec<Predicate>,
     /// Additional OR branches, each containing AND-connected predicates.
     pub or_predicates: Vec<Vec<Predicate>>,
+    /// One bounded filter subquery; callers bind it before executing this SELECT.
+    pub in_subquery: Option<SelectInSubquery>,
     pub order_by: Option<OrderBy>,
     pub order_by_extra: Vec<OrderBy>,
     pub having: Option<Having>,
@@ -1711,6 +1723,117 @@ fn grouped_metric_value(
 }
 
 fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
+    parse_select_tokens_with_nested_in(tokens, false)
+}
+
+/// Parse the one level of nested IN or scalar equality used by JOIN subqueries.
+pub(crate) fn parse_join_in_subquery_select_tokens(
+    tokens: Vec<Token>,
+) -> Result<Select, ParseError> {
+    parse_select_tokens_with_nested_in(tokens, true)
+}
+
+fn parse_select_in_subquery_where(
+    parser: &mut Parser,
+    source: Option<&Source>,
+) -> Result<Option<SelectInSubquery>, ParseError> {
+    let start = parser.index;
+    if !matches!(
+        parser.tokens.get(start),
+        Some(Token::Word(_) | Token::QuotedWord(_))
+    ) {
+        return Ok(None);
+    }
+    let (open, scalar) = match (
+        parser.tokens.get(start + 1),
+        parser.tokens.get(start + 2),
+        parser.tokens.get(start + 3),
+    ) {
+        (Some(Token::Word(word)), Some(Token::LParen), Some(Token::Word(select)))
+            if word.eq_ignore_ascii_case("IN") && select.eq_ignore_ascii_case("SELECT") =>
+        {
+            (start + 2, false)
+        }
+        (Some(Token::Operator(Operator::Eq)), Some(Token::LParen), Some(Token::Word(select)))
+            if select.eq_ignore_ascii_case("SELECT") =>
+        {
+            (start + 2, true)
+        }
+        _ => return Ok(None),
+    };
+
+    let column = match &parser.tokens[start] {
+        Token::Word(name) | Token::QuotedWord(name) => name.clone(),
+        _ => unreachable!("the nested IN key was checked above"),
+    };
+    let mut depth = 1usize;
+    let mut close = open + 1;
+    while close < parser.tokens.len() {
+        match parser.tokens[close] {
+            Token::LParen => depth += 1,
+            Token::RParen => {
+                depth -= 1;
+                if depth == 0 {
+                    break;
+                }
+            }
+            _ => {}
+        }
+        close += 1;
+    }
+    if depth != 0 {
+        return Err(ParseError("IN subquery requires ')'".into()));
+    }
+
+    let after = parser.tokens.get(close + 1);
+    let clause_boundary = after.is_none_or(|token| {
+        matches!(token, Token::Semicolon)
+            || matches!(token, Token::Word(word) if ["GROUP", "HAVING", "ORDER", "LIMIT", "OFFSET", "FETCH", "FORMAT", "SETTINGS"].iter().any(|keyword| word.eq_ignore_ascii_case(keyword)))
+    });
+    if !clause_boundary {
+        return Err(ParseError(
+            "filter subquery must be the only WHERE predicate".into(),
+        ));
+    }
+
+    let Some(Source::Table(parent_table)) = source else {
+        return Err(ParseError(
+            "IN subquery requires a stored table source".into(),
+        ));
+    };
+    let inner = parse_select_tokens(parser.tokens[open + 1..close].to_vec())?;
+    let Some(Source::Table(inner_table)) = &inner.source else {
+        return Err(ParseError(
+            "IN subquery requires a stored table source".into(),
+        ));
+    };
+    if !inner_table.eq_ignore_ascii_case(parent_table)
+        || inner.in_subquery.is_some()
+        || inner.hidden_aggregate
+        || !matches!(&inner.projection, Projection::Columns(columns) if columns.len() == 1)
+        || inner
+            .predicates
+            .iter()
+            .chain(inner.or_predicates.iter().flatten())
+            .any(|predicate| matches!(predicate, Predicate::ColumnComparison { .. }))
+    {
+        return Err(ParseError(
+            "IN subquery requires an uncorrelated single-column query on the same table".into(),
+        ));
+    }
+
+    parser.index = close + 1;
+    Ok(Some(SelectInSubquery {
+        column,
+        scalar,
+        inner: Box::new(inner),
+    }))
+}
+
+fn parse_select_tokens_with_nested_in(
+    tokens: Vec<Token>,
+    allow_nested_in: bool,
+) -> Result<Select, ParseError> {
     let mut parser = Parser { tokens, index: 0 };
     if !parser.keyword("SELECT") {
         if matches!(parser.tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("WITH"))
@@ -2509,11 +2632,26 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
     } else {
         None
     };
+    let mut in_subquery = None;
     let where_clause = if parser.keyword("WHERE") {
         if source.is_none() {
             return Err(ParseError("WHERE requires a table source".into()));
         }
-        Some(where_parser::parse_where(&mut parser)?)
+        if allow_nested_in {
+            if let Some(subquery) = parse_select_in_subquery_where(&mut parser, source.as_ref())? {
+                if prewhere.is_some() {
+                    return Err(ParseError(
+                        "IN subquery cannot be combined with PREWHERE".into(),
+                    ));
+                }
+                in_subquery = Some(subquery);
+                Some(Vec::new())
+            } else {
+                Some(where_parser::parse_where(&mut parser)?)
+            }
+        } else {
+            Some(where_parser::parse_where(&mut parser)?)
+        }
     } else {
         None
     };
@@ -3119,6 +3257,7 @@ fn parse_select_tokens(tokens: Vec<Token>) -> Result<Select, ParseError> {
         source,
         predicates,
         or_predicates,
+        in_subquery,
         order_by,
         order_by_extra,
         having,
