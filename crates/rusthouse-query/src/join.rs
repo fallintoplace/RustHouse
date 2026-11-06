@@ -11,9 +11,9 @@ mod derived_sum;
 mod exists_lookup;
 mod implicit;
 mod nested_sum;
+mod parse_core;
 mod substring_antijoin;
 mod syntax;
-mod parse_core;
 use parse_core::parse_join_tokens_internal;
 
 // Keep explained execution bounds and the executor's actual limits in sync.
