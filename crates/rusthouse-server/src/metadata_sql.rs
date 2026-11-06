@@ -26,25 +26,13 @@ fn schema_content_type(format: QueryFormat) -> &'static str {
     }
 }
 
-pub(super) fn handle(config: &Config, format: QueryFormat, table: &str) -> Response {
-    let Some(database) = config.database.as_deref().filter(|_| config.part.is_none()) else {
-        return Response::text("400 Bad Request", "DESCRIBE requires --database\n");
-    };
-    let _lock = match acquire_database_lock(database, false) {
-        Ok(lock) => lock,
-        Err(error) => return Response::text("409 Conflict", &format!("{error}\n")),
-    };
-    let path = match resolve_database_table(database, table) {
-        Ok(path) => path,
-        Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
-    };
-    let schema = match inspect_query_source(&path) {
-        Ok(schema) => schema,
-        Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
-    };
-    let emit = |output: &mut dyn Write| write_schema_rows(output, &schema);
-    let mut writer = LimitedWriter::new();
-    let result = match format {
+fn write_formatted_schema(
+    format: QueryFormat,
+    schema: &PartMetadata,
+    mut writer: &mut LimitedWriter,
+) -> io::Result<()> {
+    let emit = |output: &mut dyn Write| write_schema_rows(output, schema);
+    match format {
         QueryFormat::Tsv => emit(&mut writer),
         QueryFormat::TsvNoHeader => emit(&mut WithoutHeader::new(&mut writer)),
         QueryFormat::Csv => emit(&mut CsvWriter::new(&mut writer)),
@@ -67,7 +55,27 @@ pub(super) fn handle(config: &Config, format: QueryFormat, table: &str) -> Respo
             };
             emit(&mut JsonlWriter::new(&mut array)).and_then(|()| array.finish().map(|_| ()))
         }
+    }
+}
+
+pub(super) fn handle(config: &Config, format: QueryFormat, table: &str) -> Response {
+    let Some(database) = config.database.as_deref().filter(|_| config.part.is_none()) else {
+        return Response::text("400 Bad Request", "DESCRIBE requires --database\n");
     };
+    let _lock = match acquire_database_lock(database, false) {
+        Ok(lock) => lock,
+        Err(error) => return Response::text("409 Conflict", &format!("{error}\n")),
+    };
+    let path = match resolve_database_table(database, table) {
+        Ok(path) => path,
+        Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+    };
+    let schema = match inspect_query_source(&path) {
+        Ok(schema) => schema,
+        Err(error) => return Response::text("400 Bad Request", &format!("{error}\n")),
+    };
+    let mut writer = LimitedWriter::new();
+    let result = write_formatted_schema(format, &schema, &mut writer);
     match result {
         Ok(()) => Response {
             status: "200 OK",
