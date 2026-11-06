@@ -20,6 +20,8 @@ pub(crate) const MAX_STREAM_JOIN_BUILD_ROWS: u64 = 262_144;
 pub(crate) const MAX_JOIN_RESULT_ROWS: usize = 131_072;
 pub(crate) const MAX_JOIN_BUILD_BYTES: usize = 64 * 1024 * 1024;
 pub(crate) const MAX_JOIN_CHAIN_BYTES: usize = 128 * 1024 * 1024;
+// Cover JOB's 17-table queries while keeping join chains bounded.
+const MAX_JOIN_TABLES: usize = 17;
 const MAX_JOIN_GROUPED_CASE_METRICS: usize = 32;
 
 use self::syntax::*;
@@ -2495,8 +2497,10 @@ fn parse_join_tokens_internal(
                 .iter()
                 .any(|keyword| word.eq_ignore_ascii_case(keyword))
     ) {
-        if steps.len() >= 14 {
-            return Err(ParseError("JOIN supports at most 16 tables".into()));
+        if steps.len() >= MAX_JOIN_TABLES - 2 {
+            return Err(ParseError(format!(
+                "JOIN supports at most {MAX_JOIN_TABLES} tables"
+            )));
         }
         let leading_any = parser.keyword("ANY");
         let leading_all = !leading_any && parser.keyword("ALL");
