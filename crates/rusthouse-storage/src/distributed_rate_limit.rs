@@ -302,11 +302,7 @@ pub struct HierarchicalTransferPlan {
 /// Request order is the explicit priority order supplied by the caller. A
 /// weighted scheduler should order peers before calling this function.
 /// Failure is atomic: all caller-owned bucket states remain unchanged.
-pub fn grant_hierarchical_transfers(
-    global: TokenBucket,
-    requests: &[PeerTransferRequest],
-    now_ms: u64,
-) -> Result<HierarchicalTransferPlan, &'static str> {
+fn validate_peer_requests(requests: &[PeerTransferRequest]) -> Result<(), &'static str> {
     use std::collections::HashSet;
 
     if requests.len() > 64 {
@@ -325,6 +321,15 @@ pub fn grant_hierarchical_transfers(
             return Err("invalid or duplicate replica transfer peer");
         }
     }
+    Ok(())
+}
+
+pub fn grant_hierarchical_transfers(
+    global: TokenBucket,
+    requests: &[PeerTransferRequest],
+    now_ms: u64,
+) -> Result<HierarchicalTransferPlan, &'static str> {
+    validate_peer_requests(requests)?;
 
     let mut global_bucket = global.refill(now_ms)?;
     let mut peers = Vec::with_capacity(requests.len());
