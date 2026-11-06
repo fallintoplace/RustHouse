@@ -44,18 +44,21 @@ pub fn capabilities(peer: Peer) -> Result<PeerResponse, String> {
     request(peer, "GET", "/capabilities", b"")
 }
 
+fn valid_peer_table_identifier(table: &str) -> bool {
+    if table.len() > 128 {
+        return false;
+    }
+    let mut bytes = table.bytes();
+    bytes
+        .next()
+        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
+        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
 /// Fetch a named table's schema without accepting arbitrary HTTP paths.
 pub fn schema(peer: Peer, table: &str) -> Result<PeerResponse, String> {
     // Keep outbound identifiers within the same limit as local table resolution.
-    if table.len() > 128 {
-        return Err("unsupported peer table identifier".into());
-    }
-    let mut bytes = table.bytes();
-    if !bytes
-        .next()
-        .is_some_and(|first| first.is_ascii_alphabetic() || first == b'_')
-        || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-    {
+    if !valid_peer_table_identifier(table) {
         return Err("unsupported peer table identifier".into());
     }
     request(peer, "GET", &format!("/schema?table={table}"), b"")
