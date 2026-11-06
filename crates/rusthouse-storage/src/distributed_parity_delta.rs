@@ -23,6 +23,14 @@ fn gf_mul(mut left: u8, mut right: u8) -> u8 {
     value
 }
 
+fn source_coefficient(index: usize) -> u8 {
+    let mut factor = 1u8;
+    for _ in 0..index {
+        factor = gf_mul(factor, 2);
+    }
+    factor
+}
+
 /// Update the two parity equations in O(max(old.len(), new.len())) time.
 ///
 /// The result has the same stripe width as its input, so a replacement that
@@ -46,10 +54,7 @@ pub fn replace_double_parity_source(
     {
         return Err("invalid double parity replacement layout");
     }
-    let mut factor = 1u8;
-    for _ in 0..changed_index {
-        factor = gf_mul(factor, 2);
-    }
+    let factor = source_coefficient(changed_index);
     let length = old.len().max(new.len());
     if length < 1024 {
         for offset in 0..length {
