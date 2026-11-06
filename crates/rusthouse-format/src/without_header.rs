@@ -24,13 +24,13 @@ impl<W: Write> Write for WithoutHeader<W> {
             return Ok(buf.len());
         };
         let body = &buf[header_end + 1..];
-        if body.is_empty() {
-            self.skipping_header = false;
-            return Ok(buf.len());
-        }
         // Report exactly what the underlying writer accepted. A short write
         // must not discard the remainder of the first data row.
-        let written = self.output.write(body)?;
+        let written = if body.is_empty() {
+            0
+        } else {
+            self.output.write(body)?
+        };
         // Commit the header transition only after a successful write.
         // Interrupted/error writes may be retried with the original buffer.
         self.skipping_header = false;
