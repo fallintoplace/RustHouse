@@ -34,6 +34,30 @@ fn partition_key_point<T: Ord + Copy>(
     low
 }
 
+fn merge_mark_ranges(mut ranges: Vec<Range<usize>>) -> Vec<Range<usize>> {
+    // IN and OR ranges are often already ordered. Skip the n log n sort
+    // when their candidate mark ranges arrive in ascending order.
+    if ranges.windows(2).any(|pair| pair[0].start > pair[1].start) {
+        ranges.sort_unstable_by_key(|range| range.start);
+    }
+    // Merge the sorted mark ranges in place. The original code allocated
+    // another vector and copied every candidate range into it. IN/OR scans
+    // can contain many intervals, but each merged range occupies at most one
+    // of the already allocated input slots.
+    let mut output_len = 0;
+    for input in 0..ranges.len() {
+        let range = ranges[input].clone();
+        if output_len != 0 && range.start <= ranges[output_len - 1].end {
+            ranges[output_len - 1].end = ranges[output_len - 1].end.max(range.end);
+        } else {
+            ranges[output_len] = range;
+            output_len += 1;
+        }
+    }
+    ranges.truncate(output_len);
+    ranges
+}
+
 fn candidate_mark_range_sorted<T: Ord + Copy>(
     len: usize,
     key_at: &impl Fn(usize) -> Option<T>,
@@ -123,32 +147,12 @@ pub(super) fn candidate_mark_ranges<T: Ord + Copy>(
             vec![range]
         });
     }
-    let mut ranges: Vec<_> = intervals
+    let ranges: Vec<_> = intervals
         .iter()
         .map(|(lower, upper)| candidate_mark_range_sorted(len, &cached_key, *lower, *upper))
         .filter(|range| !range.is_empty())
         .collect();
-    // IN and OR ranges are often already ordered. Skip the n log n sort
-    // when their candidate mark ranges arrive in ascending order.
-    if ranges.windows(2).any(|pair| pair[0].start > pair[1].start) {
-        ranges.sort_unstable_by_key(|range| range.start);
-    }
-    // Merge the sorted mark ranges in place. The original code allocated
-    // another vector and copied every candidate range into it. IN/OR scans
-    // can contain many intervals, but each merged range occupies at most one
-    // of the already allocated input slots.
-    let mut output_len = 0;
-    for input in 0..ranges.len() {
-        let range = ranges[input].clone();
-        if output_len != 0 && range.start <= ranges[output_len - 1].end {
-            ranges[output_len - 1].end = ranges[output_len - 1].end.max(range.end);
-        } else {
-            ranges[output_len] = range;
-            output_len += 1;
-        }
-    }
-    ranges.truncate(output_len);
-    Some(ranges)
+    Some(merge_mark_ranges(ranges))
 }
 
 fn key_bytes<const WIDTH: usize>(
