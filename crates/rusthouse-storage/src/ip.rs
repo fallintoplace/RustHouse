@@ -48,7 +48,9 @@ fn write_ip_values<const WIDTH: usize, W: Write, T>(
 /// Write ClickHouse IPv4 UInt32 values in little-endian disk order.
 /// Use bounded fixed-size blocks regardless of the total number of rows.
 pub fn write_ipv4_values<W: Write>(writer: &mut W, addresses: &[Ipv4Addr]) -> io::Result<()> {
-    write_ip_values(writer, addresses, |address| u32::from(*address).to_le_bytes())
+    write_ip_values(writer, addresses, |address| {
+        u32::from(*address).to_le_bytes()
+    })
 }
 
 /// Write IPv6 addresses in ClickHouse's network-byte-order disk encoding.
