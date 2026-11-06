@@ -644,7 +644,7 @@ mod tests {
             ))];
             assert_eq!(
                 filters.passes_relation(&local, 0, &order_conditions),
-                order_id < 5 || order_id > 10,
+                !(5..=10).contains(&order_id),
             );
         }
         assert!(filters.passes_relation(
