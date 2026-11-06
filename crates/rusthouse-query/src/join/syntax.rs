@@ -5,22 +5,7 @@ const RESERVED_ALIAS_KEYWORDS: &[&str] = &[
     "ORDER", "LIMIT", "OFFSET", "ANY", "ALL",
 ];
 
-pub(super) fn qualified(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
-    let first = parser.bounded_word()?;
-    if parser.take(Token::Dot) {
-        Ok(JoinColumn {
-            relation: first,
-            name: parser.bounded_word()?,
-        })
-    } else {
-        Ok(JoinColumn {
-            relation: String::new(),
-            name: first,
-        })
-    }
-}
-
-pub(super) fn projected(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
+fn parse_column(parser: &mut Parser, allow_star: bool) -> Result<JoinColumn, ParseError> {
     let first = parser.bounded_word()?;
     if !parser.take(Token::Dot) {
         return Ok(JoinColumn {
@@ -28,7 +13,7 @@ pub(super) fn projected(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
             name: first,
         });
     }
-    let name = if parser.take(Token::Star) {
+    let name = if allow_star && parser.take(Token::Star) {
         "*".to_owned()
     } else {
         parser.bounded_word()?
@@ -37,6 +22,14 @@ pub(super) fn projected(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
         relation: first,
         name,
     })
+}
+
+pub(super) fn qualified(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
+    parse_column(parser, false)
+}
+
+pub(super) fn projected(parser: &mut Parser) -> Result<JoinColumn, ParseError> {
+    parse_column(parser, true)
 }
 
 pub(super) fn alias(parser: &mut Parser, table: &str) -> Result<String, ParseError> {
