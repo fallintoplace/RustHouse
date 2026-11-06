@@ -36,6 +36,10 @@ fn valid_shard(name: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-'))
 }
 
+fn valid_progress(item: &ShardProgress) -> bool {
+    valid_shard(&item.shard) && item.completed <= item.total
+}
+
 /// Plan bounded round-robin byte ranges across independent shards.
 ///
 /// A shard receives at most `quantum` bytes per turn. The scheduler advances
@@ -60,10 +64,7 @@ pub fn plan_fair_transfers(
     }
     let mut seen = HashSet::with_capacity(progress.len());
     for item in progress {
-        if !valid_shard(&item.shard)
-            || item.completed > item.total
-            || !seen.insert(item.shard.as_str())
-        {
+        if !valid_progress(item) || !seen.insert(item.shard.as_str()) {
             return Err("invalid or duplicate shard transfer progress");
         }
     }
@@ -114,10 +115,7 @@ pub fn replay_verified_transfer_slices(
     }
     let mut by_name = HashMap::with_capacity(progress.len());
     for (index, item) in progress.iter().enumerate() {
-        if !valid_shard(&item.shard)
-            || item.completed > item.total
-            || by_name.insert(item.shard.as_str(), index).is_some()
-        {
+        if !valid_progress(item) || by_name.insert(item.shard.as_str(), index).is_some() {
             return Err("invalid or duplicate shard transfer progress");
         }
     }
