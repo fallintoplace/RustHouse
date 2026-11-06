@@ -3,6 +3,14 @@
 use std::collections::BTreeMap;
 const MAX_REQUESTS: usize = 4096;
 
+fn valid_request_node(node: &str) -> bool {
+    !node.is_empty()
+        && node.len() <= 64
+        && node
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RequestKey {
     pub node: String,
@@ -60,12 +68,7 @@ impl IdempotencyLedger {
         now_ms: u64,
         ttl_ms: u64,
     ) -> Result<u64, &'static str> {
-        if key.node.is_empty()
-            || key.node.len() > 64
-            || !key
-                .node
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        if !valid_request_node(&key.node)
             || key.epoch == 0
             || key.nonce == 0
             || ttl_ms == 0
