@@ -45,6 +45,22 @@ fn next_hedged_replica<'a>(
         })
 }
 
+fn sorted_eligible_replicas(
+    replicas: &[HedgedReplica],
+    snapshot: SnapshotVersion,
+) -> Vec<&HedgedReplica> {
+    let mut eligible = replicas
+        .iter()
+        .filter(|replica| replica.healthy && replica.snapshot == snapshot)
+        .collect::<Vec<_>>();
+    eligible.sort_unstable_by(|a, b| {
+        a.p95_latency_ms
+            .cmp(&b.p95_latency_ms)
+            .then_with(|| a.node.cmp(&b.node))
+    });
+    eligible
+}
+
 pub fn plan_hedged_reads(
     replicas: &[HedgedReplica],
     snapshot: SnapshotVersion,
@@ -82,15 +98,7 @@ pub fn plan_hedged_reads(
             return Err("conflicting replica snapshot fingerprint");
         }
     }
-    let mut eligible = replicas
-        .iter()
-        .filter(|replica| replica.healthy && replica.snapshot == snapshot)
-        .collect::<Vec<_>>();
-    eligible.sort_unstable_by(|a, b| {
-        a.p95_latency_ms
-            .cmp(&b.p95_latency_ms)
-            .then_with(|| a.node.cmp(&b.node))
-    });
+    let eligible = sorted_eligible_replicas(replicas, snapshot);
     if eligible.is_empty() {
         return Err("no healthy replica at required snapshot");
     }
