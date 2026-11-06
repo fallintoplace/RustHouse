@@ -16,6 +16,10 @@ fn next_logical(value: u32) -> Result<u32, &'static str> {
     value.checked_add(1).ok_or("hybrid clock logical overflow")
 }
 
+fn exceeds_max_skew(physical_ms: u64, now_ms: u64, max_skew_ms: u64) -> bool {
+    physical_ms > now_ms.saturating_add(max_skew_ms)
+}
+
 impl HybridClock {
     pub fn new(node: u16, now_ms: u64) -> Self {
         Self {
@@ -38,7 +42,7 @@ impl HybridClock {
         if persisted.node != node {
             return Err("hybrid clock persisted node mismatch");
         }
-        if persisted.physical_ms > now_ms.saturating_add(max_skew_ms) {
+        if exceeds_max_skew(persisted.physical_ms, now_ms, max_skew_ms) {
             return Err("persisted hybrid clock exceeds allowed clock skew");
         }
         Ok(Self { current: persisted })
@@ -75,7 +79,7 @@ impl HybridClock {
         now_ms: u64,
         max_skew_ms: u64,
     ) -> Result<HybridTimestamp, &'static str> {
-        if remote.physical_ms > now_ms.saturating_add(max_skew_ms) {
+        if exceeds_max_skew(remote.physical_ms, now_ms, max_skew_ms) {
             return Err("remote hybrid clock exceeds allowed clock skew");
         }
         let physical = self.current.physical_ms.max(remote.physical_ms).max(now_ms);
