@@ -3,6 +3,9 @@
 use crate::jsonl::JsonlWriter;
 use std::io::{self, Write};
 
+const RECORD_SEPARATOR: u8 = 0x1e;
+const FRAME_CAPACITY: usize = 4096;
+
 struct JsonSeqSink<W: Write> {
     output: W,
     at_row_start: bool,
@@ -17,13 +20,13 @@ impl<W: Write> JsonSeqSink<W> {
     }
 
     fn write_record_start(&mut self, chunk: &[u8]) -> io::Result<()> {
-        if chunk.len() <= 4095 {
-            let mut framed = [0u8; 4096];
-            framed[0] = 0x1e;
+        if chunk.len() < FRAME_CAPACITY {
+            let mut framed = [0u8; FRAME_CAPACITY];
+            framed[0] = RECORD_SEPARATOR;
             framed[1..chunk.len() + 1].copy_from_slice(chunk);
             self.output.write_all(&framed[..chunk.len() + 1])?;
         } else {
-            self.output.write_all(b"\x1e")?;
+            self.output.write_all(&[RECORD_SEPARATOR])?;
             // The separator was already emitted, even if the row write fails.
             self.at_row_start = false;
             self.output.write_all(chunk)?;
