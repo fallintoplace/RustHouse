@@ -6,6 +6,24 @@ use super::{
 };
 use std::collections::HashMap;
 
+fn reduce_bitwise<T>(prior: Option<T>, value: T, function: AggregateFunction) -> T
+where
+    T: Copy
+        + std::ops::BitAnd<Output = T>
+        + std::ops::BitOr<Output = T>
+        + std::ops::BitXor<Output = T>,
+{
+    match prior {
+        None => value,
+        Some(prior) => match function {
+            AggregateFunction::GroupBitAnd => prior & value,
+            AggregateFunction::GroupBitOr => prior | value,
+            AggregateFunction::GroupBitXor => prior ^ value,
+            _ => unreachable!("validated bitwise aggregate"),
+        },
+    }
+}
+
 pub(super) fn merge_multi_key_bitwise(
     shards: &[(usize, Vec<u8>)],
     columns: &[String],
@@ -90,28 +108,12 @@ pub(super) fn merge_multi_key_bitwise(
                 let value = digits
                     .parse::<u128>()
                     .map_err(|_| MergeError::InvalidGroupedBitwise)?;
-                groups[index].2 = Some(match groups[index].2 {
-                    None => value,
-                    Some(prior) => match function {
-                        AggregateFunction::GroupBitAnd => prior & value,
-                        AggregateFunction::GroupBitOr => prior | value,
-                        AggregateFunction::GroupBitXor => prior ^ value,
-                        _ => unreachable!("validated bitwise aggregate"),
-                    },
-                });
+                groups[index].2 = Some(reduce_bitwise(groups[index].2, value, function));
             } else {
                 let value = digits
                     .parse::<i128>()
                     .map_err(|_| MergeError::InvalidGroupedBitwise)?;
-                groups[index].1 = Some(match groups[index].1 {
-                    None => value,
-                    Some(prior) => match function {
-                        AggregateFunction::GroupBitAnd => prior & value,
-                        AggregateFunction::GroupBitOr => prior | value,
-                        AggregateFunction::GroupBitXor => prior ^ value,
-                        _ => unreachable!("validated bitwise aggregate"),
-                    },
-                });
+                groups[index].1 = Some(reduce_bitwise(groups[index].1, value, function));
             }
         }
     }
