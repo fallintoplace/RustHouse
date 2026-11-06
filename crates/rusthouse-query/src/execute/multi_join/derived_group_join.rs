@@ -1,7 +1,10 @@
 //! Materialize a bounded grouped derived source before its outer join.
 use super::ExecutionError;
 use crate::join::{DerivedGroupedFilter, DerivedGroupedOrderKey};
-use crate::{DerivedGroupedJoin, DerivedGroupedSelect, DerivedUnionJoin, execute_multi_join};
+use crate::{
+    DerivedGroupedJoin, DerivedGroupedSelect, DerivedUnionJoin, DerivedUnionSelect,
+    DerivedUnionSelectBranch, execute_multi_join,
+};
 use rusthouse_storage::{Column, write_wide_part};
 use std::io::{self, Write};
 use std::path::PathBuf;
@@ -397,21 +400,18 @@ pub fn execute_derived_grouped_select<W: Write>(
     Ok(())
 }
 
-/// Execute each UNION ALL branch into a bounded temporary source, then join it.
-pub fn execute_derived_union_join<W: Write>(
-    plan: &DerivedUnionJoin,
+fn materialize_union_branches(
+    branches: &[crate::JoinSelect],
     branch_paths: &[Vec<PathBuf>],
-    outer_paths: &[PathBuf],
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    let branches = plan.branches();
+    columns: &[crate::DerivedColumn],
+) -> Result<TemporaryPart, ExecutionError> {
     if branch_paths.len() != branches.len() {
         return Err(invalid("derived UNION branch count differs from its plan"));
     }
     let mut combined = BoundedOutput(Vec::new());
     let expected_header = format!(
         "{}\n",
-        plan.columns()
+        columns
             .iter()
             .map(|column| column.name.as_str())
             .collect::<Vec<_>>()
@@ -422,7 +422,24 @@ pub fn execute_derived_union_join<W: Write>(
             return Err(invalid("derived UNION source count differs from its plan"));
         }
         let mut branch_output = BoundedOutput(Vec::new());
-        execute_multi_join(branch, paths, &mut branch_output)?;
+        let mut bound_branch = branch.clone();
+        if let Some(subquery) = branch.in_subquery.as_ref() {
+            let Some(crate::Source::Table(inner_table)) = &subquery.inner.source else {
+                return Err(invalid("derived UNION IN requires a stored table"));
+            };
+            let inner_path = [&branch.left, &branch.right]
+                .into_iter()
+                .chain(branch.steps.iter().map(|step| &step.table))
+                .zip(paths)
+                .find_map(|(table, path)| {
+                    table
+                        .eq_ignore_ascii_case(inner_table)
+                        .then_some(path.as_path())
+                })
+                .ok_or_else(|| invalid("derived UNION IN table is not a branch source"))?;
+            super::bind_join_in_subquery(&mut bound_branch, inner_path, paths)?;
+        }
+        execute_multi_join(&bound_branch, paths, &mut branch_output)?;
         let header_end = branch_output
             .0
             .iter()
@@ -431,7 +448,7 @@ pub fn execute_derived_union_join<W: Write>(
         let header = std::str::from_utf8(&branch_output.0[..header_end])
             .map_err(|_| invalid("derived UNION branch header is not valid UTF-8"))?;
         if (branch_index == 0 && branch_output.0[..=header_end] != expected_header.as_bytes()[..])
-            || (branch_index != 0 && header.split('\t').count() != plan.columns().len())
+            || (branch_index != 0 && header.split('\t').count() != columns.len())
         {
             return Err(invalid("derived UNION branch columns differ from its plan"));
         }
@@ -440,7 +457,161 @@ pub fn execute_derived_union_join<W: Write>(
         }
         combined.write_all(&branch_output.0[header_end + 1..])?;
     }
-    let temporary = materialize(&combined.0, plan.columns())?;
+    materialize(&combined.0, columns)
+}
+
+fn materialize_union_select_branches(
+    branches: &[DerivedUnionSelectBranch],
+    branch_paths: &[Vec<PathBuf>],
+    columns: &[crate::DerivedColumn],
+) -> Result<TemporaryPart, ExecutionError> {
+    if branch_paths.len() != branches.len() {
+        return Err(invalid("derived UNION branch count differs from its plan"));
+    }
+    let mut combined = BoundedOutput(Vec::new());
+    let expected_header = format!(
+        "{}\n",
+        columns
+            .iter()
+            .map(|column| column.name.as_str())
+            .collect::<Vec<_>>()
+            .join("\t")
+    );
+    for (branch, paths) in branches.iter().zip(branch_paths) {
+        let mut branch_output = BoundedOutput(Vec::new());
+        match branch {
+            DerivedUnionSelectBranch::Join(query) => {
+                if paths.len() != query.steps.len() + 2 {
+                    return Err(invalid("derived UNION source count differs from its plan"));
+                }
+                let mut bound_branch = query.clone();
+                if let Some(subquery) = query.in_subquery.as_ref() {
+                    let Some(crate::Source::Table(inner_table)) = &subquery.inner.source else {
+                        return Err(invalid("derived UNION IN requires a stored table"));
+                    };
+                    let inner_path = [&query.left, &query.right]
+                        .into_iter()
+                        .chain(query.steps.iter().map(|step| &step.table))
+                        .zip(paths)
+                        .find_map(|(table, path)| {
+                            table
+                                .eq_ignore_ascii_case(inner_table)
+                                .then_some(path.as_path())
+                        })
+                        .ok_or_else(|| invalid("derived UNION IN table is not a branch source"))?;
+                    super::bind_join_in_subquery(&mut bound_branch, inner_path, paths)?;
+                }
+                execute_multi_join(&bound_branch, paths, &mut branch_output)?;
+            }
+            DerivedUnionSelectBranch::JoinWithTextLiterals { query, literals } => {
+                if paths.len() != query.steps.len() + 2 {
+                    return Err(invalid("derived UNION source count differs from its plan"));
+                }
+                let mut bound_branch = query.clone();
+                if let Some(subquery) = query.in_subquery.as_ref() {
+                    let Some(crate::Source::Table(inner_table)) = &subquery.inner.source else {
+                        return Err(invalid("derived UNION IN requires a stored table"));
+                    };
+                    let inner_path = [&query.left, &query.right]
+                        .into_iter()
+                        .chain(query.steps.iter().map(|step| &step.table))
+                        .zip(paths)
+                        .find_map(|(table, path)| {
+                            table
+                                .eq_ignore_ascii_case(inner_table)
+                                .then_some(path.as_path())
+                        })
+                        .ok_or_else(|| invalid("derived UNION IN table is not a branch source"))?;
+                    super::bind_join_in_subquery(&mut bound_branch, inner_path, paths)?;
+                }
+                execute_multi_join(&bound_branch, paths, &mut branch_output)?;
+                append_text_literals(&mut branch_output.0, literals)?;
+            }
+            DerivedUnionSelectBranch::Select(query) => {
+                if paths.len() != 1 || !matches!(&query.source, Some(crate::Source::Table(_))) {
+                    return Err(invalid("derived UNION SELECT requires one stored table"));
+                }
+                let mut bound_query = query.clone();
+                bound_query.source = Some(crate::Source::Table("part".into()));
+                crate::execute(
+                    &bound_query,
+                    paths.first().map(std::path::PathBuf::as_path),
+                    &mut branch_output,
+                )?;
+            }
+        }
+        let header_end = branch_output
+            .0
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .ok_or_else(|| invalid("derived UNION branch has no header"))?;
+        let header = std::str::from_utf8(&branch_output.0[..header_end])
+            .map_err(|_| invalid("derived UNION branch header is not valid UTF-8"))?;
+        if header.split('\t').count() != columns.len() {
+            return Err(invalid("derived UNION branch columns differ from its plan"));
+        }
+        if combined.0.is_empty() {
+            combined.write_all(expected_header.as_bytes())?;
+        }
+        combined.write_all(&branch_output.0[header_end + 1..])?;
+    }
+    materialize(&combined.0, columns)
+}
+
+fn append_text_literals(
+    output: &mut Vec<u8>,
+    literals: &[(String, String)],
+) -> Result<(), ExecutionError> {
+    let header_end = output
+        .iter()
+        .position(|byte| *byte == b'\n')
+        .ok_or_else(|| invalid("derived UNION branch has no header"))?;
+    let mut extended = Vec::with_capacity(output.len().saturating_add(literals.len() * 16));
+    extended.extend_from_slice(&output[..header_end]);
+    for (_, alias) in literals {
+        extended.push(b'\t');
+        extended.extend_from_slice(alias.as_bytes());
+    }
+    extended.push(b'\n');
+
+    let mut start = header_end + 1;
+    while start < output.len() {
+        let end = output[start..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map_or(output.len(), |offset| start + offset);
+        extended.extend_from_slice(&output[start..end]);
+        for (value, _) in literals {
+            extended.push(b'\t');
+            for character in value.chars() {
+                match character {
+                    '\\' => extended.extend_from_slice(b"\\\\"),
+                    '\t' => extended.extend_from_slice(b"\\t"),
+                    '\n' => extended.extend_from_slice(b"\\n"),
+                    '\r' => extended.extend_from_slice(b"\\r"),
+                    '\0' => extended.extend_from_slice(b"\\0"),
+                    other => {
+                        let mut encoded = [0; 4];
+                        extended.extend_from_slice(other.encode_utf8(&mut encoded).as_bytes());
+                    }
+                }
+            }
+        }
+        extended.push(b'\n');
+        start = end.saturating_add(1);
+    }
+    *output = extended;
+    Ok(())
+}
+
+/// Execute each UNION ALL branch into a bounded temporary source, then join it.
+pub fn execute_derived_union_join<W: Write>(
+    plan: &DerivedUnionJoin,
+    branch_paths: &[Vec<PathBuf>],
+    outer_paths: &[PathBuf],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let temporary = materialize_union_branches(plan.branches(), branch_paths, plan.columns())?;
 
     let outer = plan.outer();
     if outer_paths.len() != outer.steps.len() + 2 {
@@ -460,4 +631,74 @@ pub fn execute_derived_union_join<W: Write>(
         })
         .collect::<Vec<_>>();
     execute_multi_join(outer, &paths, output)
+}
+
+/// Execute a bounded UNION ALL source followed by a single-table SELECT.
+pub fn execute_derived_union_select<W: Write>(
+    plan: &DerivedUnionSelect,
+    branch_paths: &[Vec<PathBuf>],
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    let temporary =
+        materialize_union_select_branches(plan.branches(), branch_paths, plan.columns())?;
+    crate::execute(plan.outer(), Some(&temporary.path), output)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{DerivedUnionSelectBranch, Projection, Source, parse_select};
+
+    #[test]
+    fn executes_stored_table_selects_in_union_branches() {
+        let root = std::env::temp_dir().join(format!(
+            "rusthouse-union-select-test-{}-{}",
+            std::process::id(),
+            NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let part = root.join("part");
+        write_wide_part(
+            &part,
+            &[Column {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
+            &[
+                vec![Some("1".into())],
+                vec![Some("2".into())],
+                vec![Some("3".into())],
+            ],
+        )
+        .unwrap();
+
+        let make_branch = |minimum| {
+            let mut query = parse_select(&format!(
+                "SELECT id FROM source WHERE id >= {minimum} ORDER BY id"
+            ))
+            .unwrap();
+            query.source = Some(Source::Table("source".into()));
+            DerivedUnionSelectBranch::Select(query)
+        };
+        let plan = DerivedUnionSelect {
+            branches: vec![make_branch(2), make_branch(3)],
+            outer: parse_select("SELECT id FROM part ORDER BY id").unwrap(),
+            table: "combined".into(),
+            columns: vec![crate::DerivedColumn {
+                name: "id".into(),
+                data_type: "UInt64".into(),
+            }],
+        };
+        assert_eq!(
+            plan.outer.projection,
+            Projection::Columns(vec!["id".into()])
+        );
+
+        let mut output = Vec::new();
+        execute_derived_union_select(&plan, &[vec![part.clone()], vec![part]], &mut output)
+            .unwrap();
+
+        assert_eq!(output, b"id\n2\n3\n3\n");
+        std::fs::remove_dir_all(root).unwrap();
+    }
 }

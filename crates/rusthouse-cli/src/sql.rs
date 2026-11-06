@@ -636,6 +636,39 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
                     implicit_lock,
                 );
             }
+            let cte_union = rusthouse_query::parse_cte_union_select_with_schema(&query, |table| {
+                crate::catalog::read_schema(directory, table)
+                    .map(|columns| {
+                        columns
+                            .into_iter()
+                            .map(|column| rusthouse_query::DerivedColumn {
+                                name: column.name,
+                                data_type: column.data_type,
+                            })
+                            .collect()
+                    })
+                    .map_err(ParseError)
+            })
+            .map_err(|error| error.to_string())?;
+            if let Some(mut plan) = cte_union {
+                if part.is_some() {
+                    return Err("CTE UNION cannot use --part".into());
+                }
+                if show_ast || explain {
+                    return Err("CTE UNION cannot use --show-ast or --explain yet".into());
+                }
+                if let Some(cap) = max_rows {
+                    plan.cap_rows(cap);
+                }
+                return crate::join::run_derived_union_select(
+                    directory,
+                    &plan,
+                    format.unwrap_or(SqlOutputFormat::Tsv),
+                    output_path,
+                    time,
+                    implicit_lock,
+                );
+            }
             let plan = parse_cte_max_join(&query).map_err(|error| error.to_string())?;
             if let Some(mut plan) = plan {
                 if part.is_some() {
@@ -690,6 +723,42 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
     if derived || derived_union {
         if let Some(directory) = database.as_deref() {
             if derived_union {
+                let select =
+                    rusthouse_query::parse_derived_union_select_with_schema(&query, |table| {
+                        crate::catalog::read_schema(directory, table)
+                            .map(|columns| {
+                                columns
+                                    .into_iter()
+                                    .map(|column| rusthouse_query::DerivedColumn {
+                                        name: column.name,
+                                        data_type: column.data_type,
+                                    })
+                                    .collect()
+                            })
+                            .map_err(ParseError)
+                    })
+                    .map_err(|error| error.to_string())?;
+                if let Some(mut plan) = select {
+                    if part.is_some() {
+                        return Err("derived UNION SELECT cannot use --part".into());
+                    }
+                    if show_ast || explain {
+                        return Err(
+                            "derived UNION SELECT cannot use --show-ast or --explain yet".into(),
+                        );
+                    }
+                    if let Some(cap) = max_rows {
+                        plan.cap_rows(cap);
+                    }
+                    return crate::join::run_derived_union_select(
+                        directory,
+                        &plan,
+                        format.unwrap_or(SqlOutputFormat::Tsv),
+                        output_path,
+                        time,
+                        implicit_lock,
+                    );
+                }
                 let plan = rusthouse_query::parse_derived_union_join_with_schema(&query, |table| {
                     crate::catalog::read_schema(directory, table)
                         .map(|columns| {

@@ -11,11 +11,15 @@ pub struct GroupedCaseKey {
 }
 fn matches_case_projection(projection: &Projection, expected: &[&str]) -> bool {
     match projection {
-        Projection::GroupedMultiCount { columns } => {
-            columns.iter().map(String::as_str).eq(expected.iter().copied())
-        }
+        Projection::GroupedMultiCount { columns } => columns
+            .iter()
+            .map(String::as_str)
+            .eq(expected.iter().copied()),
         Projection::GroupedMultiAggregates { columns, items, .. } => {
-            columns.iter().map(String::as_str).eq(expected.iter().copied())
+            columns
+                .iter()
+                .map(String::as_str)
+                .eq(expected.iter().copied())
                 && matches!(items.as_slice(), [(AggregateFunction::Count, value)] if value == "*")
         }
         _ => false,
