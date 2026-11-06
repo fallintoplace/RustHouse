@@ -31,15 +31,15 @@ fn intersect(
     new_threshold: u64,
     swapped: bool,
 ) -> bool {
-    for mask in 0..(1u64 << shared.len()) {
+    // Orient the weights once rather than once per visited subset.
+    let weights = shared
+        .iter()
+        .map(|&(old, new)| if swapped { (new, old) } else { (old, new) })
+        .collect::<Vec<_>>();
+    for mask in 0..(1u64 << weights.len()) {
         let mut old_weight = old_only;
         let mut new_weight = new_only;
-        for (index, &(first, second)) in shared.iter().enumerate() {
-            let (old, new) = if swapped {
-                (second, first)
-            } else {
-                (first, second)
-            };
+        for (index, &(old, new)) in weights.iter().enumerate() {
             if mask & (1u64 << index) == 0 {
                 old_weight += old;
             } else {
