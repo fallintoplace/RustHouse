@@ -81,6 +81,30 @@ fn write_long_escaped_field<W: Write>(output: &mut W, field: &[u8]) -> io::Resul
     output.write_all(&buffer[..used + 1])
 }
 
+fn write_long_plain_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
+    // Socket writers can frame a large plain field in one vectored I/O
+    // without copying its bytes into a temporary buffer.
+    let slices = [
+        io::IoSlice::new(b"\""),
+        io::IoSlice::new(field),
+        io::IoSlice::new(b"\""),
+    ];
+    let written = loop {
+        match output.write_vectored(&slices) {
+            Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
+            Ok(written) => break written,
+            Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
+            Err(error) => return Err(error),
+        }
+    };
+    if written < field.len() + 2 {
+        let payload_written = written.saturating_sub(1).min(field.len());
+        output.write_all(&field[payload_written..])?;
+        output.write_all(b"\"")?;
+    }
+    Ok(())
+}
+
 /// Write one RFC 4180 quoted CSV field, doubling embedded quotes.
 pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     if field.is_empty() {
@@ -100,27 +124,7 @@ pub fn write_quoted_csv_field<W: Write>(output: &mut W, field: &[u8]) -> io::Res
         if field.len() <= 8190 {
             return write_buffered_unescaped_field::<8192, _>(output, field);
         }
-        // Socket writers can frame a large plain field in one vectored I/O
-        // without copying its bytes into a temporary buffer.
-        let slices = [
-            io::IoSlice::new(b"\""),
-            io::IoSlice::new(field),
-            io::IoSlice::new(b"\""),
-        ];
-        let written = loop {
-            match output.write_vectored(&slices) {
-                Ok(0) => return Err(io::Error::from(io::ErrorKind::WriteZero)),
-                Ok(written) => break written,
-                Err(error) if error.kind() == io::ErrorKind::Interrupted => continue,
-                Err(error) => return Err(error),
-            }
-        };
-        if written < field.len() + 2 {
-            let payload_written = written.saturating_sub(1).min(field.len());
-            output.write_all(&field[payload_written..])?;
-            output.write_all(b"\"")?;
-        }
-        return Ok(());
+        return write_long_plain_csv_field(output, field);
     }
     if field.len() <= 64 {
         write_short_quoted_csv_field(output, field)
