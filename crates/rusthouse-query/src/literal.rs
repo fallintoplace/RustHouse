@@ -57,6 +57,15 @@ fn parse_valid_date_year(date: &str) -> Result<i64, ParseError> {
         .map_err(|_| ParseError("invalid DATE year".into()))
 }
 
+fn validate_shifted_date(value: String) -> Result<String, ParseError> {
+    if rusthouse_storage::parse_date(&value).is_none() {
+        return Err(ParseError(
+            "DATE interval is outside supported Date range".into(),
+        ));
+    }
+    Ok(value)
+}
+
 /// Add calendar years while preserving month/day, clamping Feb 29 to Feb 28.
 pub(super) fn add_date_years(date: &str, years: i64) -> Result<String, ParseError> {
     let year = parse_valid_date_year(date)?;
@@ -71,12 +80,7 @@ pub(super) fn add_date_years(date: &str, years: i64) -> Result<String, ParseErro
         &date[8..10]
     };
     let shifted = format!("{year:04}-{month}-{day}");
-    if rusthouse_storage::parse_date(&shifted).is_none() {
-        return Err(ParseError(
-            "DATE interval is outside supported Date range".into(),
-        ));
-    }
-    Ok(shifted)
+    validate_shifted_date(shifted)
 }
 
 /// Add whole days while preserving RustHouse's supported Date range.
@@ -116,12 +120,7 @@ pub(super) fn add_date_months(date: &str, months: i64) -> Result<String, ParseEr
     };
     let day = day.min(last_day);
     let result = format!("{year:04}-{month:02}-{day:02}");
-    if rusthouse_storage::parse_date(&result).is_none() {
-        return Err(ParseError(
-            "DATE interval is outside supported Date range".into(),
-        ));
-    }
-    Ok(result)
+    validate_shifted_date(result)
 }
 
 #[cfg(test)]
