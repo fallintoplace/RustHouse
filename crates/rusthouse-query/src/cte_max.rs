@@ -37,6 +37,34 @@ fn parse_page_number(parser: &mut Parser) -> Result<usize, ParseError> {
         .map_err(|_| ParseError("LIMIT or OFFSET is too large".into()))
 }
 
+fn parse_outer_order(parser: &mut Parser) -> Result<Option<(String, bool, Option<bool>)>, ParseError> {
+    if !parser.keyword("ORDER") {
+        return Ok(None);
+    }
+    if !parser.keyword("BY") {
+        return Err(ParseError("ORDER requires BY".into()));
+    }
+    let column = parser.bounded_word()?;
+    let descending = if parser.keyword("DESC") {
+        true
+    } else {
+        parser.keyword("ASC");
+        false
+    };
+    let nulls_first = if parser.keyword("NULLS") {
+        if parser.keyword("FIRST") {
+            Some(true)
+        } else if parser.keyword("LAST") {
+            Some(false)
+        } else {
+            return Err(ParseError("NULLS requires FIRST or LAST".into()));
+        }
+    } else {
+        None
+    };
+    Ok(Some((column, descending, nulls_first)))
+}
+
 /// Whether a statement starts with WITH. Unsupported CTE shapes are rejected.
 pub fn has_cte_max_join(sql: &str) -> Result<bool, ParseError> {
     Ok(
@@ -199,32 +227,7 @@ pub fn parse_cte_max_join(sql: &str) -> Result<Option<CteMaxJoin>, ParseError> {
             "CTE JOIN requires equality to its MAX metric".into(),
         ));
     }
-    let order = if parser.keyword("ORDER") {
-        if !parser.keyword("BY") {
-            return Err(ParseError("ORDER requires BY".into()));
-        }
-        let column = parser.bounded_word()?;
-        let descending = if parser.keyword("DESC") {
-            true
-        } else {
-            parser.keyword("ASC");
-            false
-        };
-        let nulls_first = if parser.keyword("NULLS") {
-            if parser.keyword("FIRST") {
-                Some(true)
-            } else if parser.keyword("LAST") {
-                Some(false)
-            } else {
-                return Err(ParseError("NULLS requires FIRST or LAST".into()));
-            }
-        } else {
-            None
-        };
-        Some((column, descending, nulls_first))
-    } else {
-        None
-    };
+    let order = parse_outer_order(&mut parser)?;
     let limit = if parser.keyword("LIMIT") {
         Some(parse_page_number(&mut parser)?)
     } else {
