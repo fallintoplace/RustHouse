@@ -7,6 +7,24 @@ pub struct GroupedExtractMinute {
     pub column: String,
     pub label: String,
 }
+fn valid_grouped_count(
+    projection: &Projection,
+    first: &String,
+    column: &String,
+    third: &String,
+) -> bool {
+    match projection {
+        Projection::GroupedMultiCount { columns } => {
+            columns == &[first.clone(), column.clone(), third.clone()]
+        }
+        Projection::GroupedMultiAggregates { columns, items, .. } => {
+            columns == &[first.clone(), column.clone(), third.clone()]
+                && matches!(items.as_slice(), [(AggregateFunction::Count, value)] if value == "*")
+        }
+        _ => false,
+    }
+}
+
 pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError> {
     let (first, column, label, third) = match tokens.as_slice() {
         [
@@ -73,16 +91,7 @@ pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError
             "EXTRACT alias conflicts with the COUNT output".into(),
         ));
     }
-    let valid = match &select.projection {
-        Projection::GroupedMultiCount { columns } => {
-            columns == &[first.clone(), column.clone(), third.clone()]
-        }
-        Projection::GroupedMultiAggregates { columns, items, .. } => {
-            columns == &[first, column.clone(), third]
-                && matches!(items.as_slice(), [(AggregateFunction::Count, value)] if value == "*")
-        }
-        _ => false,
-    };
+    let valid = valid_grouped_count(&select.projection, &first, &column, &third);
     if !valid || select.having.is_some() || !select.order_by_extra.is_empty() {
         return Err(ParseError(
             "EXTRACT minute grouping supports one COUNT and one sort key".into(),
