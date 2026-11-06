@@ -142,6 +142,19 @@ pub struct ReplicaInventoryDelta {
     pub destination_only: Vec<ObjectMetadata>,
 }
 
+fn sorted_refs(objects: &[ObjectMetadata]) -> Result<Vec<&ObjectMetadata>, &'static str> {
+    let mut ordered = objects.iter().collect::<Vec<_>>();
+    if !ordered.windows(2).all(|pair| pair[0].key < pair[1].key) {
+        ordered.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+    }
+    if ordered.iter().any(|object| !valid_key(&object.key))
+        || ordered.windows(2).any(|pair| pair[0].key == pair[1].key)
+    {
+        return Err("unsafe or duplicate replica object key");
+    }
+    Ok(ordered)
+}
+
 /// Reconcile both directions in a single sorted merge.
 ///
 /// Validate all keys and reject conflicting immutable content before
@@ -153,18 +166,6 @@ pub fn reconcile_replica_inventories(
 ) -> Result<ReplicaInventoryDelta, &'static str> {
     if source.len() > 65_536 || destination.len() > 65_536 {
         return Err("replica inventory too large");
-    }
-    fn sorted_refs(objects: &[ObjectMetadata]) -> Result<Vec<&ObjectMetadata>, &'static str> {
-        let mut ordered = objects.iter().collect::<Vec<_>>();
-        if !ordered.windows(2).all(|pair| pair[0].key < pair[1].key) {
-            ordered.sort_unstable_by(|a, b| a.key.cmp(&b.key));
-        }
-        if ordered.iter().any(|object| !valid_key(&object.key))
-            || ordered.windows(2).any(|pair| pair[0].key == pair[1].key)
-        {
-            return Err("unsafe or duplicate replica object key");
-        }
-        Ok(ordered)
     }
     let src = sorted_refs(source)?;
     let dst = sorted_refs(destination)?;
