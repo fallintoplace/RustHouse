@@ -1,5 +1,14 @@
 use super::*;
 
+fn decode_chunk_count(bytes: &[u8]) -> Result<usize, &'static str> {
+    let count = bytes.get(..4).ok_or("truncated resume checkpoint")?;
+    Ok(u32::from_le_bytes(
+        count
+            .try_into()
+            .map_err(|_| "invalid resume checkpoint header")?,
+    ) as usize)
+}
+
 impl ResumeMap {
     pub fn complete(&self) -> bool {
         let full_bytes = self.chunks / 8;
@@ -112,12 +121,7 @@ impl ResumeMap {
         if encoded.get(..4) != Some(b"RSM1".as_slice()) {
             return Err("invalid resume checkpoint magic");
         }
-        let count = encoded.get(4..8).ok_or("truncated resume checkpoint")?;
-        let chunks = u32::from_le_bytes(
-            count
-                .try_into()
-                .map_err(|_| "invalid resume checkpoint header")?,
-        ) as usize;
+        let chunks = decode_chunk_count(&encoded[4..])?;
         // The checksum envelope only needs the encoded bitmap length.
         // Do not allocate a throwaway ResumeMap before decode_binary builds
         // the validated result.
@@ -151,12 +155,7 @@ impl ResumeMap {
 
     /// Reject truncated, oversized and noncanonical checkpoint bitmaps.
     pub fn decode_binary(bytes: &[u8]) -> Result<Self, &'static str> {
-        let count = bytes.get(..4).ok_or("truncated resume checkpoint")?;
-        let chunks = u32::from_le_bytes(
-            count
-                .try_into()
-                .map_err(|_| "invalid resume checkpoint header")?,
-        ) as usize;
+        let chunks = decode_chunk_count(bytes)?;
         let mut map = Self::new(chunks)?;
         if bytes.len() != 4 + map.completed.len() {
             return Err("invalid resume checkpoint length");
