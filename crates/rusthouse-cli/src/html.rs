@@ -131,22 +131,26 @@ fn write_framed_plain_cell<const N: usize, W: Write>(
     output.write_all(&framed[..body_end + close.len()])
 }
 
+fn plain_html_cell_is_safe(field: &str) -> bool {
+    if field.len() > 4096 {
+                false
+            } else if field.is_ascii() {
+                field.bytes().all(|byte| {
+                    !byte.is_ascii_control() && !matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'')
+                })
+            } else {
+                field
+                    .chars()
+                    .all(|ch| !ch.is_control() && !matches!(ch, '&' | '<' | '>' | '"' | '\''))
+            }
+}
+
 fn write_plain_cells<W: Write>(output: &mut W, line: &str, header: bool) -> io::Result<()> {
     let (open, close) = cell_tags(header);
     for field in line.split('\t') {
         // For very large cells, the escaping writer makes one scanning pass.
         // Small and medium safe UTF-8 cells get one framed output write.
-        let unescaped = if field.len() > 4096 {
-            false
-        } else if field.is_ascii() {
-            field.bytes().all(|byte| {
-                !byte.is_ascii_control() && !matches!(byte, b'&' | b'<' | b'>' | b'"' | b'\'')
-            })
-        } else {
-            field
-                .chars()
-                .all(|ch| !ch.is_control() && !matches!(ch, '&' | '<' | '>' | '"' | '\''))
-        };
+        let unescaped = plain_html_cell_is_safe(field);
         if unescaped && field.len() <= 256 {
             write_framed_plain_cell::<265, _>(output, open, field, close)?;
         } else if unescaped {
