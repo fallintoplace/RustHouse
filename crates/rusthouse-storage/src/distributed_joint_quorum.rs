@@ -53,6 +53,14 @@ fn intersect(
     true
 }
 
+fn exclusive_weight(members: &[Member], other: &[Member]) -> u64 {
+    members
+        .iter()
+        .filter(|member| !other.iter().any(|candidate| candidate.node == member.node))
+        .map(|member| u64::from(member.weight))
+        .sum()
+}
+
 /// Reject a membership change whenever a qualifying old and new quorum can
 /// be formed from disjoint physical members. This is a necessary safety check
 /// for reconfiguration; it does not make a reconfiguration atomic or durable.
@@ -69,23 +77,20 @@ pub fn validate_joint_quorums(
     WeightedQuorumPolicy::new(before, old.reads, old.writes)?;
     WeightedQuorumPolicy::new(after, new.reads, new.writes)?;
 
-    let mut shared = Vec::new();
-    let mut before_only = 0u64;
-    for member in before {
-        if let Some(other) = after.iter().find(|other| other.node == member.node) {
-            shared.push((u64::from(member.weight), u64::from(other.weight)));
-        } else {
-            before_only += u64::from(member.weight);
-        }
-    }
+    let shared = before
+        .iter()
+        .filter_map(|member| {
+            after
+                .iter()
+                .find(|other| other.node == member.node)
+                .map(|other| (u64::from(member.weight), u64::from(other.weight)))
+        })
+        .collect::<Vec<_>>();
     if shared.len() > 20 {
         return Err("joint quorum overlap exceeds exhaustive safety limit");
     }
-    let after_only = after
-        .iter()
-        .filter(|member| !before.iter().any(|old| old.node == member.node))
-        .map(|member| u64::from(member.weight))
-        .sum();
+    let before_only = exclusive_weight(before, after);
+    let after_only = exclusive_weight(after, before);
     Ok(JointQuorumSafety {
         writes_intersect: intersect(
             &shared,
