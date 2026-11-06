@@ -930,13 +930,50 @@ fn literal_expression(expression: &str) -> Option<String> {
     constant_value(&expression).map(|value| sql_literal(value.as_deref()))
 }
 
+fn round_constant(value: f64, precision: i32) -> Option<f64> {
+    let rounded = if precision >= 0 {
+        let factor = 10_f64.powi(precision);
+        if !factor.is_finite() {
+            value
+        } else {
+            let scaled = value * factor;
+            if scaled.is_finite() {
+                scaled.round() / factor
+            } else {
+                value
+            }
+        }
+    } else {
+        let factor = 10_f64.powi(precision.saturating_neg());
+        if factor.is_finite() {
+            (value / factor).round() * factor
+        } else {
+            0.0
+        }
+    };
+    rounded.is_finite().then_some(rounded)
+}
+
 fn constant_value(expression: &ScalarExpr) -> Option<Option<String>> {
     use ScalarExpr as Expr;
     let value = match expression {
         Expr::Integer(value) => Some(value.to_string()),
         Expr::Decimal(value) => Some(value.clone()),
+        Expr::Round { value, precision } => {
+            let value = constant_value(value)?;
+            let Some(value) = value else {
+                return Some(None);
+            };
+            let Ok(value) = value.parse::<f64>() else {
+                return None;
+            };
+            Some(round_constant(value, *precision)?.to_string())
+        }
         Expr::Column(_)
         | Expr::TextLength(_)
+        | Expr::TextLiteral(_)
+        | Expr::TextConcat(_)
+        | Expr::TextSubstring { .. }
         | Expr::IsNull { .. }
         | Expr::TextCompare { .. }
         | Expr::TextLike { .. } => {
@@ -1175,6 +1212,17 @@ mod tests {
         assert_eq!(
             fold_constant_projection(query).as_deref(),
             Some("SELECT 4.5 AS result, x FROM t")
+        );
+    }
+
+    #[test]
+    fn folds_round_for_positive_and_negative_precision() {
+        assert_eq!(
+            fold_constant_projection(
+                "SELECT ROUND(1.256, 2) cents, ROUND(126, -1) tens FROM reason"
+            )
+            .as_deref(),
+            Some("SELECT 1.26 AS cents, 130 AS tens FROM reason")
         );
     }
 
