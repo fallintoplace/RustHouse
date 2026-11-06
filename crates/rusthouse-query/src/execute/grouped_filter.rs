@@ -23,6 +23,17 @@ pub(super) enum BoundGroupedFilter {
     },
 }
 
+fn bind_literal(
+    name: &str,
+    types: &HashMap<String, String>,
+    literal: &str,
+) -> Result<typed::Cell, ExecutionError> {
+    let data_type = types.get(name).ok_or_else(|| {
+        ExecutionError::Invalid(format!("unknown grouped filter column: {name}"))
+    })?;
+    typed::parse_literal(data_type, literal)
+}
+
 pub(super) fn bind_grouped_filters(
     filters: &[Option<GroupedFilter>],
     indices: &HashMap<String, usize>,
@@ -58,15 +69,10 @@ pub(super) fn bind_grouped_filters(
                         GroupedFilter::CaseElseZeroCombined {
                             comparisons, all, ..
                         } => {
-                            let data_type = types.get(name).ok_or_else(|| {
-                                ExecutionError::Invalid(format!(
-                                    "unknown grouped filter column: {name}"
-                                ))
-                            })?;
                             let comparisons = comparisons
                                 .iter()
                                 .map(|(operator, literal)| {
-                                    Ok((*operator, typed::parse_literal(data_type, literal)?))
+                                    Ok((*operator, bind_literal(name, types, literal)?))
                                 })
                                 .collect::<Result<Vec<_>, ExecutionError>>()?;
                             Ok(Some(BoundGroupedFilter::Combined {
@@ -81,12 +87,7 @@ pub(super) fn bind_grouped_filters(
                         | GroupedFilter::CaseElseZero {
                             operator, literal, ..
                         } => {
-                            let data_type = types.get(name).ok_or_else(|| {
-                                ExecutionError::Invalid(format!(
-                                    "unknown grouped filter column: {name}"
-                                ))
-                            })?;
-                            let literal = typed::parse_literal(data_type, literal)?;
+                            let literal = bind_literal(name, types, literal)?;
                             Ok(Some(BoundGroupedFilter::Comparison {
                                 index,
                                 operator: *operator,
