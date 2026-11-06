@@ -40,16 +40,11 @@ impl HeartbeatDetector {
     /// Record a heartbeat with strictly increasing caller-supplied timestamps.
     /// Invalid input does not change history or the last accepted timestamp.
     pub fn observe(&mut self, now_ms: u64) -> Result<(), &'static str> {
-        let interval = match self.last_ms {
-            Some(previous) => {
-                if now_ms <= previous {
-                    return Err("heartbeat timestamp did not advance");
-                }
-                Some(now_ms - previous)
+        if let Some(previous) = self.last_ms {
+            if now_ms <= previous {
+                return Err("heartbeat timestamp did not advance");
             }
-            None => None,
-        };
-        if let Some(interval) = interval {
+            let interval = now_ms - previous;
             if self.intervals_ms.len() == self.window {
                 let removed = self
                     .intervals_ms
