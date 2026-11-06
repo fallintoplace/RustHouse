@@ -85,32 +85,8 @@ fn bearer_token_matches(expected: &str, authorization: Option<&str>) -> bool {
 }
 
 #[cfg(test)]
-mod http_auth_tests {
-    use super::*;
-
-    #[test]
-    fn checks_exact_bearer_token_without_prefix_acceptance() {
-        let secret = "0123456789abcdef";
-        assert!(valid_configured_token(secret));
-        assert!(bearer_token_matches(
-            secret,
-            Some("Bearer 0123456789abcdef")
-        ));
-        for supplied in [
-            None,
-            Some(""),
-            Some("Basic 0123456789abcdef"),
-            Some("Bearer 0123456789abcde"),
-            Some("Bearer 0123456789abcdefextra"),
-            Some("bearer 0123456789abcdef"),
-            Some("Bearer 0123456789abcdeg"),
-        ] {
-            assert!(!bearer_token_matches(secret, supplied));
-        }
-        assert!(!valid_configured_token("short"));
-        assert!(!valid_configured_token("has spaces invalid"));
-    }
-}
+#[path = "main_tests/http_auth_tests.rs"]
+mod http_auth_tests;
 
 fn parse_header(line: &str) -> Result<(&str, &str), Response> {
     let (key, value) = line
@@ -610,38 +586,8 @@ fn reject_busy_connection(mut stream: TcpStream) {
 }
 
 #[cfg(test)]
-mod nonblocking_overload_tests {
-    use super::*;
-
-    #[test]
-    fn busy_response_has_a_valid_bounded_content_length() {
-        let (head, body) = BUSY_RESPONSE.split_at(
-            BUSY_RESPONSE
-                .windows(4)
-                .position(|bytes| bytes == b"\r\n\r\n")
-                .unwrap()
-                + 4,
-        );
-        assert!(head.starts_with(b"HTTP/1.1 503 Service Unavailable\r\n"));
-        assert!(
-            head.windows(b"Content-Length: 12\r\n".len())
-                .any(|part| part == b"Content-Length: 12\r\n")
-        );
-        assert_eq!(body, b"server busy\n");
-    }
-
-    #[test]
-    fn busy_replies_are_sent_without_the_regular_response_writer() {
-        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).unwrap();
-        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (server, _) = listener.accept().unwrap();
-        reject_busy_connection(server);
-        let mut response = Vec::new();
-        let mut client = client;
-        client.read_to_end(&mut response).unwrap();
-        assert_eq!(response, BUSY_RESPONSE);
-    }
-}
+#[path = "main_tests/nonblocking_overload_tests.rs"]
+mod nonblocking_overload_tests;
 
 /// Allow IPv6 only on ::1 without extending the experimental
 /// unauthenticated peer transport beyond the existing private IPv4 policy.
@@ -810,624 +756,77 @@ fn main() -> io::Result<()> {
 }
 
 #[cfg(test)]
-mod ipv6_bind_policy_tests {
-    use super::*;
-
-    #[test]
-    fn enables_ipv6_loopback_only_without_expanding_private_network_access() {
-        for allow_private in [false, true] {
-            assert!(permitted_listener_bind(
-                "127.0.0.1".parse().unwrap(),
-                allow_private
-            ));
-            assert!(permitted_listener_bind(
-                "::1".parse().unwrap(),
-                allow_private
-            ));
-            assert!(!permitted_listener_bind(
-                "::".parse().unwrap(),
-                allow_private
-            ));
-            assert!(!permitted_listener_bind(
-                "fc00::1".parse().unwrap(),
-                allow_private
-            ));
-            assert!(!permitted_listener_bind(
-                "fe80::1".parse().unwrap(),
-                allow_private
-            ));
-            assert!(!permitted_listener_bind(
-                "8.8.8.8".parse().unwrap(),
-                allow_private
-            ));
-        }
-        assert!(!permitted_listener_bind("10.1.2.3".parse().unwrap(), false));
-        assert!(permitted_listener_bind("10.1.2.3".parse().unwrap(), true));
-    }
-}
+#[path = "main_tests/ipv6_bind_policy_tests.rs"]
+mod ipv6_bind_policy_tests;
 
 #[cfg(test)]
-mod buffered_header_boundary_tests {
-    use super::*;
-
-    #[test]
-    fn preserves_body_after_header_terminator_on_any_buffer_boundary() {
-        let request = b"POST / HTTP/1.1\r\nHost: localhost:8123\r\nContent-Length: 4\r\n\r\nBODY";
-        let terminator = request
-            .windows(4)
-            .position(|bytes| bytes == b"\r\n\r\n")
-            .unwrap()
-            + 4;
-        for split in 1..request.len() {
-            let mut header = Vec::new();
-            let (first, complete) = append_header_chunk(&mut header, &request[..split]).unwrap();
-            if complete {
-                assert_eq!(first, terminator);
-                assert_eq!(header.len(), terminator);
-            } else {
-                assert_eq!(first, split);
-                let (second, complete) =
-                    append_header_chunk(&mut header, &request[split..]).unwrap();
-                assert!(complete);
-                assert_eq!(split + second, terminator);
-                assert_eq!(header.len(), terminator);
-            }
-        }
-    }
-
-    #[test]
-    fn rejects_header_budget_overflow_before_advancing_into_body() {
-        let mut head = Vec::new();
-        let oversized = vec![b'x'; MAX_HEADER_BYTES + 1];
-        assert!(append_header_chunk(&mut head, &oversized).is_err());
-        assert_eq!(head.len(), MAX_HEADER_BYTES + 1);
-    }
-}
+#[path = "main_tests/buffered_header_boundary_tests.rs"]
+mod buffered_header_boundary_tests;
 
 #[cfg(test)]
-mod http_ows_smuggling_tests {
-    use super::*;
-
-    #[test]
-    fn strips_only_http_optional_whitespace_from_control_headers() {
-        assert_eq!(http_ows(" \t123\t "), "123");
-        for invalid in ["\u{a0}123", "123\u{2003}", "\u{2002}123"] {
-            assert_eq!(http_ows(invalid), invalid);
-            assert!(!http_ows(invalid).bytes().all(|byte| byte.is_ascii_digit()));
-        }
-        let (_, value) = parse_header("Content-Length:\u{a0}123").unwrap();
-        assert!(!http_ows(value).bytes().all(|byte| byte.is_ascii_digit()));
-    }
-}
+#[path = "main_tests/http_ows_smuggling_tests.rs"]
+mod http_ows_smuggling_tests;
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn accepts_http_token_header_names_and_optional_tabs() {
-        assert_eq!(
-            parse_header("Content-Length: 3").ok(),
-            Some(("Content-Length", " 3"))
-        );
-        assert_eq!(
-            parse_header("X_Request: hello\tworld").ok(),
-            Some(("X_Request", " hello\tworld"))
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_header_names_and_embedded_controls() {
-        for header in [
-            "NoColon",
-            ": value",
-            "Content-Length : 3",
-            "Bad Name: value",
-            "X-Test: hello\u{0000}world",
-            "X-Test: hello\u{001b}world",
-        ] {
-            assert_eq!(
-                parse_header(header).unwrap_err().status,
-                "400 Bad Request",
-                "{header:?}"
-            );
-        }
-    }
-}
+#[path = "main_tests/tests.rs"]
+mod tests;
 
 #[cfg(test)]
-mod request_line_spacing_regressions {
-    use super::*;
-
-    #[test]
-    fn accepts_standard_http_request_lines() {
-        assert!(matches!(
-            parse_request_line("GET /ping HTTP/1.1"),
-            Ok(("GET", "/ping"))
-        ));
-        assert!(matches!(
-            parse_request_line("POST / HTTP/1.0"),
-            Ok(("POST", "/"))
-        ));
-    }
-
-    #[test]
-    fn rejects_control_and_non_ascii_target_bytes() {
-        for target in ["/\0", "/\t", "/\u{7f}", "/café"] {
-            let line = format!("GET {target} HTTP/1.1");
-            assert_eq!(
-                parse_request_line(&line)
-                    .err()
-                    .map(|response| response.status),
-                Some("400 Bad Request")
-            );
-        }
-        assert!(parse_request_line("GET /?query=SELECT+1 HTTP/1.1").is_ok());
-    }
-
-    #[test]
-    fn rejects_tabs_repeated_spaces_and_trailing_spaces() {
-        for line in [
-            "GET\t/ping HTTP/1.1",
-            "GET  /ping HTTP/1.1",
-            "GET /ping  HTTP/1.1",
-            "GET /ping HTTP/1.1 ",
-            "GET\u{00a0}/ping HTTP/1.1",
-        ] {
-            assert_eq!(
-                parse_request_line(line)
-                    .err()
-                    .map(|response| response.status),
-                Some("400 Bad Request")
-            );
-        }
-    }
-}
+#[path = "main_tests/request_line_spacing_regressions.rs"]
+mod request_line_spacing_regressions;
 
 #[cfg(test)]
-mod accept_error_policy_tests {
-    use super::retryable_accept_error;
-    use std::io;
-
-    #[test]
-    fn only_expected_transient_accept_errors_are_retryable() {
-        for kind in [io::ErrorKind::Interrupted, io::ErrorKind::ConnectionAborted] {
-            assert!(retryable_accept_error(kind));
-        }
-        for kind in [io::ErrorKind::PermissionDenied, io::ErrorKind::Other] {
-            assert!(!retryable_accept_error(kind));
-        }
-    }
-}
+#[path = "main_tests/accept_error_policy_tests.rs"]
+mod accept_error_policy_tests;
 
 #[cfg(test)]
-mod accept_encoding_preferences_tests {
-    use super::*;
-
-    #[test]
-    fn accepts_explicit_lz4_preferences_in_normal_header_lists() {
-        for value in [
-            "x-rusthouse-lz4",
-            "X-RUSTHOUSE-LZ4",
-            "gzip, X-RUSTHOUSE-LZ4",
-            "gzip;q=1, x-rusthouse-lz4; q=0.5",
-            "x-rusthouse-lz4;q=1.000",
-            "x-rusthouse-lz4;q=0.001",
-            "x-rusthouse-lz4;q=1.",
-            "x-rusthouse-lz4;Q=0.75, gzip",
-        ] {
-            assert!(accepts_rusthouse_lz4(value), "{value}");
-        }
-    }
-
-    #[test]
-    fn disabled_invalid_or_implicit_lz4_is_not_negotiated() {
-        for value in [
-            "",
-            "gzip",
-            "*",
-            "x-rusthouse-lz4;q=0",
-            "x-rusthouse-lz4;q=0.000",
-            "x-rusthouse-lz4;q=1.001",
-            "x-rusthouse-lz4;q=0.0001",
-            "x-rusthouse-lz4;q=2",
-            "x-rusthouse-lz4;quality=1",
-            "x-rusthouse-lz4;q=1;version=1",
-            "x-rusthouse-lz4;q=1, x-rusthouse-lz4;q=0",
-        ] {
-            assert!(!accepts_rusthouse_lz4(value), "{value}");
-        }
-    }
-}
+#[path = "main_tests/accept_encoding_preferences_tests.rs"]
+mod accept_encoding_preferences_tests;
 
 #[cfg(test)]
-mod compressed_peer_response_tests {
-    use super::*;
-    use std::net::Shutdown;
-
-    #[test]
-    fn negotiated_sql_response_compresses_without_changing_tsv_bytes() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let client = std::thread::spawn(move || {
-            let mut stream = TcpStream::connect(addr).unwrap();
-            stream.shutdown(Shutdown::Write).unwrap();
-            let mut output = Vec::new();
-            stream.read_to_end(&mut output).unwrap();
-            output
-        });
-        let (mut stream, _) = listener.accept().unwrap();
-        let plain = b"user\tcount\n".repeat(8192);
-        respond(
-            &mut stream,
-            Response {
-                status: "200 OK",
-                content_type: "text/tab-separated-values; charset=utf-8",
-                body: plain.clone(),
-            },
-            true,
-        )
-        .unwrap();
-        drop(stream);
-        let raw = client.join().unwrap();
-        let end = raw
-            .windows(4)
-            .position(|bytes| bytes == b"\r\n\r\n")
-            .unwrap()
-            + 4;
-        assert!(
-            raw[..end]
-                .windows(b"Content-Encoding: x-rusthouse-lz4".len())
-                .any(|bytes| bytes == b"Content-Encoding: x-rusthouse-lz4")
-        );
-        assert_eq!(
-            lz4_flex::decompress_size_prepended(&raw[end..]).unwrap(),
-            plain
-        );
-    }
-}
+#[path = "main_tests/compressed_peer_response_tests.rs"]
+mod compressed_peer_response_tests;
 
 #[cfg(test)]
-mod concurrency_capacity_tests {
-    use super::*;
-
-    #[test]
-    fn bounds_parallel_query_workers_before_binding_server() {
-        assert_eq!(parse_max_connections("1").unwrap(), 1);
-        assert_eq!(parse_max_connections("16").unwrap(), 16);
-        assert_eq!(parse_max_connections("64").unwrap(), 64);
-        for invalid in ["", "0", "65", "1000000", "-1", "4.5", "many"] {
-            assert!(parse_max_connections(invalid).is_err(), "{invalid}");
-        }
-        assert_eq!(MAX_CONNECTIONS, 16);
-    }
-}
+#[path = "main_tests/concurrency_capacity_tests.rs"]
+mod concurrency_capacity_tests;
 
 #[cfg(test)]
-mod get_body_early_rejection_tests {
-    use super::*;
-
-    #[test]
-    fn rejects_get_body_without_waiting_for_advertised_bytes() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        client
-            .write_all(b"GET /ping HTTP/1.1\r\nHost: localhost\r\nContent-Length: 65536\r\n\r\n")
-            .unwrap();
-        let (mut server, _) = listener.accept().unwrap();
-        server
-            .set_read_timeout(Some(Duration::from_millis(500)))
-            .unwrap();
-        assert_eq!(
-            read_request(&mut server)
-                .err()
-                .map(|response| response.status),
-            Some("400 Bad Request"),
-        );
-        assert!(parse_request_line("GET /ping HTTP/1.1").is_ok());
-    }
-}
+#[path = "main_tests/get_body_early_rejection_tests.rs"]
+mod get_body_early_rejection_tests;
 
 #[cfg(test)]
-mod expect_header_tests {
-    use super::*;
-
-    #[test]
-    fn unsupported_expect_does_not_wait_for_the_request_body() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let mut client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        client
-            .write_all(
-                b"POST / HTTP/1.1\r\nHost: localhost\r\nContent-Length: 1024\r\nExpect: 100-continue\r\n\r\n",
-            )
-            .unwrap();
-        let (mut server, _) = listener.accept().unwrap();
-        server
-            .set_read_timeout(Some(Duration::from_millis(500)))
-            .unwrap();
-        assert_eq!(
-            read_request(&mut server)
-                .err()
-                .map(|response| response.status),
-            Some("417 Expectation Failed"),
-        );
-    }
-}
+#[path = "main_tests/expect_header_tests.rs"]
+mod expect_header_tests;
 
 #[cfg(test)]
-mod total_request_deadline_tests {
-    use super::*;
-    use std::net::TcpListener;
-    use std::time::Instant;
-
-    #[test]
-    fn slow_header_bytes_cannot_extend_total_request_deadline() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let writer = std::thread::spawn(move || {
-            let mut client = TcpStream::connect(address).unwrap();
-            for byte in b"GET /ping HTTP/1.1\\r\\n" {
-                if client.write_all(&[*byte]).is_err() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(35));
-            }
-        });
-        let (mut server, _) = listener.accept().unwrap();
-        let started = Instant::now();
-        let response =
-            read_request_with_deadline(&mut server, Duration::from_millis(120)).unwrap_err();
-        assert_eq!(response.status, "408 Request Timeout");
-        assert!(started.elapsed() < Duration::from_secs(1));
-        drop(server);
-        writer.join().unwrap();
-    }
-
-    #[test]
-    fn slow_body_bytes_cannot_extend_total_request_deadline() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let address = listener.local_addr().unwrap();
-        let writer = std::thread::spawn(move || {
-            let mut client = TcpStream::connect(address).unwrap();
-            client
-                .write_all(b"POST / HTTP/1.1\\r\\nContent-Length: 32\\r\\n\\r\\n")
-                .unwrap();
-            for _ in 0..32 {
-                if client.write_all(b"x").is_err() {
-                    break;
-                }
-                std::thread::sleep(Duration::from_millis(35));
-            }
-        });
-        let (mut server, _) = listener.accept().unwrap();
-        let response =
-            read_request_with_deadline(&mut server, Duration::from_millis(120)).unwrap_err();
-        assert_eq!(response.status, "408 Request Timeout");
-        drop(server);
-        writer.join().unwrap();
-    }
-}
+#[path = "main_tests/total_request_deadline_tests.rs"]
+mod total_request_deadline_tests;
 
 #[cfg(test)]
-mod client_socket_timeout_tests {
-    use super::*;
-
-    #[test]
-    fn client_connections_receive_read_and_write_timeouts() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (server, _) = listener.accept().unwrap();
-        configure_client_timeouts(&server).unwrap();
-        assert_eq!(server.read_timeout().unwrap(), Some(Duration::from_secs(5)));
-        assert_eq!(
-            server.write_timeout().unwrap(),
-            Some(Duration::from_secs(5))
-        );
-        drop(client);
-    }
-}
+#[path = "main_tests/client_socket_timeout_tests.rs"]
+mod client_socket_timeout_tests;
 
 #[cfg(test)]
-mod response_write_deadline_tests {
-    use super::*;
-
-    #[test]
-    fn deadline_failure_happens_before_any_network_write() {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let client = TcpStream::connect(listener.local_addr().unwrap()).unwrap();
-        let (mut server, _) = listener.accept().unwrap();
-        let error = write_with_deadline(
-            &mut server,
-            b"not sent",
-            Instant::now() - Duration::from_millis(1),
-        )
-        .unwrap_err();
-        assert_eq!(error.kind(), io::ErrorKind::TimedOut);
-        drop(client);
-    }
-}
+#[path = "main_tests/response_write_deadline_tests.rs"]
+mod response_write_deadline_tests;
 
 #[cfg(test)]
-mod active_worker_permit_tests {
-    use super::*;
-
-    #[test]
-    fn dropping_worker_slot_releases_capacity() {
-        let active = Arc::new(AtomicUsize::new(1));
-        {
-            let _permit = ActiveRequest(Arc::clone(&active));
-            assert_eq!(active.load(Ordering::Acquire), 1);
-        }
-        assert_eq!(active.load(Ordering::Acquire), 0);
-    }
-}
+#[path = "main_tests/active_worker_permit_tests.rs"]
+mod active_worker_permit_tests;
 
 #[cfg(test)]
-mod http_metrics_tests {
-    use super::*;
-
-    #[test]
-    fn metrics_use_stable_prometheus_counter_format() {
-        let response = metrics_response(125, 7);
-        assert_eq!(response.status, "200 OK");
-        assert_eq!(
-            response.content_type,
-            "text/plain; version=0.0.4; charset=utf-8"
-        );
-        let text = std::str::from_utf8(&response.body).unwrap();
-        assert!(text.contains("# TYPE rusthouse_http_requests_total counter\n"));
-        assert!(text.contains("rusthouse_http_requests_total 125\n"));
-        assert!(text.contains("# TYPE rusthouse_http_errors_total counter\n"));
-        assert!(text.contains("rusthouse_http_errors_total 7\n"));
-    }
-}
+#[path = "main_tests/http_metrics_tests.rs"]
+mod http_metrics_tests;
 
 #[cfg(test)]
-mod host_validation_tests {
-    use super::*;
-
-    #[test]
-    fn accepts_only_bound_address_or_loopback_alias() {
-        let loopback: SocketAddr = "127.0.0.1:8123".parse().unwrap();
-        for valid in ["127.0.0.1", "127.0.0.1:8123", "localhost", "LOCALHOST:8123"] {
-            assert!(host_matches_listener(valid, loopback), "{valid}");
-        }
-        for bad in [
-            "attacker.example",
-            "attacker.example:8123",
-            "127.0.0.1:8124",
-            "localhost:8124",
-            "127.0.0.1:8123@evil.example",
-            "",
-        ] {
-            assert!(!host_matches_listener(bad, loopback), "{bad}");
-        }
-        let private: SocketAddr = "10.1.2.3:8080".parse().unwrap();
-        assert!(host_matches_listener("10.1.2.3:8080", private));
-        assert!(!host_matches_listener("localhost:8080", private));
-        assert!(!host_matches_listener("10.1.2.4:8080", private));
-    }
-
-    #[test]
-    fn accepts_bracketed_ipv6_without_disabling_host_validation() {
-        let listener: SocketAddr = "[::1]:8123".parse().unwrap();
-        for host in ["[::1]", "[::1]:8123", "[0:0:0:0:0:0:0:1]:8123"] {
-            assert!(host_matches_listener(host, listener), "{host}");
-        }
-        for host in [
-            "::1",
-            "::1:8123",
-            "[::1]:8124",
-            "[::2]:8123",
-            "[::1]garbage",
-            "[::1]:",
-            "[::1]:1234:8123",
-            "[localhost]:8123",
-            "[::1",
-            "[::1]]:8123",
-        ] {
-            assert!(!host_matches_listener(host, listener), "{host}");
-        }
-        let v4: SocketAddr = "127.0.0.1:8123".parse().unwrap();
-        assert!(!host_matches_listener("[::1]:8123", v4));
-        assert!(host_matches_listener("localhost:8123", listener));
-    }
-}
+#[path = "main_tests/host_validation_tests.rs"]
+mod host_validation_tests;
 
 #[cfg(test)]
-mod interrupted_request_body_tests {
-    use super::*;
-
-    struct InterruptedOnce(bool);
-
-    impl Read for InterruptedOnce {
-        fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-            if !self.0 {
-                self.0 = true;
-                return Err(io::ErrorKind::Interrupted.into());
-            }
-            buffer[..2].copy_from_slice(b"OK");
-            Ok(2)
-        }
-    }
-
-    #[test]
-    fn interrupted_body_read_retries_without_losing_bytes() {
-        let mut reader = InterruptedOnce(false);
-        let mut result = [0u8; 2];
-        assert_eq!(
-            read_body_chunk_with_deadline(
-                &mut reader,
-                &mut result,
-                Instant::now(),
-                Duration::from_secs(5),
-            )
-            .expect("interrupted body read should succeed"),
-            2,
-        );
-        assert_eq!(&result, b"OK");
-    }
-
-    #[test]
-    fn expired_body_deadline_fails_before_reading() {
-        let mut reader = InterruptedOnce(false);
-        let mut result = [0u8; 2];
-        assert!(read_body_chunk_with_deadline(
-            &mut reader, &mut result, Instant::now(), Duration::ZERO,
-        ).is_err());
-        assert!(!reader.0);
-    }
-}
+#[path = "main_tests/interrupted_request_body_tests.rs"]
+mod interrupted_request_body_tests;
 
 #[cfg(test)]
-mod interrupted_response_write_tests {
-    use super::*;
-
-    struct InterruptThenPartial {
-        bytes: Vec<u8>,
-        calls: usize,
-    }
-
-    impl Write for InterruptThenPartial {
-        fn write(&mut self, input: &[u8]) -> io::Result<usize> {
-            self.calls += 1;
-            if self.calls == 1 {
-                return Err(io::ErrorKind::Interrupted.into());
-            }
-            let count = input.len().min(3);
-            self.bytes.extend_from_slice(&input[..count]);
-            Ok(count)
-        }
-
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-
-    #[test]
-    fn interrupted_and_partial_writes_preserve_every_response_byte() {
-        let mut writer = InterruptThenPartial {
-            bytes: Vec::new(),
-            calls: 0,
-        };
-        let mut input = b"HTTP/1.1 200 OK\r\n\r\nhello".as_slice();
-        assert_eq!(write_response_chunk(&mut writer, input).unwrap(), None);
-        while !input.is_empty() {
-            if let Some(count) = write_response_chunk(&mut writer, input).unwrap() {
-                input = &input[count..];
-            }
-        }
-        assert_eq!(writer.bytes, b"HTTP/1.1 200 OK\r\n\r\nhello");
-        assert!(writer.calls > 2);
-    }
-
-    #[test]
-    fn zero_length_write_is_not_retried_forever() {
-        assert_eq!(
-            write_response_chunk(&mut io::sink(), b"")
-                .unwrap_err()
-                .kind(),
-            io::ErrorKind::WriteZero,
-        );
-    }
-}
+#[path = "main_tests/interrupted_response_write_tests.rs"]
+mod interrupted_response_write_tests;
