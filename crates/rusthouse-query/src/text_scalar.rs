@@ -145,6 +145,7 @@ pub(super) fn is_function(name: &str) -> bool {
                 | "TRIM_WHITESPACE"
                 | "TRY_TO_INT64"
                 | "TOUINT8"
+                | "STRCMP"
                 | "TOUINT16"
                 | "TOUINT32"
                 | "TOUINT8ORNULL"
@@ -2272,6 +2273,24 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 }
                 Some(value) => ConstantValue::Text(value.chars().rev().collect()),
                 None => ConstantValue::Null,
+            }
+        }
+        "STRCMP" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "strcmp requires a second string")?;
+            let right = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "strcmp requires two arguments")?;
+            match (left, right) {
+                (Some(left), Some(right)) => {
+                    let order = left.as_bytes().cmp(right.as_bytes());
+                    let result = match order {
+                        std::cmp::Ordering::Less => -1,
+                        std::cmp::Ordering::Equal => 0,
+                        std::cmp::Ordering::Greater => 1,
+                    };
+                    ConstantValue::Integer(result)
+                }
+                _ => ConstantValue::Null,
             }
         }
         "REVERSEBYSEPARATOR" => {
