@@ -52,6 +52,22 @@ fn verify_syndrome(
     Ok(())
 }
 
+fn locate_corrupted_shard(
+    shards: &[&[u8]],
+    pivot: usize,
+    p: u8,
+    q: u8,
+) -> Result<(usize, u8), &'static str> {
+    let mut coefficient = 1u8;
+    for (index, shard) in shards.iter().enumerate() {
+        if pivot < shard.len() && gf256_mul(coefficient, p) == q {
+            return Ok((index, coefficient));
+        }
+        coefficient = gf256_mul(coefficient, 2);
+    }
+    Err("uncorrectable dual-parity syndrome")
+}
+
 /// Diagnose and correct exactly one unknown data corruption using P/Q parity.
 ///
 /// Returns None if the supplied data reproduces both parity shards. If P/Q
@@ -85,16 +101,7 @@ pub fn correct_one_unknown_corruption(
         .ok_or("uncorrectable dual-parity syndrome")?;
     let p = current.xor[pivot] ^ parity.xor[pivot];
     let q = current.weighted[pivot] ^ parity.weighted[pivot];
-    let mut coefficient = 1u8;
-    let mut candidate = None;
-    for (index, shard) in shards.iter().enumerate() {
-        if pivot < shard.len() && gf256_mul(coefficient, p) == q {
-            candidate = Some((index, coefficient));
-            break;
-        }
-        coefficient = gf256_mul(coefficient, 2);
-    }
-    let (index, coefficient) = candidate.ok_or("uncorrectable dual-parity syndrome")?;
+    let (index, coefficient) = locate_corrupted_shard(shards, pivot, p, q)?;
     verify_syndrome(&current, parity, coefficient, shards[index].len())?;
     let restored = shards[index]
         .iter()
