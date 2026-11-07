@@ -25,6 +25,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "DECODEURLFORMCOMPONENT"
                 | "LENGTH"
                 | "TOYEAR"
+                | "EXTRACTDIGITS"
                 | "LENGTHUTF8"
                 | "TOSTARTOFFIVEMINUTES"
                 | "CHAR_LENGTH"

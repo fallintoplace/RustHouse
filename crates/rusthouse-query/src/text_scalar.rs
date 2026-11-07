@@ -1176,6 +1176,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "EXTRACTDIGITS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "extractDigits requires one argument")?;
+            match input {
+                Some(input) => {
+                    ConstantValue::Text(
+                        input.chars().filter(|character| character.is_ascii_digit()).collect(),
+                    )
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "LENGTHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "lengthUTF8 requires one argument")?;
