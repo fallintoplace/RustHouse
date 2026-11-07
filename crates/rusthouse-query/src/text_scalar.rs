@@ -698,6 +698,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ISIPV6DOCUMENTATION" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv6Documentation requires one argument")?;
+            match input {
+                Some(input) => {
+                    let address = input
+                        .parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    let segments = address.segments();
+                    ConstantValue::Integer(i64::from(
+                        segments[0] == 0x2001 && segments[1] == 0x0db8,
+                    ))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "ISIPV6LOOPBACK" => {
             let input = text_arg(parser, depth + 1)?;
             require(
