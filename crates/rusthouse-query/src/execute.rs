@@ -70,6 +70,7 @@ mod grouped_regex;
 mod join;
 mod multi_join;
 mod predicates;
+mod physical_plan;
 mod sort;
 mod typed;
 pub use cte_max_join::execute_cte_max_join;
@@ -83,6 +84,7 @@ pub use multi_join::{
     execute_nested_join_sum,
 };
 use sort::{MAX_SORTED_ROWS, SortedRows};
+use physical_plan::NumericScanPlan;
 mod multi_aggregate;
 mod string_length;
 mod substring_antijoin;
@@ -1568,11 +1570,14 @@ fn execute_into<W: Write>(
             query, part, columns, items, aliases, filters, output,
         );
     }
-    if typed::requires_typed_scan(query, part)? {
-        if matches!(query.projection, Projection::Aggregate { .. }) {
+    match physical_plan::select_storage_scan(query, part)? {
+        physical_plan::StorageScanPlan::TypedAggregate => {
             return typed_aggregate::execute_typed_aggregate(query, part, output);
         }
-        return typed::execute_typed(query, part, output);
+        physical_plan::StorageScanPlan::Typed => {
+            return typed::execute_typed(query, part, output);
+        }
+        physical_plan::StorageScanPlan::Numeric => {}
     }
     if let Projection::CountColumn { column } = &query.projection {
         return execute_count_column_part(query, part, column, output);
@@ -1599,66 +1604,12 @@ fn execute_into<W: Write>(
         return Ok(());
     }
 
-    let projected = match &query.projection {
-        Projection::All => metadata
-            .columns
-            .iter()
-            .map(|column| column.name.clone())
-            .collect::<Vec<_>>(),
-        Projection::Columns(names) => names.clone(),
-        Projection::Count => Vec::new(),
-        Projection::Aggregate { .. }
-        | Projection::CountColumn { .. }
-        | Projection::CountDistinct { .. }
-        | Projection::ApproxDistinct { .. }
-        | Projection::Histogram { .. }
-        | Projection::ApproxDistinctState { .. }
-        | Projection::GroupedCount { .. }
-        | Projection::GroupedDistinctCount { .. }
-        | Projection::GroupedMultiDistinctCount { .. }
-        | Projection::GroupedMultiCount { .. }
-        | Projection::GroupedAggregate { .. }
-        | Projection::GroupedAggregates { .. }
-        | Projection::GroupedMultiAggregates { .. }
-        | Projection::MultipleAggregates(_)
-        | Projection::StringLength { .. }
-        | Projection::Literal(_)
-        | Projection::Constants(_) => unreachable!(),
-    };
-    if query.distinct
-        && query.order_terms().any(|order| {
-            !projected
-                .iter()
-                .any(|column| column == query.order_source_column(&order.column))
-        })
-    {
-        return Err(ExecutionError::Invalid(
-            "DISTINCT ORDER BY column must appear in SELECT".into(),
-        ));
-    }
-    let mut scan_columns = Vec::new();
-    let projected_indices = projected
-        .iter()
-        .map(|name| {
-            if let Some(index) = scan_columns.iter().position(|column| column == name) {
-                index
-            } else {
-                let index = scan_columns.len();
-                scan_columns.push(name.clone());
-                index
-            }
-        })
-        .collect::<Vec<_>>();
-    let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
-        let column = metadata
-            .columns
-            .iter()
-            .find(|column| column.name == column_name)
-            .ok_or_else(|| {
-                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
-            })?;
-        parse_numeric(&column.data_type, literal)
-    })?;
+    let NumericScanPlan {
+        projected,
+        projected_indices,
+        mut scan_columns,
+        comparisons,
+    } = physical_plan::prepare_numeric_scan(query, &metadata)?;
     // A constant predicate on non-nullable numeric columns can be resolved
     // from validated part row counts without decoding any compressed blocks.
     // Check every referenced column first to retain unknown-column errors.
