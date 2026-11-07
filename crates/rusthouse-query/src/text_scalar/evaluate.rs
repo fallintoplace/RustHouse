@@ -8,8 +8,8 @@ pub(super) fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<Consta
     }
     let name = parser.word()?.to_ascii_uppercase();
     require(parser, Token::LParen, "string function requires '('")?;
-    if super::date_scalar::is_function(&name) {
-        return super::date_scalar::parse_after_open(parser, &name, depth);
+    if crate::date_scalar::is_function(&name) {
+        return crate::date_scalar::parse_after_open(parser, &name, depth);
     }
     let value = match name.as_str() {
         "MATCH" => {
@@ -2403,7 +2403,7 @@ pub(super) fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<Consta
             )?;
             match input {
                 Some(seconds) => {
-                    ConstantValue::Text(super::date_scalar::render_datetime64_utc(seconds)?)
+                    ConstantValue::Text(crate::date_scalar::render_datetime64_utc(seconds)?)
                 }
                 None => ConstantValue::Null,
             }
@@ -2420,7 +2420,7 @@ pub(super) fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<Consta
                     let unit = 10_i64.pow(3);
                     let seconds = input.div_euclid(unit);
                     let fraction = input.rem_euclid(unit);
-                    let datetime = super::date_scalar::render_datetime64_utc(seconds)?;
+                    let datetime = crate::date_scalar::render_datetime64_utc(seconds)?;
                     ConstantValue::Text(format!("{datetime}.{fraction:0width$}", width = 3))
                 }
                 None => ConstantValue::Null,
@@ -3396,7 +3396,7 @@ pub(super) fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<Consta
                     let unit = 10_i64.pow(9);
                     let seconds = input.div_euclid(unit);
                     let fraction = input.rem_euclid(unit);
-                    let datetime = super::date_scalar::render_datetime64_utc(seconds)?;
+                    let datetime = crate::date_scalar::render_datetime64_utc(seconds)?;
                     ConstantValue::Text(format!("{datetime}.{fraction:0width$}", width = 9))
                 }
                 None => ConstantValue::Null,
@@ -3492,7 +3492,7 @@ pub(super) fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<Consta
                     let unit = 10_i64.pow(6);
                     let seconds = input.div_euclid(unit);
                     let fraction = input.rem_euclid(unit);
-                    let datetime = super::date_scalar::render_datetime64_utc(seconds)?;
+                    let datetime = crate::date_scalar::render_datetime64_utc(seconds)?;
                     ConstantValue::Text(format!("{datetime}.{fraction:0width$}", width = 6))
                 }
                 None => ConstantValue::Null,
