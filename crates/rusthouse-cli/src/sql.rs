@@ -13,11 +13,11 @@ use rusthouse_query::{
     ParseError, Source, execute, explain_join, explain_select, has_cte_max_join,
     has_derived_join_count, has_explicit_join, has_implicit_join, has_join_correlated_avg,
     has_join_correlated_min, has_join_correlated_sum, has_nested_join_sum, has_top_level_exists,
-    parse_correlated_exists, parse_cte_max_join, parse_ddl, parse_delete,
-    parse_derived_join_count_with_schema, parse_derived_join_sum_with_schema, parse_insert,
+    parse_correlated_exists, parse_cte_max_join, parse_ddl,
+    parse_derived_join_count_with_schema, parse_derived_join_sum_with_schema,
     parse_join, parse_join_correlated_avg_with_schema, parse_join_correlated_exists_with_schema,
     parse_join_correlated_min_with_schema, parse_join_correlated_sum_with_schema,
-    parse_join_with_schema, parse_nested_join_sum_with_schema, parse_select, parse_update,
+    parse_join_with_schema, parse_nested_join_sum_with_schema, parse_select,
     split_clickhouse_format,
 };
 use std::ffi::OsString;
@@ -267,81 +267,45 @@ pub(super) fn run_sql_args(mut args: impl Iterator<Item = OsString>) -> Result<(
         return Err("--catalog and --database cannot be combined".into());
     }
     if let Some(database_dir) = database.as_deref() {
+        use rusthouse_query::DatabaseStatement;
         if part.is_some() {
             return Err("--part cannot be combined with --database".into());
         }
-        if let Some(ddl) = parse_ddl(&query).map_err(|error| error.to_string())? {
-            if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
-                return Err(
-                    "database DDL cannot use --explain, --time, --format, --output, or --max-rows"
-                        .into(),
-                );
-            }
-            if show_ast {
-                println!("{ddl:#?}");
-                return Ok(());
-            }
-            return crate::database::apply_ddl(database_dir, &ddl);
-        }
-        if let Some(copy) =
-            rusthouse_query::parse_copy_from(&query).map_err(|error| error.to_string())?
+        if let Some(statement) = rusthouse_query::parse_database_statement(&query)
+            .map_err(|error| error.to_string())?
         {
             if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
-                return Err(
-                    "COPY cannot use --explain, --time, --format, --output, or --max-rows".into(),
-                );
+                let message = match &statement {
+                    DatabaseStatement::Ddl(_) =>
+                        "database DDL cannot use --explain, --time, --format, --output, or --max-rows",
+                    DatabaseStatement::Copy(_) =>
+                        "COPY cannot use --explain, --time, --format, --output, or --max-rows",
+                    DatabaseStatement::InsertSelect(_) | DatabaseStatement::Insert(_) =>
+                        "INSERT cannot use --explain, --time, --format, --output, or --max-rows",
+                    DatabaseStatement::Delete(_) => "DELETE cannot use output or SELECT-only flags",
+                    DatabaseStatement::Update(_) => "UPDATE cannot use output or SELECT-only flags",
+                };
+                return Err(message.into());
             }
             if show_ast {
-                println!("{copy:#?}");
+                match &statement {
+                    DatabaseStatement::Ddl(value) => println!("{value:#?}"),
+                    DatabaseStatement::Copy(value) => println!("{value:#?}"),
+                    DatabaseStatement::InsertSelect(value) => println!("{value:#?}"),
+                    DatabaseStatement::Insert(value) => println!("{value:#?}"),
+                    DatabaseStatement::Delete(value) => println!("{value:#?}"),
+                    DatabaseStatement::Update(value) => println!("{value:#?}"),
+                }
                 return Ok(());
             }
-            return crate::copy_from::run(database_dir, &copy);
-        }
-        if let Some(insert) =
-            rusthouse_query::parse_insert_select(&query).map_err(|error| error.to_string())?
-        {
-            if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
-                return Err(
-                    "INSERT cannot use --explain, --time, --format, --output, or --max-rows".into(),
-                );
-            }
-            if show_ast {
-                println!("{insert:#?}");
-                return Ok(());
-            }
-            return crate::insert_select::run(database_dir, &insert);
-        }
-        if let Some(insert) = parse_insert(&query).map_err(|error| error.to_string())? {
-            if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
-                return Err(
-                    "INSERT cannot use --explain, --time, --format, --output, or --max-rows".into(),
-                );
-            }
-            if show_ast {
-                println!("{insert:#?}");
-                return Ok(());
-            }
-            return crate::database::insert(database_dir, &insert);
-        }
-        if let Some(delete) = parse_delete(&query).map_err(|error| error.to_string())? {
-            if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
-                return Err("DELETE cannot use output or SELECT-only flags".into());
-            }
-            if show_ast {
-                println!("{delete:#?}");
-                return Ok(());
-            }
-            return crate::database::delete(database_dir, &delete);
-        }
-        if let Some(update) = parse_update(&query).map_err(|error| error.to_string())? {
-            if explain || time || format.is_some() || output_path.is_some() || max_rows.is_some() {
-                return Err("UPDATE cannot use output or SELECT-only flags".into());
-            }
-            if show_ast {
-                println!("{update:#?}");
-                return Ok(());
-            }
-            return crate::database::update(database_dir, &update);
+            return match statement {
+                DatabaseStatement::Ddl(value) => crate::database::apply_ddl(database_dir, &value),
+                DatabaseStatement::Copy(value) => crate::copy_from::run(database_dir, &value),
+                DatabaseStatement::InsertSelect(value) => crate::insert_select::run(database_dir, &value),
+                DatabaseStatement::Insert(value) => crate::database::insert(database_dir, &value),
+                DatabaseStatement::Delete(value) => crate::database::delete(database_dir, &value),
+                DatabaseStatement::Update(value) => crate::database::update(database_dir, &value),
+            };
         }
     }
     if let Some(catalog_path) = catalog {

@@ -30,6 +30,7 @@ mod lexer;
 mod literal;
 mod multi_aggregate;
 mod scalar;
+mod statement;
 mod text_scalar;
 mod update;
 mod where_parser;
@@ -81,6 +82,7 @@ pub use join::{
 };
 pub use multi_aggregate::AggregateItem;
 pub use update::{Update, UpdateValue, parse_update};
+pub use statement::{DatabaseStatement, parse_database_statement};
 
 use std::error::Error;
 use std::fmt;
