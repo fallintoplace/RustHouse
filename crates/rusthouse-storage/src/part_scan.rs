@@ -7,7 +7,6 @@ use crate::numeric::numeric_storage_type;
 use crate::scan_layout::ScanLayout;
 use crate::{
     CompressedBlockReader, DecodedBlock, NumericColumn, PartError, WideMark, inspect_part,
-    read_wide_marks,
 };
 use std::fs::File;
 use std::path::{Path, PathBuf};
