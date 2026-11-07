@@ -19,6 +19,13 @@ pub struct GrantedTransfer {
     pub bucket: TokenBucket,
 }
 
+// Call only after confirming the refill cannot reach the bucket capacity.
+fn earned_refill(elapsed: u64, rate_bytes_per_second: u64, remainder: u16) -> (u64, u16) {
+    let earned = u128::from(elapsed) * u128::from(rate_bytes_per_second)
+        + u128::from(remainder);
+    ((earned / 1000) as u64, (earned % 1000) as u16)
+}
+
 impl TokenBucket {
     /// Start a new limiter with a full burst allowance.
     pub fn new(
@@ -108,10 +115,8 @@ impl TokenBucket {
 
         // Before the threshold, elapsed * rate < capacity * 1000.
         // This is bounded in u128 even for maximum u64 inputs.
-        let earned = u128::from(elapsed) * u128::from(self.rate_bytes_per_second)
-            + u128::from(self.remainder);
-        let bytes = (earned / 1000) as u64;
-        let remainder = (earned % 1000) as u16;
+        let (bytes, remainder) =
+            earned_refill(elapsed, self.rate_bytes_per_second, self.remainder);
         let tokens = self.tokens + bytes;
         if tokens >= self.capacity {
             Ok(self.filled_at(now_ms))
