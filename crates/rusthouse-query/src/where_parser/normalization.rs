@@ -42,7 +42,7 @@ pub(super) fn check_expansion(branches: &Branches) -> Result<(), ParseError> {
     Ok(())
 }
 
-pub(super) fn combine_and(left: Branches, right: Branches) -> Result<Branches, ParseError> {
+pub(crate) fn combine_and(left: Branches, right: Branches) -> Result<Branches, ParseError> {
     // A temporary cross-product can be larger than the final DNF when
     // absorption removes duplicate and stronger branches. Keep the work
     // bounded, but enforce the public branch cap only after normalization.
@@ -232,4 +232,3 @@ pub(super) fn negate(branches: Branches) -> Result<Branches, ParseError> {
     check_expansion(&inverted)?;
     Ok(inverted)
 }
-
