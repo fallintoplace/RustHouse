@@ -261,6 +261,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "FORMATREADABLEDECIMALSIZE"
                 | "TODECIMALSTRING"
                 | "TOTYPENAME"
+                | "JSONEXTRACTINTORNULL"
                 | "JSONEXTRACTFLOAT"
                 | "POSITION"
                 | "ENCODEURLFORMCOMPONENT"

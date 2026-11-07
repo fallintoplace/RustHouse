@@ -5359,6 +5359,33 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "JSONEXTRACTINTORNULL" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(
+                parser,
+                Token::RParen,
+                "JSONExtractIntOrNull requires one or two arguments",
+            )?;
+            match (input, path) {
+                (None, _) | (_, Some(None)) => ConstantValue::Null,
+                (Some(input), path) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let node = match path {
+                        Some(Some(path)) => json.at_path(&path),
+                        None => Some(&json),
+                        Some(None) => unreachable!(),
+                    };
+                    node.and_then(|value| value.raw().parse::<i64>().ok())
+                        .map_or(ConstantValue::Null, ConstantValue::Integer)
+                }
+            }
+        }
         "JSONEXTRACTFLOAT" => {
             let input = text_arg(parser, depth + 1)?;
             let path = if parser.take(Token::Comma) {
