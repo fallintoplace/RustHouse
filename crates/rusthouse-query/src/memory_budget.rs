@@ -22,12 +22,7 @@ pub(crate) fn try_reserve_atomic(used: &AtomicUsize, bytes: usize, max_bytes: us
         let Some(next) = current.checked_add(bytes).filter(|&next| next <= max_bytes) else {
             return false;
         };
-        match used.compare_exchange_weak(
-            current,
-            next,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        ) {
+        match used.compare_exchange_weak(current, next, Ordering::AcqRel, Ordering::Acquire) {
             Ok(_) => return true,
             Err(observed) => current = observed,
         }
