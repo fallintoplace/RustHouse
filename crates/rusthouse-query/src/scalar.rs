@@ -85,6 +85,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BYTESWAP")
         || is_power(name)
         || name.eq_ignore_ascii_case("NEXT_POWER_OF_TWO")
+        || name.eq_ignore_ascii_case("BIT_RANK")
         || name.eq_ignore_ascii_case("BIT_EXTRACT")
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("MOD_POW")
@@ -608,6 +609,19 @@ fn parse_floor_to_multiple(parser: &mut Parser, depth: usize) -> Result<i64, Par
     let value = i128::from(value);
     let multiple = i128::from(multiple);
     i64::try_from(value.div_euclid(multiple) * multiple).map_err(|_| overflow())
+}
+
+fn parse_bit_rank(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_RANK requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_RANK requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BIT_RANK requires two arguments")?;
+    if !(0..=64).contains(&right) {
+        return Err(ParseError("bitRank position must be between 0 and 64".into()));
+    }
+    let mask = if right == 64 { u64::MAX } else { (1_u64 << (right as u32)) - 1 };
+    Ok(i64::from(((left as u64) & mask).count_ones()))
 }
 
 fn parse_bit_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -1242,6 +1256,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("BITTESTANY") {
         return parse_bit_test_any(parser, depth);
+    }
+    if parser.keyword("BIT_RANK") {
+        return parse_bit_rank(parser, depth);
     }
     if parser.keyword("BIT_EXTRACT") {
         return parse_bit_extract(parser, depth);
