@@ -267,6 +267,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "ISIPV4PRIVATE"
                 | "ISIPV4LOOPBACK"
                 | "ISIPV4MULTICAST"
+                | "ISIPV4UNSPECIFIED"
                 | "ISIPV4LINKLOCAL"
                 | "ISIPV6UNIQUELOCAL"
                 | "ISIPV6LOOPBACK"

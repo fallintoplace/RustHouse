@@ -690,6 +690,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ISIPV4UNSPECIFIED" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4Unspecified requires one argument")?;
+            match input {
+                Some(input) => {
+                    let address = input
+                        .parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("invalid IPv4 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_unspecified()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "ISIPV4LINKLOCAL" => {
             let input = text_arg(parser, depth + 1)?;
             require(
