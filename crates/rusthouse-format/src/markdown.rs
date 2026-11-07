@@ -4,10 +4,7 @@ use std::io::{self, Write};
 /// Write a separator for the supplied number of Markdown columns.
 ///
 /// Keep the common <=64-column path in a stack buffer to minimize writes.
-pub fn write_markdown_header_separator<W: Write>(
-    output: &mut W,
-    columns: usize,
-) -> io::Result<()> {
+pub fn write_markdown_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Result<()> {
     if columns <= 64 {
         let mut framed = [0u8; 1 + 64 * 6 + 1];
         framed[0] = b'|';
