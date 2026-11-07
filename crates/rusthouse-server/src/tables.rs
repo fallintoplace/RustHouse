@@ -3,7 +3,10 @@ use super::{
     MarkdownWriter, QueryFormat, Response, SqlValuesWriter, WithoutHeader, write_json_string,
 };
 use rusthouse_query::{Ddl, parse_ddl};
-use rusthouse_storage::acquire_database_lock;
+use rusthouse_storage::{
+    MAX_SCHEMA_COLUMN_COUNT as MAX_SCHEMA_COLUMNS, MAX_SCHEMA_FILE_BYTES as MAX_SCHEMA_BYTES,
+    acquire_database_lock, valid_schema_identifier as identifier,
+};
 use std::collections::HashSet;
 use std::fs;
 use std::io::{self, Read, Write};
@@ -11,15 +14,6 @@ use std::path::Path;
 
 const MAX_TABLES: usize = 1024;
 const MAX_DIRECTORY_ENTRIES: usize = 10_000;
-const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
-const MAX_SCHEMA_COLUMNS: usize = 128;
-
-fn identifier(name: &str) -> bool {
-    let mut bytes = name.bytes();
-    name.len() <= 128
-        && matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
-        && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-}
 
 fn read_schema_bytes(path: &Path) -> Option<Vec<u8>> {
     let Ok(metadata) = fs::symlink_metadata(path) else {
