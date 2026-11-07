@@ -133,4 +133,3 @@ pub(super) fn rewrite_offset_comma_join(sql: &str) -> Result<Option<String>, Par
     rewritten.extend_from_slice(&tokens[comma + 1..]);
     Ok(Some(render_tokens(&rewritten)))
 }
-
