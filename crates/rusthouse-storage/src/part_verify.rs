@@ -1,8 +1,7 @@
 mod generation_guard;
-use self::generation_guard::*;
-
 mod streams;
 
+use self::generation_guard::*;
 use self::streams::*;
 
 use crate::scan_layout::ScanLayout;
