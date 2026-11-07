@@ -281,6 +281,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "TODECIMALSTRING"
                 | "RETAINALNUMUTF8"
                 | "TOTYPENAME"
+                | "JSONEXTRACTINTORNULL"
                 | "JSONEXTRACTFLOAT"
                 | "POSITION"
                 | "ENCODEURLFORMCOMPONENT"
