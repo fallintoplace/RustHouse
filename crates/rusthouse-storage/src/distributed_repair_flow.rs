@@ -74,6 +74,27 @@ fn apply_residual_path(
     Ok(())
 }
 
+fn build_residual_network(
+    vertices: usize,
+    links: &[CapacityLink],
+) -> Result<Vec<Vec<u128>>, &'static str> {
+    // Reverse residual capacity may exceed u64 when antiparallel links exist.
+    let mut residual = vec![vec![0u128; vertices]; vertices];
+    for link in links {
+        if link.from >= vertices
+            || link.to >= vertices
+            || link.from == link.to
+            || link.bytes_per_second == 0
+        {
+            return Err("invalid replica network link");
+        }
+        residual[link.from][link.to] = residual[link.from][link.to]
+            .checked_add(u128::from(link.bytes_per_second))
+            .ok_or("replica link capacity overflow")?;
+    }
+    Ok(residual)
+}
+
 /// Return the maximum aggregate source-to-sink capacity in bytes per second.
 /// Antiparallel and repeated links are allowed and combined without overflow.
 pub fn maximum_replica_flow(
@@ -90,20 +111,7 @@ pub fn maximum_replica_flow(
     {
         return Err("invalid replica flow topology");
     }
-    // Reverse residual capacity may exceed u64 when antiparallel links exist.
-    let mut residual = vec![vec![0u128; vertices]; vertices];
-    for link in links {
-        if link.from >= vertices
-            || link.to >= vertices
-            || link.from == link.to
-            || link.bytes_per_second == 0
-        {
-            return Err("invalid replica network link");
-        }
-        residual[link.from][link.to] = residual[link.from][link.to]
-            .checked_add(u128::from(link.bytes_per_second))
-            .ok_or("replica link capacity overflow")?;
-    }
+    let mut residual = build_residual_network(vertices, links)?;
 
     let mut total_flow = 0u64;
     while let Some(parent) = find_augmenting_path(&residual, source, sink) {
