@@ -1,5 +1,81 @@
 use super::*;
 
+/// Coordinator planning category, chosen after safety checks but before shard I/O.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum DistributedQueryKind {
+    Scan,
+    SortedScan,
+    DistinctRows,
+    ScalarAggregate,
+    GroupedAggregate,
+}
+
+pub(super) fn distributed_query_kind(select: &Select) -> Option<DistributedQueryKind> {
+    if is_safe_sorted_scan(select) {
+        return Some(DistributedQueryKind::SortedScan);
+    }
+    if is_safe_distinct_scan(select) {
+        return Some(DistributedQueryKind::DistinctRows);
+    }
+    if is_safe_scan(select) {
+        return Some(DistributedQueryKind::Scan);
+    }
+    if [
+        is_safe_count(select),
+        is_safe_count_distinct(select),
+        is_safe_uniq(select),
+        is_safe_count_if(select),
+        is_safe_sum(select),
+        is_safe_sum_squares(select),
+        is_safe_product(select),
+        is_safe_rms(select),
+        is_safe_avg(select),
+        is_safe_range(select),
+        is_safe_bitwise(select),
+        is_safe_extremum(select),
+    ]
+    .contains(&true)
+    {
+        return Some(DistributedQueryKind::ScalarAggregate);
+    }
+    if [
+        is_safe_multi_grouped_distinct(select),
+        is_safe_grouped_distinct(select),
+        is_safe_grouped_count(select),
+        is_safe_grouped_multi_count(select),
+        is_safe_grouped_multi_count_column(select),
+        is_safe_grouped_multi_bitwise(select),
+        is_safe_grouped_multi_product(select),
+        is_safe_grouped_multi_sumsquares(select),
+        is_safe_grouped_multi_countif(select),
+        is_safe_grouped_multi_extremum(select),
+        is_safe_grouped_multi_sum(select),
+        is_safe_grouped_sum(select),
+        is_safe_grouped_extremum(select),
+        is_safe_grouped_product(select),
+        is_safe_grouped_bitwise(select),
+    ]
+    .contains(&true)
+    {
+        return Some(DistributedQueryKind::GroupedAggregate);
+    }
+    None
+}
+
+
+#[cfg(test)]
+mod distributed_kind_tests {
+    use super::*;
+
+    #[test]
+    fn classifies_scan_and_distinct_before_shard_dispatch() {
+        let scan = parse_select("SELECT * FROM part").unwrap();
+        assert_eq!(distributed_query_kind(&scan), Some(DistributedQueryKind::Scan));
+        let distinct = parse_select("SELECT DISTINCT name FROM part").unwrap();
+        assert_eq!(distributed_query_kind(&distinct), Some(DistributedQueryKind::DistinctRows));
+    }
+}
+
 /// Locate a SQL keyword outside strings, quoted identifiers and comments.
 /// Rewriter input is already parsed, but searching raw text for " FROM "
 /// or " WHERE " can select a decoy inside a leading SQL comment.
