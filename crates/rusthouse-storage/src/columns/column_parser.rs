@@ -114,4 +114,3 @@ pub(super) fn parse_column(line: &str, line_number: usize) -> Result<Column, Par
         "unterminated column name",
     ))
 }
-
