@@ -264,6 +264,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "JSONEXTRACTFLOAT"
                 | "POSITION"
                 | "ENCODEURLFORMCOMPONENT"
+                | "ISIPV4DOCUMENTATION"
                 | "ISIPV4PRIVATE"
                 | "ISIPV4LOOPBACK"
                 | "ISIPV4MULTICAST"
