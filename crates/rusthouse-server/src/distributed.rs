@@ -2140,53 +2140,22 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Ok(sql) => sql,
         Err(_) => return Response::text("400 Bad Request", "SQL must be UTF-8\n"),
     };
-    let select = match parse_select(sql) {
-        Ok(select)
-            if is_safe_scan(&select)
-                || is_safe_count(&select)
-                || is_safe_distinct_scan(&select)
-                || is_safe_multi_grouped_distinct(&select)
-                || is_safe_grouped_distinct(&select)
-                || is_safe_count_distinct(&select)
-                || is_safe_uniq(&select)
-                || is_safe_sorted_scan(&select)
-                || is_safe_count_if(&select)
-                || is_safe_grouped_count(&select)
-                || is_safe_grouped_multi_count(&select)
-                || is_safe_grouped_multi_count_column(&select)
-                || is_safe_grouped_multi_bitwise(&select)
-                || is_safe_grouped_multi_product(&select)
-                || is_safe_grouped_multi_sumsquares(&select)
-                || is_safe_grouped_multi_countif(&select)
-                || is_safe_grouped_multi_extremum(&select)
-                || is_safe_grouped_multi_sum(&select)
-                || is_safe_grouped_sum(&select)
-                || is_safe_grouped_extremum(&select)
-                || is_safe_grouped_product(&select)
-                || is_safe_grouped_bitwise(&select)
-                || is_safe_sum(&select)
-                || is_safe_sum_squares(&select)
-                || is_safe_product(&select)
-                || is_safe_rms(&select)
-                || is_safe_avg(&select)
-                || is_safe_range(&select)
-                || is_safe_bitwise(&select)
-                || is_safe_extremum(&select) =>
-        {
-            select
-        }
-        _ => {
+    let (select, query_kind) = match parse_select(sql).ok().and_then(|select| {
+        distributed_query_kind(&select).map(|kind| (select, kind))
+    }) {
+        Some(plan) => plan,
+        None => {
             return Response::text(
                 "400 Bad Request",
                 "distributed queries require unordered SELECT, bounded integer top-K SELECT, COUNT, COUNT(DISTINCT), uniq, COUNTIF, integer SUM, MIN, MAX, or grouped aggregates\n",
             );
         }
     };
-    let sorted_query = is_safe_sorted_scan(&select);
+    let sorted_query = matches!(query_kind, DistributedQueryKind::SortedScan);
     let sorted_prefix =
         sorted_query.then(|| select.offset.unwrap_or(0) + select.limit.unwrap_or(0));
     let count_query = is_safe_count(&select) || is_safe_count_if(&select);
-    let distinct_rows_query = is_safe_distinct_scan(&select);
+    let distinct_rows_query = matches!(query_kind, DistributedQueryKind::DistinctRows);
     let multi_grouped_distinct_query = is_safe_multi_grouped_distinct(&select);
     let grouped_distinct_query = is_safe_grouped_distinct(&select);
     let distinct_count_column = match &select.projection {
