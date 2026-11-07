@@ -100,14 +100,7 @@ impl Cluster {
     }
 }
 
-/// Membership describes peer addresses, not their health or consistency.
-pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
-    if method != "GET" {
-        return Response::text("405 Method Not Allowed", "cluster endpoint requires GET\n");
-    }
-    if !body.is_empty() {
-        return Response::text("400 Bad Request", "GET must not contain a request body\n");
-    }
+fn render_cluster_membership(cluster: &Cluster) -> String {
     let mut body = String::with_capacity(50 + cluster.peers().len() * 26);
     write!(
         &mut body,
@@ -122,6 +115,18 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
         write!(&mut body, "\"{}\"", peer.address()).expect("writing to String cannot fail");
     }
     body.push_str("]}\n");
+    body
+}
+
+/// Membership describes peer addresses, not their health or consistency.
+pub fn handle(method: &str, body: &[u8], cluster: &Cluster) -> Response {
+    if method != "GET" {
+        return Response::text("405 Method Not Allowed", "cluster endpoint requires GET\n");
+    }
+    if !body.is_empty() {
+        return Response::text("400 Bad Request", "GET must not contain a request body\n");
+    }
+    let body = render_cluster_membership(cluster);
     Response {
         status: "200 OK",
         content_type: "application/json; charset=utf-8",
