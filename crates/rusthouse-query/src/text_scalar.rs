@@ -1577,6 +1577,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "IPV6NETWORK" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "IPv6Network requires a prefix length")?;
+            let prefix = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IPv6Network requires two arguments")?;
+            match (input, prefix) {
+                (Some(input), Some(prefix)) => {
+                    let address = input
+                        .parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    let prefix = u32::try_from(prefix)
+                        .ok()
+                        .filter(|prefix| *prefix <= 128)
+                        .ok_or_else(|| ParseError("invalid IPv6Network prefix length".into()))?;
+                    let mask = if prefix == 0 {
+                        0
+                    } else {
+                        u128::MAX << (128 - prefix)
+                    };
+                    ConstantValue::Text(
+                        std::net::Ipv6Addr::from(u128::from(address) & mask).to_string(),
+                    )
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "ISIPV6STRING" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "isIPv6String requires one argument")?;
