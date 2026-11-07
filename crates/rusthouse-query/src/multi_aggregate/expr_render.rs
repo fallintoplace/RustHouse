@@ -185,4 +185,3 @@ pub(super) fn render_expr_into(expr: &ScalarExpr, output: &mut String) {
         }
     }
 }
-
