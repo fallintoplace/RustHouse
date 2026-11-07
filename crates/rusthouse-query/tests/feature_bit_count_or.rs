@@ -7,7 +7,11 @@ fn supports_bit_count_or() {
         ("SELECT bitCountOr(-1,0)", 64),
         ("SELECT bitCountOr(0,0)", 0),
     ] {
-        assert_eq!(parse_select(sql).unwrap().projection, Projection::Literal(expected), "{sql}");
+        assert_eq!(
+            parse_select(sql).unwrap().projection,
+            Projection::Literal(expected),
+            "{sql}"
+        );
     }
 }
 
