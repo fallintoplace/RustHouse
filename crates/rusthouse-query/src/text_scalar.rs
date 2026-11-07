@@ -1068,9 +1068,18 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "RETAINALNUMUTF8" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "retainAlnumUTF8 requires one argument")?;
+            require(
+                parser,
+                Token::RParen,
+                "retainAlnumUTF8 requires one argument",
+            )?;
             match input {
-                Some(input) => ConstantValue::Text(input.chars().filter(|ch| ch.is_alphanumeric()).collect::<String>()),
+                Some(input) => ConstantValue::Text(
+                    input
+                        .chars()
+                        .filter(|ch| ch.is_alphanumeric())
+                        .collect::<String>(),
+                ),
                 None => ConstantValue::Null,
             }
         }
