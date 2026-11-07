@@ -959,11 +959,7 @@ impl TypedQueryReader {
         columns: &[String],
         metadata: &PartMetadata,
     ) -> Result<Self, PartError> {
-        for name in columns {
-            if !metadata.columns.iter().any(|column| &column.name == name) {
-                return Err(PartError::InvalidScan(format!("unknown column: {name}")));
-            }
-        }
+        crate::query_source::validate_scan_columns(metadata, columns)?;
         Ok(Self {
             parts,
             columns: std::sync::Arc::from(columns.to_vec()),
@@ -1068,16 +1064,16 @@ impl TypedQueryReader {
         }
         let mut skipped = 0usize;
         while skipped < max_rows && self.next_part < self.parts.len() {
-            let part = &self.parts[self.next_part];
-            let rows = read_part_row_count(part)?;
-            if let Ok(rows) = usize::try_from(rows) {
-                if rows <= max_rows - skipped {
-                    skipped += rows;
-                    self.next_part += 1;
-                    continue;
-                }
+            skipped += crate::query_source::skip_whole_snapshot_parts(
+                &self.parts,
+                &mut self.next_part,
+                max_rows - skipped,
+            )?;
+            if skipped == max_rows || self.next_part == self.parts.len() {
+                break;
             }
             // The final partially skipped part still validates aligned marks.
+            let part = &self.parts[self.next_part];
             let mut reader = TypedPartReader::open(part, &self.columns)?;
             self.next_part += 1;
             skipped += reader.skip_complete_marks(max_rows - skipped);
