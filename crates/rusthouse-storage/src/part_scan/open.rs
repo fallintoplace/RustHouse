@@ -1,6 +1,8 @@
 use super::*;
 
-use crate::marked_stream::{marks_path as numeric_marks_path, open_validated_column};
+use crate::marked_stream::open_validated_column;
+#[cfg(test)]
+use crate::marked_stream::marks_path as numeric_marks_path;
 
 pub(super) fn open_numeric_stream(
     part: &Path,
