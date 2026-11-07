@@ -48,7 +48,7 @@ fn deduplicate_scan_columns(projected: &[String]) -> (Vec<String>, Vec<usize>) {
             }
         })
         .collect::<Vec<_>>();
-(scan_columns, projected_indices)
+    (scan_columns, projected_indices)
 }
 
 pub(super) fn prepare_numeric_scan(
