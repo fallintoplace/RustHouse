@@ -608,22 +608,28 @@ pub(super) fn parse_derived_outer_join_with_schema(
     parse_join_resolved(tokenize(sql)?, Some(&mut resolve), true)
 }
 
-/// Whether the outer SELECT has an explicit JOIN.
-pub fn has_explicit_join(sql: &str) -> Result<bool, ParseError> {
-    let tokens = tokenize(sql)?;
+/// Find only explicit JOINs in the outer FROM clause, ignoring nested SELECTs.
+/// The parser intentionally scans beyond other clauses for compatibility;
+/// the feature probe stops at the end of FROM as before.
+fn has_top_level_join_after_from(tokens: &[Token], stop_at_clause: bool) -> bool {
     let mut depth = 0usize;
-    let mut from = false;
-    for token in &tokens {
+    let mut seen_from = false;
+    for token in tokens {
         match token {
             Token::LParen => depth += 1,
             Token::RParen => depth = depth.saturating_sub(1),
-            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("FROM") => from = true,
-            Token::Word(word) if depth == 0 && from && word.eq_ignore_ascii_case("JOIN") => {
-                return Ok(true);
+            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("FROM") => {
+                seen_from = true;
             }
             Token::Word(word)
-                if depth == 0
-                    && from
+                if depth == 0 && seen_from && word.eq_ignore_ascii_case("JOIN") =>
+            {
+                return true;
+            }
+            Token::Word(word)
+                if stop_at_clause
+                    && depth == 0
+                    && seen_from
                     && ["WHERE", "GROUP", "ORDER", "LIMIT", "OFFSET"]
                         .iter()
                         .any(|clause| word.eq_ignore_ascii_case(clause)) =>
@@ -633,7 +639,12 @@ pub fn has_explicit_join(sql: &str) -> Result<bool, ParseError> {
             _ => {}
         }
     }
-    Ok(false)
+    false
+}
+
+/// Whether the outer SELECT has an explicit JOIN.
+pub fn has_explicit_join(sql: &str) -> Result<bool, ParseError> {
+    Ok(has_top_level_join_after_from(&tokenize(sql)?, true))
 }
 
 /// Detect a top-level EXISTS predicate without matching literals or comments.
@@ -1539,25 +1550,8 @@ fn parse_join_tokens_internal(
     if !matches!(tokens.first(), Some(Token::Word(word)) if word.eq_ignore_ascii_case("SELECT")) {
         return Ok(None);
     }
-    // A JOIN inside a derived table or EXISTS is not an outer JOIN.
-    // Inspect only top-level keywords before selecting the JOIN parser.
-    let mut depth = 0usize;
-    let mut seen_from = false;
-    let mut outer_join = false;
-    for token in &tokens {
-        match token {
-            Token::LParen => depth += 1,
-            Token::RParen => depth = depth.saturating_sub(1),
-            Token::Word(word) if depth == 0 && word.eq_ignore_ascii_case("FROM") => {
-                seen_from = true;
-            }
-            Token::Word(word) if depth == 0 && seen_from && word.eq_ignore_ascii_case("JOIN") => {
-                outer_join = true;
-                break;
-            }
-            _ => {}
-        }
-    }
+    // Nested joins do not select the outer JOIN grammar.
+    let outer_join = has_top_level_join_after_from(&tokens, false);
     if !outer_join {
         return Ok(None);
     }
@@ -4475,6 +4469,23 @@ pub fn explain_join(query: &JoinSelect) -> String {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+
+    #[test]
+    fn explicit_join_probe_ignores_nested_selects_and_end_of_from() {
+        let nested = tokenize("SELECT * FROM (SELECT a FROM t JOIN u ON t.id = u.id) AS x")
+            .unwrap();
+        assert!(!has_top_level_join_after_from(&nested, true));
+
+        let outer = tokenize("SELECT * FROM t JOIN u ON t.id = u.id").unwrap();
+        assert!(has_top_level_join_after_from(&outer, true));
+        assert!(has_top_level_join_after_from(&outer, false));
+
+        let after_where = tokenize("SELECT * FROM t WHERE x = 1 JOIN u").unwrap();
+        assert!(!has_top_level_join_after_from(&after_where, true));
+        assert!(has_top_level_join_after_from(&after_where, false));
+    }
+
     use super::*;
 
     #[test]
