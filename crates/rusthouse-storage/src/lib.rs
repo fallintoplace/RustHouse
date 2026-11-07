@@ -73,6 +73,7 @@ mod nullable;
 mod nullable_arrays;
 mod numeric;
 mod part_scan;
+mod physical_type;
 mod part_verify;
 mod part_write;
 mod primary_index;
