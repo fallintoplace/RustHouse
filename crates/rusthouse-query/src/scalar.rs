@@ -61,6 +61,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("NEGATE")
         || name.eq_ignore_ascii_case("BIT_PARITY")
+        || name.eq_ignore_ascii_case("BIT_COUNT_OR")
         || name.eq_ignore_ascii_case("BIT_MASK")
         || name.eq_ignore_ascii_case("BIT_WIDTH")
         || name.eq_ignore_ascii_case("DIV")
@@ -348,6 +349,15 @@ fn parse_bit_parity(parser: &mut Parser, depth: usize) -> Result<i64, ParseError
 }
 
 /// Set the lowest 0 to 64 bits in a signed Int64 bit pattern.
+fn parse_bit_count_or(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_COUNT_OR requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_COUNT_OR requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BIT_COUNT_OR requires two arguments")?;
+    Ok(i64::from(((left | right) as u64).count_ones()))
+}
+
 fn parse_bit_mask(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "BIT_MASK requires '('")?;
     let width = expression(parser, depth + 1)?;
@@ -1133,6 +1143,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("BIT_PARITY") {
         return parse_bit_parity(parser, depth);
+    }
+    if parser.keyword("BIT_COUNT_OR") {
+        return parse_bit_count_or(parser, depth);
     }
     if parser.keyword("BIT_MASK") {
         return parse_bit_mask(parser, depth);
