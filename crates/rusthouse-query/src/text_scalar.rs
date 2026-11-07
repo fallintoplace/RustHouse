@@ -1651,9 +1651,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "COUNTASCIIDIGITS" => {
             let input = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "countASCIIDigits requires one argument")?;
+            require(
+                parser,
+                Token::RParen,
+                "countASCIIDigits requires one argument",
+            )?;
             match input {
-                Some(input) => ConstantValue::Integer(i64::try_from(input.bytes().filter(|byte| byte.is_ascii_digit()).count()).map_err(|_| ParseError("countASCIIDigits result exceeds Int64".into()))?),
+                Some(input) => ConstantValue::Integer(
+                    i64::try_from(input.bytes().filter(|byte| byte.is_ascii_digit()).count())
+                        .map_err(|_| ParseError("countASCIIDigits result exceeds Int64".into()))?,
+                ),
                 None => ConstantValue::Null,
             }
         }
