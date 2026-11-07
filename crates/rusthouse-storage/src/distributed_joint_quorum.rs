@@ -61,6 +61,18 @@ fn exclusive_weight(members: &[Member], other: &[Member]) -> u64 {
         .sum()
 }
 
+fn shared_member_weights(before: &[Member], after: &[Member]) -> Vec<(u64, u64)> {
+    before
+        .iter()
+        .filter_map(|member| {
+            after
+                .iter()
+                .find(|other| other.node == member.node)
+                .map(|other| (u64::from(member.weight), u64::from(other.weight)))
+        })
+        .collect()
+}
+
 /// Reject a membership change whenever a qualifying old and new quorum can
 /// be formed from disjoint physical members. This is a necessary safety check
 /// for reconfiguration; it does not make a reconfiguration atomic or durable.
@@ -77,15 +89,7 @@ pub fn validate_joint_quorums(
     WeightedQuorumPolicy::new(before, old.reads, old.writes)?;
     WeightedQuorumPolicy::new(after, new.reads, new.writes)?;
 
-    let shared = before
-        .iter()
-        .filter_map(|member| {
-            after
-                .iter()
-                .find(|other| other.node == member.node)
-                .map(|other| (u64::from(member.weight), u64::from(other.weight)))
-        })
-        .collect::<Vec<_>>();
+    let shared = shared_member_weights(before, after);
     if shared.len() > 20 {
         return Err("joint quorum overlap exceeds exhaustive safety limit");
     }
