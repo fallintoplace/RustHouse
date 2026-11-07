@@ -57,6 +57,13 @@ impl ReaderPinLedger {
         })
     }
 
+    fn conflicting_renewal(&self, pin: &ReaderPin) -> bool {
+        self.active.get(&pin.reader).is_some_and(|previous| {
+            pin.token == previous.token
+                && (pin.snapshot != previous.snapshot || pin.expires_at_ms < previous.expires_at_ms)
+        })
+    }
+
     /// A caller must pin before using a snapshot. An identical token can
     /// renew only the same reader's snapshot and never shorten its expiry.
     pub fn pin(&mut self, pin: ReaderPin, now_ms: u64, ttl_limit: u64) -> Result<(), &'static str> {
@@ -66,12 +73,8 @@ impl ReaderPinLedger {
         if self.stale_reader_token(&pin, now_ms) {
             return Err("stale reader fencing token");
         }
-        if let Some(previous) = self.active.get(&pin.reader) {
-            if pin.token == previous.token
-                && (pin.snapshot != previous.snapshot || pin.expires_at_ms < previous.expires_at_ms)
-            {
-                return Err("conflicting reader pin renewal");
-            }
+        if self.conflicting_renewal(&pin) {
+            return Err("conflicting reader pin renewal");
         }
         if !self.active.contains_key(&pin.reader) && self.active.len() >= MAX_PINS {
             return Err("reader pin ledger is full");
