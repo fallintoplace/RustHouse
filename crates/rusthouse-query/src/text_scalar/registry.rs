@@ -53,6 +53,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "TRIMBOTH"
                 | "RTRIM"
                 | "CUTQUERYSTRING"
+                | "STRIPNONASCII"
                 | "COLLAPSE_WHITESPACE"
                 | "LOWER"
                 | "LCASE"
