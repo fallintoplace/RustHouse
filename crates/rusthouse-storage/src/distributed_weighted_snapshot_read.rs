@@ -10,18 +10,10 @@ pub struct SnapshotObservation<'a> {
     pub version: SnapshotVersion,
 }
 
-/// An observed read quorum may be stale. Callers still require a separate
-/// authoritative commit certificate and snapshot ancestry checks.
-pub fn newest_weighted_observed_snapshot(
+fn tally_observations(
     members: &[Member],
-    policy: WeightedQuorumPolicy,
     observations: &[SnapshotObservation<'_>],
-) -> Result<Option<SnapshotVersion>, &'static str> {
-    validate_membership(members)?;
-    WeightedQuorumPolicy::new(members, policy.reads, policy.writes)?;
-    if observations.len() > members.len() {
-        return Err("too many weighted snapshot observations");
-    }
+) -> Result<(Option<u64>, HashMap<(u64, u128), u64>), &'static str> {
     let mut seen = HashSet::new();
     let mut epoch = None;
     let mut fingerprints = HashMap::<u64, u128>::new();
@@ -55,6 +47,22 @@ pub fn newest_weighted_observed_snapshot(
             .entry((version.generation, version.fingerprint))
             .or_insert(0) += u64::from(member.weight);
     }
+    Ok((epoch, totals))
+}
+
+/// An observed read quorum may be stale. Callers still require a separate
+/// authoritative commit certificate and snapshot ancestry checks.
+pub fn newest_weighted_observed_snapshot(
+    members: &[Member],
+    policy: WeightedQuorumPolicy,
+    observations: &[SnapshotObservation<'_>],
+) -> Result<Option<SnapshotVersion>, &'static str> {
+    validate_membership(members)?;
+    WeightedQuorumPolicy::new(members, policy.reads, policy.writes)?;
+    if observations.len() > members.len() {
+        return Err("too many weighted snapshot observations");
+    }
+    let (epoch, totals) = tally_observations(members, observations)?;
     Ok(totals
         .into_iter()
         .filter(|(_, weight)| *weight >= policy.reads)
