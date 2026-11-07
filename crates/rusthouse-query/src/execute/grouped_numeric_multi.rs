@@ -529,8 +529,8 @@ pub(super) fn execute<W: Write>(
                     groups.push((
                         typed::cell(&batch[group_index], row),
                         descriptors
-                                .iter()
-                                .map(|metric| MetricState::new(metric.function))
+                            .iter()
+                            .map(|metric| MetricState::new(metric.function))
                             .collect(),
                     ));
                     slots.insert(key, index);
@@ -580,8 +580,8 @@ pub(super) fn execute<W: Write>(
                             groups.push((
                                 Cell::Text(key.to_vec()),
                                 descriptors
-                                .iter()
-                                .map(|metric| MetricState::new(metric.function))
+                                    .iter()
+                                    .map(|metric| MetricState::new(metric.function))
                                     .collect(),
                             ));
                             group
@@ -604,8 +604,8 @@ pub(super) fn execute<W: Write>(
                                 groups.push((
                                     Cell::Text(key.to_vec()),
                                     descriptors
-                                .iter()
-                                .map(|metric| MetricState::new(metric.function))
+                                        .iter()
+                                        .map(|metric| MetricState::new(metric.function))
                                         .collect(),
                                 ));
                                 group
@@ -625,8 +625,8 @@ pub(super) fn execute<W: Write>(
                             groups.push((
                                 key,
                                 descriptors
-                                .iter()
-                                .map(|metric| MetricState::new(metric.function))
+                                    .iter()
+                                    .map(|metric| MetricState::new(metric.function))
                                     .collect(),
                             ));
                             groups.len() - 1
