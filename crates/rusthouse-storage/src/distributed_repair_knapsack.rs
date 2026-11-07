@@ -108,10 +108,7 @@ fn best_combined_choice(
     best
 }
 
-pub fn select_repair_batch(
-    candidates: &[RepairCandidate],
-    budget: u64,
-) -> Result<RepairSelection, &'static str> {
+fn validate_candidates(candidates: &[RepairCandidate]) -> Result<(), &'static str> {
     if candidates.len() > MAX_JOBS {
         return Err("too many repair knapsack candidates");
     }
@@ -129,6 +126,14 @@ pub fn select_repair_batch(
             return Err("invalid repair knapsack candidate");
         }
     }
+    Ok(())
+}
+
+pub fn select_repair_batch(
+    candidates: &[RepairCandidate],
+    budget: u64,
+) -> Result<RepairSelection, &'static str> {
+    validate_candidates(candidates)?;
     let mid = candidates.len() / 2;
     let mut left = choices(&candidates[..mid], budget);
     left.sort_unstable_by_key(|c| (c.bytes, std::cmp::Reverse(c.priority), c.mask));
