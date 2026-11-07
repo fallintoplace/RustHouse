@@ -81,10 +81,7 @@ fn verify_neighbor_bounds(trusted_root: [u8; 32], key: &str, proof: &MerkleAbsen
                 && key < after.object.key.as_str()
                 && before.proof.leaf_index.checked_add(1) == Some(after.proof.leaf_index)
         }
-        (None, Some(after)) => {
-            after.proof.leaf_index == 0
-                && key < after.object.key.as_str()
-        }
+        (None, Some(after)) => after.proof.leaf_index == 0 && key < after.object.key.as_str(),
         (Some(before), None) => {
             before.proof.leaf_index.checked_add(1) == Some(proof.leaf_count)
                 && before.object.key.as_str() < key
