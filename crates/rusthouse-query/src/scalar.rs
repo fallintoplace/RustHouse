@@ -77,6 +77,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_extrema(name)
         || name.eq_ignore_ascii_case("IS_POWER_OF_TWO")
         || name.eq_ignore_ascii_case("BIT_REVERSE")
+        || name.eq_ignore_ascii_case("BIT_COMMON_SUFFIX")
         || name.eq_ignore_ascii_case("BYTESWAP")
         || is_power(name)
         || name.eq_ignore_ascii_case("NEXT_POWER_OF_TWO")
@@ -441,6 +442,15 @@ fn parse_byte_swap(parser: &mut Parser, depth: usize) -> Result<i64, ParseError>
         };
         Ok(swapped)
     }
+}
+
+fn parse_bit_common_suffix(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_COMMON_SUFFIX requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_COMMON_SUFFIX requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BIT_COMMON_SUFFIX requires two arguments")?;
+    Ok(i64::from((left ^ right).trailing_zeros()))
 }
 
 fn parse_bit_reverse(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -1142,6 +1152,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("BYTESWAP") {
         return parse_byte_swap(parser, depth);
+    }
+    if parser.keyword("BIT_COMMON_SUFFIX") {
+        return parse_bit_common_suffix(parser, depth);
     }
     if parser.keyword("BIT_REVERSE") {
         return parse_bit_reverse(parser, depth);
