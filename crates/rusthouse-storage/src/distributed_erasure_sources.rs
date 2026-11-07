@@ -76,6 +76,25 @@ fn selection_cost(ordered: &[&FragmentSource], mask: u32, min_zones: usize) -> O
     (zones.len() >= min_zones).then_some(cost)
 }
 
+fn best_source_mask(
+    ordered: &[&FragmentSource],
+    required: usize,
+    min_zones: usize,
+) -> Result<(u64, u32), &'static str> {
+    let mut chosen = None;
+    for mask in 1u32..(1u32 << ordered.len()) {
+        if mask.count_ones() as usize != required {
+            continue;
+        }
+        if let Some(cost) = selection_cost(ordered, mask, min_zones) {
+            if chosen.is_none_or(|best| (cost, mask) < best) {
+                chosen = Some((cost, mask));
+            }
+        }
+    }
+    chosen.ok_or("no feasible erasure fragment source set")
+}
+
 /// Pick exactly required distinct fragments from separate source nodes.
 /// At least min_zones different zones must be represented.
 pub fn choose_erasure_sources(
@@ -89,18 +108,7 @@ pub fn choose_erasure_sources(
     let mut ordered = sources.iter().collect::<Vec<_>>();
     ordered.sort_unstable_by(|left, right| left.node.cmp(&right.node));
 
-    let mut chosen = None;
-    for mask in 1u32..(1u32 << sources.len()) {
-        if mask.count_ones() as usize != required {
-            continue;
-        }
-        if let Some(cost) = selection_cost(&ordered, mask, min_zones) {
-            if chosen.is_none_or(|best| (cost, mask) < best) {
-                chosen = Some((cost, mask));
-            }
-        }
-    }
-    let (chosen_cost, mask) = chosen.ok_or("no feasible erasure fragment source set")?;
+    let (chosen_cost, mask) = best_source_mask(&ordered, required, min_zones)?;
     let mut nodes = Vec::new();
     let mut fragment_indices = Vec::new();
     for (index, source) in ordered.iter().enumerate() {
