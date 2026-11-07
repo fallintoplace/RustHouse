@@ -1,5 +1,8 @@
 mod readers;
-pub use self::readers::{read_null_map, read_nullable_numeric_column, read_nullable_fixed_strings, read_nullable_legacy_strings, read_nullable_sized_strings};
+pub use self::readers::{
+    read_null_map, read_nullable_fixed_strings, read_nullable_legacy_strings,
+    read_nullable_numeric_column, read_nullable_sized_strings,
+};
 use self::readers::*;
 
 use crate::{FixedStringColumn, FixedStringReadError, NumericColumn, NumericReadError};
