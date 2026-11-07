@@ -270,6 +270,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "ISIPV4LINKLOCAL"
                 | "ISIPV6UNIQUELOCAL"
                 | "ISIPV6LOOPBACK"
+                | "ISIPV6IPV4MAPPED"
                 | "ISIPV6MULTICAST"
                 | "BASE32DECODE"
                 | "TRYBASE32DECODE"
