@@ -1,14 +1,13 @@
 //! Small immutable wide-part writer for local SQL inserts.
 //! The caller publishes the completed directory with an atomic rename.
 
-mod write_helpers;
-use self::write_helpers::*;
-
 mod encoding;
 mod schema;
-use self::schema::*;
+mod write_helpers;
 
 use self::encoding::*;
+use self::schema::*;
+use self::write_helpers::*;
 
 use crate::{Column, FileChecksum, PartError, UncompressedChecksum};
 use ch_cityhash102::cityhash128;
