@@ -1950,6 +1950,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ISUUID" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isUUID requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Integer(i64::from(
+                    input.len() == 36
+                        && input.bytes().enumerate().all(|(index, byte)| {
+                            if matches!(index, 8 | 13 | 18 | 23) {
+                                byte == b'-'
+                            } else {
+                                byte.is_ascii_hexdigit()
+                            }
+                        }),
+                )),
+                None => ConstantValue::Null,
+            }
+        }
         "ISIPV4STRING" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "isIPv4String requires one argument")?;
