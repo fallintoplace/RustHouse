@@ -796,6 +796,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "ISIPV4SHARED" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4Shared requires one argument")?;
+            match input {
+                Some(input) => {
+                    let address = input
+                        .parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("invalid IPv4 address".into()))?;
+                    let octets = address.octets();
+                    ConstantValue::Integer(i64::from(
+                        octets[0] == 100 && (64..128).contains(&octets[1]),
+                    ))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "ISIPV4LOOPBACK" => {
             let input = text_arg(parser, depth + 1)?;
             require(
