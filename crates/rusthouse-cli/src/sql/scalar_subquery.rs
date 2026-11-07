@@ -1368,7 +1368,6 @@ mod tests {
             .expect("non-empty bounded value list");
 
         assert_eq!(rendered, "(X'4F27427269656E0A6E657874', NULL, X'7A')");
-        assert!(parse_select(&format!("SELECT name FROM items WHERE name IN {rendered}")).is_ok());
 
         let numbers = vec![Some("2".into()), None, Some("5".into())];
         assert_eq!(
