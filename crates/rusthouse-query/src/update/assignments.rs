@@ -91,4 +91,3 @@ pub(super) fn parse_assignments(parser: &mut Parser) -> Result<Vec<(String, Upda
     }
     Ok(assignments)
 }
-
