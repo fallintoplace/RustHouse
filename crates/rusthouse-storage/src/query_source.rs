@@ -485,6 +485,41 @@ impl Drop for NumericPartPrefetchWorker {
 
 /// Keep only one part's streams open at once; the executor sees a single
 /// continuous sequence, so GROUP BY, ORDER BY, DISTINCT and LIMIT are global.
+/// Verify that a reader's projection is part of the validated snapshot schema.
+pub(crate) fn validate_scan_columns(
+    metadata: &PartMetadata,
+    columns: &[String],
+) -> Result<(), PartError> {
+    for column in columns {
+        if !metadata.columns.iter().any(|candidate| candidate.name == *column) {
+            return Err(PartError::InvalidScan(format!("unknown column: {column}")));
+        }
+    }
+    Ok(())
+}
+
+/// Skip complete immutable parts without opening their data or mark streams.
+/// The remaining OFFSET, if any, must be handled by the part reader.
+pub(crate) fn skip_whole_snapshot_parts(
+    parts: &[PathBuf],
+    next_part: &mut usize,
+    max_rows: usize,
+) -> Result<usize, PartError> {
+    let mut skipped = 0usize;
+    while skipped < max_rows && *next_part < parts.len() {
+        let rows = read_part_row_count(&parts[*next_part])?;
+        let Ok(rows) = usize::try_from(rows) else {
+            break;
+        };
+        if rows > max_rows - skipped {
+            break;
+        }
+        skipped += rows;
+        *next_part += 1;
+    }
+    Ok(skipped)
+}
+
 pub struct NumericQueryReader {
     parts: Vec<PathBuf>,
     columns: std::sync::Arc<[String]>,
@@ -525,11 +560,7 @@ impl NumericQueryReader {
         columns: &[String],
         metadata: &PartMetadata,
     ) -> Result<Self, PartError> {
-        for column in columns {
-            if !metadata.columns.iter().any(|c: &Column| &c.name == column) {
-                return Err(PartError::InvalidScan(format!("unknown column: {column}")));
-            }
-        }
+        validate_scan_columns(metadata, columns)?;
         Ok(Self {
             parts,
             columns: std::sync::Arc::from(columns.to_owned()),
@@ -610,18 +641,15 @@ impl NumericQueryReader {
         }
         let mut skipped = 0usize;
         while skipped < max_rows && self.next_part < self.parts.len() {
-            // Immutable part row counts are validated by the snapshot planner.
-            // Skipping a complete part never needs to open its wide streams or
-            // decode thousands of mark entries.
-            let part = &self.parts[self.next_part];
-            let rows = read_part_row_count(part)?;
-            if let Ok(rows) = usize::try_from(rows) {
-                if rows <= max_rows - skipped {
-                    skipped += rows;
-                    self.next_part += 1;
-                    continue;
-                }
+            skipped += skip_whole_snapshot_parts(
+                &self.parts,
+                &mut self.next_part,
+                max_rows - skipped,
+            )?;
+            if skipped == max_rows || self.next_part == self.parts.len() {
+                break;
             }
+            let part = &self.parts[self.next_part];
             let mut reader = NumericPartReader::open(part, &self.columns)?;
             self.next_part += 1;
             let amount = reader.skip_complete_marks(max_rows - skipped);
