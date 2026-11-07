@@ -180,6 +180,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "COUNTSUBSTRINGSCASEINSENSITIVE"
                 | "ISHEX"
                 | "HEX_DECODE"
+                | "RETAINDIGITS"
                 | "UNHEX"
                 | "UNBIN"
                 | "REPLACE"
