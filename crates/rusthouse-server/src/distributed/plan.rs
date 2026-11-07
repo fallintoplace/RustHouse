@@ -56,30 +56,33 @@ impl ShardSqlPlan {
     fn for_select(select: &Select) -> Self {
         if is_safe_sorted_scan(select) {
             Self::Sorted
-        }         else if is_safe_multi_grouped_distinct(select) {
+        } else if is_safe_multi_grouped_distinct(select) {
             Self::MultiGroupedDistinct
-        }         else if is_safe_grouped_distinct(select) {
+        } else if is_safe_grouped_distinct(select) {
             Self::GroupedDistinct
-        }         else if is_safe_distinct_scan(select) {
+        } else if is_safe_distinct_scan(select) {
             Self::DistinctRows
-        }         else if is_safe_scan(select) {
+        } else if is_safe_scan(select) {
             Self::Scan
-        }         else if is_safe_grouped_sum(select) || is_safe_grouped_extremum(select) || is_safe_grouped_product(select) || is_safe_grouped_bitwise(select) {
+        } else if is_safe_grouped_sum(select)
+            || is_safe_grouped_extremum(select)
+            || is_safe_grouped_product(select)
+            || is_safe_grouped_bitwise(select)
+        {
             Self::GroupedAggregate
-        }         else if is_safe_grouped_count(select) {
+        } else if is_safe_grouped_count(select) {
             Self::GroupedCount
-        }         else if is_safe_rms(select) {
+        } else if is_safe_rms(select) {
             Self::Rms
-        }         else if is_safe_avg(select) {
+        } else if is_safe_avg(select) {
             Self::Avg
-        }         else if is_safe_range(select) {
+        } else if is_safe_range(select) {
             Self::Range
-        }         else if is_safe_uniq(select) {
+        } else if is_safe_uniq(select) {
             Self::Uniq
-        }         else if matches!(select.projection, Projection::CountDistinct { .. }) {
+        } else if matches!(select.projection, Projection::CountDistinct { .. }) {
             Self::CountDistinct
-        }
-        else {
+        } else {
             Self::Passthrough
         }
     }
@@ -87,18 +90,42 @@ impl ShardSqlPlan {
 
 pub(super) fn rewrite_shard_sql(sql: &str, select: &Select) -> Result<String, &'static str> {
     match ShardSqlPlan::for_select(select) {
-        ShardSqlPlan::Sorted => sorted_scan_sql(sql, select).ok_or("unsupported distributed sort\n"),
-        ShardSqlPlan::MultiGroupedDistinct => multi_grouped_distinct_shard_sql(sql, select).ok_or("unsupported grouped DISTINCT\n"),
-        ShardSqlPlan::GroupedDistinct => grouped_distinct_shard_sql(sql, select).ok_or("unsupported grouped DISTINCT\n"),
-        ShardSqlPlan::DistinctRows => unpaged_scan_sql(sql, select).ok_or("unsupported distributed DISTINCT pagination\n"),
-        ShardSqlPlan::Scan => bounded_scan_sql(sql, select).ok_or("unsupported distributed pagination\n"),
-        ShardSqlPlan::GroupedAggregate => grouped_count_shard_sql(sql, select).ok_or("unsupported global grouped aggregate\n"),
-        ShardSqlPlan::GroupedCount => grouped_count_shard_sql(sql, select).ok_or("unsupported global grouped query\n"),
-        ShardSqlPlan::Rms => rms_shard_sql(sql, select).ok_or("unsupported distributed RMS\n"),
-        ShardSqlPlan::Avg => avg_shard_sql(sql, select).ok_or("unsupported distributed AVG\n"),
-        ShardSqlPlan::Range => range_shard_sql(sql, select).ok_or("unsupported distributed RANGE\n"),
-        ShardSqlPlan::Uniq => uniq_state_shard_sql(sql, select).ok_or("unsupported distributed uniq query\n"),
-        ShardSqlPlan::CountDistinct => distinct_shard_sql(sql, select).ok_or("unsupported distributed DISTINCT query\n"),
+        ShardSqlPlan::Sorted => {
+            sorted_scan_sql(sql, select).ok_or("unsupported distributed sort\n")
+        },
+        ShardSqlPlan::MultiGroupedDistinct => {
+            multi_grouped_distinct_shard_sql(sql, select).ok_or("unsupported grouped DISTINCT\n")
+        },
+        ShardSqlPlan::GroupedDistinct => {
+            grouped_distinct_shard_sql(sql, select).ok_or("unsupported grouped DISTINCT\n")
+        },
+        ShardSqlPlan::DistinctRows => {
+            unpaged_scan_sql(sql, select).ok_or("unsupported distributed DISTINCT pagination\n")
+        },
+        ShardSqlPlan::Scan => {
+            bounded_scan_sql(sql, select).ok_or("unsupported distributed pagination\n")
+        },
+        ShardSqlPlan::GroupedAggregate => {
+            grouped_count_shard_sql(sql, select).ok_or("unsupported global grouped aggregate\n")
+        },
+        ShardSqlPlan::GroupedCount => {
+            grouped_count_shard_sql(sql, select).ok_or("unsupported global grouped query\n")
+        },
+        ShardSqlPlan::Rms => {
+            rms_shard_sql(sql, select).ok_or("unsupported distributed RMS\n")
+        },
+        ShardSqlPlan::Avg => {
+            avg_shard_sql(sql, select).ok_or("unsupported distributed AVG\n")
+        },
+        ShardSqlPlan::Range => {
+            range_shard_sql(sql, select).ok_or("unsupported distributed RANGE\n")
+        },
+        ShardSqlPlan::Uniq => {
+            uniq_state_shard_sql(sql, select).ok_or("unsupported distributed uniq query\n")
+        },
+        ShardSqlPlan::CountDistinct => {
+            distinct_shard_sql(sql, select).ok_or("unsupported distributed DISTINCT query\n")
+        },
         ShardSqlPlan::Passthrough => Ok(sql.to_owned()),
     }
 }
