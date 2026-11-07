@@ -21,6 +21,25 @@ fn valid_grouped_count(projection: &Projection, first: &str, column: &str, third
     }
 }
 
+fn group_by_start(tokens: &[Token]) -> Option<usize> {
+    let mut depth = 0usize;
+    for (i, token) in tokens.iter().enumerate() {
+        match token {
+            Token::LParen => depth += 1,
+            Token::RParen => depth = depth.saturating_sub(1),
+            Token::Word(word)
+                if depth == 0
+                    && word.eq_ignore_ascii_case("GROUP")
+                    && matches!(tokens.get(i + 1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
+            {
+                return Some(i + 2);
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
 pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError> {
     let (first, column, label, third) = match tokens.as_slice() {
         [
@@ -54,24 +73,7 @@ pub(super) fn parse(mut tokens: Vec<Token>) -> Result<Option<Select>, ParseError
     if first == column || third == column || first == third || label == first || label == third {
         return Err(ParseError("ambiguous extracted group key".into()));
     }
-    let mut depth = 0usize;
-    let mut group = None;
-    for (i, token) in tokens.iter().enumerate() {
-        match token {
-            Token::LParen => depth += 1,
-            Token::RParen => depth = depth.saturating_sub(1),
-            Token::Word(word)
-                if depth == 0
-                    && word.eq_ignore_ascii_case("GROUP")
-                    && matches!(tokens.get(i+1), Some(Token::Word(by)) if by.eq_ignore_ascii_case("BY")) =>
-            {
-                group = Some(i + 2);
-                break;
-            }
-            _ => {}
-        }
-    }
-    let Some(group) = group else { return Ok(None) };
+    let Some(group) = group_by_start(&tokens) else { return Ok(None) };
     if !matches!(tokens.get(group..group+5), Some([Token::Word(a), Token::Comma, Token::Word(b), Token::Comma, Token::Word(c)]) if a == &first && b == &label && c == &third)
         || matches!(tokens.get(group + 5), Some(Token::Comma))
     {
