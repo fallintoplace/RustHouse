@@ -1726,11 +1726,29 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         }
         "COMMONPREFIXLENGTHUTF8" => {
             let left = text_arg(parser, depth + 1)?;
-            require(parser, Token::Comma, "commonPrefixLengthUTF8 requires two arguments")?;
+            require(
+                parser,
+                Token::Comma,
+                "commonPrefixLengthUTF8 requires two arguments",
+            )?;
             let right = text_arg(parser, depth + 1)?;
-            require(parser, Token::RParen, "commonPrefixLengthUTF8 requires two arguments")?;
+            require(
+                parser,
+                Token::RParen,
+                "commonPrefixLengthUTF8 requires two arguments",
+            )?;
             match (left, right) {
-                (Some(left), Some(right)) => ConstantValue::Integer(i64::try_from(left.chars().zip(right.chars()).take_while(|(a, b)| a == b).count()).map_err(|_| ParseError("commonPrefixLengthUTF8 result exceeds Int64".into()))?),
+                (Some(left), Some(right)) => ConstantValue::Integer(
+                    i64::try_from(
+                        left.chars()
+                            .zip(right.chars())
+                            .take_while(|(a, b)| a == b)
+                            .count(),
+                    )
+                    .map_err(|_| {
+                        ParseError("commonPrefixLengthUTF8 result exceeds Int64".into())
+                    })?,
+                ),
                 _ => ConstantValue::Null,
             }
         }
