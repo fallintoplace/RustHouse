@@ -63,6 +63,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "ENCODEXMLCOMPONENT"
                 | "HEX"
                 | "IS_ASCII"
+                | "ISUUID"
                 | "ISIPV4STRING"
                 | "UPPER"
                 | "UCASE"
