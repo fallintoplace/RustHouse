@@ -1577,6 +1577,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ISBLANK" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isBlank requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Integer(i64::from(input.chars().all(|ch| ch.is_whitespace()))),
+                None => ConstantValue::Null,
+            }
+        }
         "ISIPV6STRING" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "isIPv6String requires one argument")?;
