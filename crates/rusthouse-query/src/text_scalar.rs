@@ -673,6 +673,19 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ISIPV6UNSPECIFIED" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv6Unspecified requires one argument")?;
+            match input {
+                Some(input) => {
+                    let address = input
+                        .parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    ConstantValue::Integer(i64::from(address.is_unspecified()))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "ISIPV6UNIQUELOCAL" => {
             let input = text_arg(parser, depth + 1)?;
             require(
