@@ -681,6 +681,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ISIPV6IPV4MAPPED" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv6IPv4Mapped requires one argument")?;
+            match input {
+                Some(input) => {
+                    let address = input
+                        .parse::<std::net::Ipv6Addr>()
+                        .map_err(|_| ParseError("invalid IPv6 address".into()))?;
+                    let octets = address.octets();
+                    let mapped = octets[..10].iter().all(|&octet| octet == 0)
+                        && octets[10] == 0xff
+                        && octets[11] == 0xff;
+                    ConstantValue::Integer(i64::from(mapped))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "ISIPV6MULTICAST" => {
             let input = text_arg(parser, depth + 1)?;
             require(
