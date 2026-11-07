@@ -62,6 +62,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("NEGATE")
         || name.eq_ignore_ascii_case("BIT_PARITY")
         || name.eq_ignore_ascii_case("BIT_MASK")
+        || name.eq_ignore_ascii_case("BIT_COUNT_AND_NOT")
         || name.eq_ignore_ascii_case("BIT_WIDTH")
         || name.eq_ignore_ascii_case("DIV")
         || name.eq_ignore_ascii_case("INTDIV")
@@ -326,6 +327,15 @@ fn parse_extrema(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
         return Err(ParseError(format!("expected ')' after {name} arguments")));
     }
     Ok(value)
+}
+
+fn parse_bit_count_and_not(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_COUNT_AND_NOT requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_COUNT_AND_NOT requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BIT_COUNT_AND_NOT requires two arguments")?;
+    Ok(i64::from(((left & !right) as u64).count_ones()))
 }
 
 fn parse_bit_width(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -1136,6 +1146,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("BIT_MASK") {
         return parse_bit_mask(parser, depth);
+    }
+    if parser.keyword("BIT_COUNT_AND_NOT") {
+        return parse_bit_count_and_not(parser, depth);
     }
     if parser.keyword("BIT_WIDTH") {
         return parse_bit_width(parser, depth);
