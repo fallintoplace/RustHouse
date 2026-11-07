@@ -10,8 +10,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn supports_strip_non_ascii() {
     for (sql, expected) in [
-        ("SELECT stripNonASCII('café42')", ConstantValue::Text("caf42".into())),
-        ("SELECT stripNonASCII('東京')", ConstantValue::Text("".into())),
+        (
+            "SELECT stripNonASCII('café42')",
+            ConstantValue::Text("caf42".into()),
+        ),
+        (
+            "SELECT stripNonASCII('東京')",
+            ConstantValue::Text("".into()),
+        ),
         ("SELECT stripNonASCII('')", ConstantValue::Text("".into())),
         ("SELECT stripNonASCII(NULL)", ConstantValue::Null),
     ] {
