@@ -57,6 +57,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("TOUINT16")
         || name.eq_ignore_ascii_case("TOUINT32")
         || is_saturating(name)
+        || name.eq_ignore_ascii_case("BIT_COMMON_PREFIX")
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("NEGATE")
@@ -362,6 +363,15 @@ fn parse_bit_mask(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> 
     } else {
         ((1_u64 << width) - 1) as i64
     })
+}
+
+fn parse_bit_common_prefix(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_COMMON_PREFIX requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_COMMON_PREFIX requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BIT_COMMON_PREFIX requires two arguments")?;
+    Ok(i64::from((left ^ right).leading_zeros()))
 }
 
 fn parse_hamming_distance(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
@@ -1139,6 +1149,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("BIT_WIDTH") {
         return parse_bit_width(parser, depth);
+    }
+    if parser.keyword("BIT_COMMON_PREFIX") {
+        return parse_bit_common_prefix(parser, depth);
     }
     if parser.keyword("BYTESWAP") {
         return parse_byte_swap(parser, depth);
