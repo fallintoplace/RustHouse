@@ -67,6 +67,7 @@ mod granules;
 mod ip;
 mod mark_validation;
 mod marks;
+mod marked_stream;
 mod metadata;
 mod nested_arrays;
 mod nullable;
