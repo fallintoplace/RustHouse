@@ -780,6 +780,22 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ISIPV4BENCHMARK" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4Benchmark requires one argument")?;
+            match input {
+                Some(input) => {
+                    let address = input
+                        .parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("invalid IPv4 address".into()))?;
+                    let octets = address.octets();
+                    ConstantValue::Integer(i64::from(
+                        octets[0] == 198 && (octets[1] == 18 || octets[1] == 19),
+                    ))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "ISIPV4MULTICAST" => {
             let input = text_arg(parser, depth + 1)?;
             require(
