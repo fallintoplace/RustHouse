@@ -35,6 +35,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "TOSTARTOFFIFTEENMINUTES"
                 | "ASCII"
                 | "TOSTARTOFMINUTE"
+                | "ISALPHAUTF8"
                 | "UTF16_LENGTH"
                 | "ISIPV6STRING"
                 | "HASSUBSEQUENCE"

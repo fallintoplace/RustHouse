@@ -1651,6 +1651,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "ISALPHAUTF8" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isAlphaUTF8 requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Integer(i64::from(
+                    !input.is_empty() && input.chars().all(|ch| ch.is_alphabetic()),
+                )),
+                None => ConstantValue::Null,
+            }
+        }
         "UTF16_LENGTH" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "UTF16_LENGTH requires one argument")?;
