@@ -21,6 +21,15 @@ fn canonical_receipt(
     receipt.sequence == expected_sequence && seen.insert(receipt.chunk_index)
 }
 
+fn encode_receipt_frame(out: &mut Vec<u8>, record: &JournalReceipt) {
+    let begin = out.len();
+    out.extend_from_slice(&record.sequence.to_le_bytes());
+    out.extend_from_slice(&record.chunk_index.to_le_bytes());
+    out.extend_from_slice(&record.payload_crc32c.to_le_bytes());
+    let checksum = crc32c(&out[begin..]);
+    out.extend_from_slice(&checksum.to_le_bytes());
+}
+
 pub fn encode_transfer_journal(records: &[JournalReceipt]) -> Result<Vec<u8>, &'static str> {
     if records.len() > MAX_RECORDS {
         return Err("transfer journal exceeds record bound");
@@ -32,12 +41,7 @@ pub fn encode_transfer_journal(records: &[JournalReceipt]) -> Result<Vec<u8>, &'
         if !canonical_receipt(record, index as u64 + 1, &mut seen) {
             return Err("noncanonical transfer receipt sequence");
         }
-        let begin = out.len();
-        out.extend_from_slice(&record.sequence.to_le_bytes());
-        out.extend_from_slice(&record.chunk_index.to_le_bytes());
-        out.extend_from_slice(&record.payload_crc32c.to_le_bytes());
-        let checksum = crc32c(&out[begin..]);
-        out.extend_from_slice(&checksum.to_le_bytes());
+        encode_receipt_frame(&mut out, record);
     }
     Ok(out)
 }
