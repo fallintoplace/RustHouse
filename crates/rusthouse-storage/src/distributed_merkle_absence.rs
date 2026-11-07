@@ -64,22 +64,29 @@ pub fn prove_absence(
 }
 
 fn verify_neighbor_bounds(trusted_root: [u8; 32], key: &str, proof: &MerkleAbsenceProof) -> bool {
+    if !proof
+        .before
+        .as_ref()
+        .is_none_or(|neighbor| authenticated_neighbor(trusted_root, proof.leaf_count, neighbor))
+        || !proof
+            .after
+            .as_ref()
+            .is_none_or(|neighbor| authenticated_neighbor(trusted_root, proof.leaf_count, neighbor))
+    {
+        return false;
+    }
     match (&proof.before, &proof.after) {
         (Some(before), Some(after)) => {
-            authenticated_neighbor(trusted_root, proof.leaf_count, before)
-                && authenticated_neighbor(trusted_root, proof.leaf_count, after)
-                && before.object.key.as_str() < key
+            before.object.key.as_str() < key
                 && key < after.object.key.as_str()
                 && before.proof.leaf_index.checked_add(1) == Some(after.proof.leaf_index)
         }
         (None, Some(after)) => {
-            authenticated_neighbor(trusted_root, proof.leaf_count, after)
-                && after.proof.leaf_index == 0
+            after.proof.leaf_index == 0
                 && key < after.object.key.as_str()
         }
         (Some(before), None) => {
-            authenticated_neighbor(trusted_root, proof.leaf_count, before)
-                && before.proof.leaf_index.checked_add(1) == Some(proof.leaf_count)
+            before.proof.leaf_index.checked_add(1) == Some(proof.leaf_count)
                 && before.object.key.as_str() < key
         }
         (None, None) => false,
