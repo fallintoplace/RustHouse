@@ -1,8 +1,7 @@
 mod manifest_parse;
-use self::manifest_parse::*;
-
 mod validation;
 
+use self::manifest_parse::*;
 use self::validation::*;
 
 use crate::{CompressedBlockReader, PartError};
