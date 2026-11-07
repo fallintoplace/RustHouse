@@ -112,6 +112,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("CEIL_DIV")
         || name.eq_ignore_ascii_case("FLOOR_DIV")
         || name.eq_ignore_ascii_case("BITCOUNT")
+        || name.eq_ignore_ascii_case("BIT_SELECT")
         || name.eq_ignore_ascii_case("BITTESTANY")
         || name.eq_ignore_ascii_case("BITNOT")
         || name.eq_ignore_ascii_case("BITTEST")
@@ -693,6 +694,25 @@ fn parse_width_bucket(parser: &mut Parser, depth: usize) -> Result<i64, ParseErr
 
 /// Modify a single bit in the signed 64-bit two's-complement representation.
 /// Test all supplied indices before returning whether any selected bit is set.
+fn parse_bit_select(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_SELECT requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_SELECT requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BIT_SELECT requires two arguments")?;
+    if !(0..=63).contains(&right) {
+        return Err(ParseError("bitSelect rank must be between 0 and 63".into()));
+    }
+    let mut bits = left as u64;
+    for _ in 0..right {
+        if bits == 0 {
+            return Ok(-1);
+        }
+        bits &= bits - 1;
+    }
+    Ok(if bits == 0 { -1 } else { i64::from(bits.trailing_zeros()) })
+}
+
 fn parse_bit_test_any(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "bitTestAny requires '('")?;
     let value = expression(parser, depth + 1)? as u64;
@@ -1174,6 +1194,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("FLOOR_TO_MULTIPLE") {
         return parse_floor_to_multiple(parser, depth);
+    }
+    if parser.keyword("BIT_SELECT") {
+        return parse_bit_select(parser, depth);
     }
     if parser.keyword("BITTESTANY") {
         return parse_bit_test_any(parser, depth);
