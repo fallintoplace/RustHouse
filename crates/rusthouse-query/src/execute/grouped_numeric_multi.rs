@@ -11,6 +11,35 @@ use std::path::Path;
 
 const MAX_GROUPS: usize = 200_000;
 
+/// Prepared presentation and input metadata for one grouped aggregate metric.
+/// Resolved once per query instead of rebuilding it for every output header.
+#[derive(Clone, Copy)]
+struct GroupedMetricDescriptor<'a> {
+    function: AggregateFunction,
+    column: &'a str,
+    alias: Option<&'a str>,
+    filter: Option<&'a crate::GroupedFilter>,
+}
+
+impl GroupedMetricDescriptor<'_> {
+    fn write_header<W: Write>(self, output: &mut W) -> Result<(), ExecutionError> {
+        if let Some(alias) = self.alias {
+            write!(output, "\t{alias}")?;
+        } else if let Some(filter) = self.filter {
+            write!(
+                output,
+                "\t{}If({}, {})",
+                self.function.name(),
+                self.column,
+                filter.label()
+            )?;
+        } else {
+            write!(output, "\t{}({})", self.function.name(), self.column)?;
+        }
+        Ok(())
+    }
+}
+
 struct MetricState {
     numeric: AggregateState,
     text_value: Option<Vec<u8>>,
@@ -353,6 +382,16 @@ pub(super) fn execute<W: Write>(
                     .is_some_and(|kind| typed::base_type(kind) == "String")
         })
         .collect::<Vec<_>>();
+    let descriptors = items
+        .iter()
+        .enumerate()
+        .map(|(index, (function, column))| GroupedMetricDescriptor {
+            function: *function,
+            column,
+            alias: aliases.get(index).and_then(Option::as_deref),
+            filter: filters.get(index).and_then(Option::as_ref),
+        })
+        .collect::<Vec<_>>();
     for (metric, is_text) in text_metrics.iter().enumerate() {
         if *is_text
             && matches!(
@@ -437,21 +476,8 @@ pub(super) fn execute<W: Write>(
         conditions.push(typed::compile(branch, &indices, &types)?);
     }
     write!(output, "{column}")?;
-    for (index, (function, value_column)) in items.iter().enumerate() {
-        if let Some(alias) = aliases.get(index).and_then(Option::as_deref) {
-            write!(output, "\t{alias}")?;
-        } else {
-            if let Some(filter) = filters.get(index).and_then(Option::as_ref) {
-                write!(
-                    output,
-                    "\t{}If({value_column}, {})",
-                    function.name(),
-                    filter.label()
-                )?;
-            } else {
-                write!(output, "\t{}({value_column})", function.name())?;
-            }
-        }
+    for metric in &descriptors {
+        metric.write_header(output)?;
     }
     writeln!(output)?;
     if query.limit == Some(0) {
@@ -459,14 +485,15 @@ pub(super) fn execute<W: Write>(
     }
 
     let group_index = indices[column];
-    let item_indices = items
+    let item_indices = descriptors
         .iter()
         .enumerate()
-        .map(|(metric, (function, name))| {
+        .map(|(metric, descriptor)| {
             if bound_expressions.get(metric).is_some_and(Option::is_some) {
                 None
             } else {
-                (*function != AggregateFunction::Count || name != "*").then(|| indices[name])
+                (descriptor.function != AggregateFunction::Count || descriptor.column != "*")
+                    .then(|| indices[descriptor.column])
             }
         })
         .collect::<Vec<_>>();
@@ -501,9 +528,9 @@ pub(super) fn execute<W: Write>(
                     let index = groups.len();
                     groups.push((
                         typed::cell(&batch[group_index], row),
-                        items
+                        descriptors
                             .iter()
-                            .map(|(function, _)| MetricState::new(*function))
+                            .map(|metric| MetricState::new(metric.function))
                             .collect(),
                     ));
                     slots.insert(key, index);
@@ -533,9 +560,9 @@ pub(super) fn execute<W: Write>(
                         by_uuid.insert(key, group);
                         groups.push((
                             typed::cell(&batch[group_index], row),
-                            items
+                            descriptors
                                 .iter()
-                                .map(|(function, _)| MetricState::new(*function))
+                                .map(|metric| MetricState::new(metric.function))
                                 .collect(),
                         ));
                         group
@@ -552,9 +579,9 @@ pub(super) fn execute<W: Write>(
                             entry.insert(TextGroupBucket::One(group));
                             groups.push((
                                 Cell::Text(key.to_vec()),
-                                items
+                                descriptors
                                     .iter()
-                                    .map(|(function, _)| MetricState::new(*function))
+                                    .map(|metric| MetricState::new(metric.function))
                                     .collect(),
                             ));
                             group
@@ -576,9 +603,9 @@ pub(super) fn execute<W: Write>(
                                 insert_text_group(entry.get_mut(), group);
                                 groups.push((
                                     Cell::Text(key.to_vec()),
-                                    items
+                                    descriptors
                                         .iter()
-                                        .map(|(function, _)| MetricState::new(*function))
+                                        .map(|metric| MetricState::new(metric.function))
                                         .collect(),
                                 ));
                                 group
@@ -597,9 +624,9 @@ pub(super) fn execute<W: Write>(
                             entry.insert(groups.len());
                             groups.push((
                                 key,
-                                items
+                                descriptors
                                     .iter()
-                                    .map(|(function, _)| MetricState::new(*function))
+                                    .map(|metric| MetricState::new(metric.function))
                                     .collect(),
                             ));
                             groups.len() - 1
@@ -891,6 +918,26 @@ pub(super) fn execute<W: Write>(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod grouped_metric_descriptor_tests {
+    use super::*;
+
+    #[test]
+    fn prepared_descriptor_preserves_default_and_alias_headers() {
+        let plain = GroupedMetricDescriptor {
+            function: AggregateFunction::Sum,
+            column: "price",
+            alias: None,
+            filter: None,
+        };
+        let alias = GroupedMetricDescriptor { alias: Some("total"), ..plain };
+        let mut output = Vec::new();
+        plain.write_header(&mut output).unwrap();
+        alias.write_header(&mut output).unwrap();
+        assert_eq!(output, b"\tsum(price)\ttotal");
+    }
 }
 
 #[cfg(test)]
