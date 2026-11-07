@@ -60,6 +60,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || name.eq_ignore_ascii_case("BITHAMMINGDISTANCE")
         || name.eq_ignore_ascii_case("ABS")
         || name.eq_ignore_ascii_case("NEGATE")
+        || name.eq_ignore_ascii_case("BIT_COUNT_AND")
         || name.eq_ignore_ascii_case("BIT_PARITY")
         || name.eq_ignore_ascii_case("BIT_MASK")
         || name.eq_ignore_ascii_case("BIT_WIDTH")
@@ -340,6 +341,15 @@ fn parse_bit_width(parser: &mut Parser, depth: usize) -> Result<i64, ParseError>
 }
 
 /// Parity of all 64 bits in the signed two's-complement representation.
+fn parse_bit_count_and(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_COUNT_AND requires '('")?;
+    let left = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_COUNT_AND requires two arguments")?;
+    let right = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BIT_COUNT_AND requires two arguments")?;
+    Ok(i64::from(((left & right) as u64).count_ones()))
+}
+
 fn parse_bit_parity(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "BIT_PARITY requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -1130,6 +1140,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("POWER") || parser.keyword("POW") {
         return parse_power(parser, depth);
+    }
+    if parser.keyword("BIT_COUNT_AND") {
+        return parse_bit_count_and(parser, depth);
     }
     if parser.keyword("BIT_PARITY") {
         return parse_bit_parity(parser, depth);
