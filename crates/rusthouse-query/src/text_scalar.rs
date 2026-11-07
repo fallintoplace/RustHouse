@@ -501,6 +501,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ISVALIDCIDR" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isValidCIDR requires one argument")?;
+            match input {
+                Some(input) => {
+                    let valid = input.split_once('/').is_some_and(|(address, prefix)| {
+                        match (
+                            address.parse::<std::net::IpAddr>(),
+                            prefix.parse::<u32>(),
+                        ) {
+                            (Ok(std::net::IpAddr::V4(_)), Ok(prefix)) => prefix <= 32,
+                            (Ok(std::net::IpAddr::V6(_)), Ok(prefix)) => prefix <= 128,
+                            _ => false,
+                        }
+                    });
+                    ConstantValue::Integer(i64::from(valid))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "ISIPADDRESSINRANGE" => {
             let address = text_arg(parser, depth + 1)?;
             require(

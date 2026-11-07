@@ -7,6 +7,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "COUNTWORDS"
                 | "MATCH"
                 | "CRC32IEEE"
+                | "ISVALIDCIDR"
                 | "ISIPADDRESSINRANGE"
                 | "MACSTRINGTOOUI"
                 | "MACNUMTOSTRING"
