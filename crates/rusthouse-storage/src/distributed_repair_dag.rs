@@ -70,6 +70,29 @@ fn ready_task_indices(tasks: &[RepairTask], completed: &[bool], indegree: &[usiz
     ready
 }
 
+fn select_wave(
+    ready: Vec<usize>,
+    tasks: &[RepairTask],
+    max_parallel: usize,
+    max_wave_bytes: u64,
+) -> Result<(Vec<usize>, u64), &'static str> {
+    let mut chosen = Vec::new();
+    let mut remaining = max_wave_bytes;
+    for index in ready {
+        if chosen.len() == max_parallel {
+            break;
+        }
+        if tasks[index].bytes <= remaining {
+            remaining -= tasks[index].bytes;
+            chosen.push(index);
+        }
+    }
+    if chosen.is_empty() {
+        return Err("repair task exceeds remaining wave budget");
+    }
+    Ok((chosen, max_wave_bytes - remaining))
+}
+
 pub fn plan_repair_waves(
     tasks: &[RepairTask],
     max_parallel: usize,
@@ -100,21 +123,7 @@ pub fn plan_repair_waves(
         if ready.is_empty() {
             return Err("cycle in replica repair dependencies");
         }
-        let mut chosen = Vec::new();
-        let mut remaining = max_wave_bytes;
-        for index in ready {
-            if chosen.len() == max_parallel {
-                break;
-            }
-            if tasks[index].bytes <= remaining {
-                remaining -= tasks[index].bytes;
-                chosen.push(index);
-            }
-        }
-        if chosen.is_empty() {
-            return Err("repair task exceeds remaining wave budget");
-        }
-        let bytes = max_wave_bytes - remaining;
+        let (chosen, bytes) = select_wave(ready, tasks, max_parallel, max_wave_bytes)?;
         let task_ids = chosen
             .iter()
             .map(|&index| tasks[index].id.clone())
