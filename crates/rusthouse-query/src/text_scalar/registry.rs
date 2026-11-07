@@ -9,6 +9,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "ISIPADDRESSINRANGE"
                 | "MACSTRINGTOOUI"
                 | "MACNUMTOSTRING"
+                | "ISVALIDMAC"
                 | "MACSTRINGTONUM"
                 | "IPV4NUMTOSTRINGCLASSC"
                 | "IPV4STRINGTONUMORDEFAULT"
