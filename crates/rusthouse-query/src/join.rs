@@ -4486,8 +4486,6 @@ mod tests {
         assert!(has_top_level_join_after_from(&after_where, false));
     }
 
-    use super::*;
-
     #[test]
     fn explain_uses_the_same_resource_limits_as_join_execution() {
         let query = parse_join("SELECT * FROM a x JOIN b y ON x.id = y.id")
