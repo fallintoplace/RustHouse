@@ -84,6 +84,7 @@ pub(super) fn is_function(name: &str) -> bool {
         || is_bitwise(name)
         || name.eq_ignore_ascii_case("MOD_POW")
         || name.eq_ignore_ascii_case("GCD")
+        || name.eq_ignore_ascii_case("BIT_RANGE_EXTRACT")
         || name.eq_ignore_ascii_case("REVERSE_DIGITS")
         || name.eq_ignore_ascii_case("LCM")
         || name.eq_ignore_ascii_case("FIBONACCI")
@@ -590,6 +591,26 @@ fn parse_bit_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseErro
 }
 
 /// Return one when a signed integer is between inclusive bounds.
+fn parse_bit_range_extract(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
+    require_token(parser, Token::LParen, "BIT_RANGE_EXTRACT requires '('")?;
+    let value = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_RANGE_EXTRACT requires three arguments")?;
+    let start = expression(parser, depth + 1)?;
+    require_token(parser, Token::Comma, "BIT_RANGE_EXTRACT requires three arguments")?;
+    let length = expression(parser, depth + 1)?;
+    require_token(parser, Token::RParen, "BIT_RANGE_EXTRACT requires three arguments")?;
+    let start = u32::try_from(start)
+        .map_err(|_| ParseError("bitRangeExtract start must be nonnegative".into()))?;
+    let length = u32::try_from(length)
+        .map_err(|_| ParseError("bitRangeExtract length must be nonnegative".into()))?;
+    if start > 64 || length > 64 - start {
+        return Err(ParseError("bitRangeExtract range must fit in 64 bits".into()));
+    }
+    let shifted = if start == 64 { 0 } else { (value as u64) >> start };
+    let mask = if length == 64 { u64::MAX } else { (1_u64 << length) - 1 };
+    Ok((shifted & mask) as i64)
+}
+
 fn parse_in_range(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     require_token(parser, Token::LParen, "IN_RANGE requires '('")?;
     let value = expression(parser, depth + 1)?;
@@ -1148,6 +1169,9 @@ fn factor(parser: &mut Parser, depth: usize) -> Result<i64, ParseError> {
     }
     if parser.keyword("CEIL_TO_MULTIPLE") {
         return parse_ceil_to_multiple(parser, depth);
+    }
+    if parser.keyword("BIT_RANGE_EXTRACT") {
+        return parse_bit_range_extract(parser, depth);
     }
     if parser.keyword("CLAMP") {
         return parse_clamp(parser, depth);
