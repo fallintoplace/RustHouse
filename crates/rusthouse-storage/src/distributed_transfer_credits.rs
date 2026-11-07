@@ -46,21 +46,28 @@ impl TransferCreditWindow {
         self.budget - self.in_flight
     }
 
-    pub fn reserve(&mut self, bytes: u64, checksum: u32) -> Result<TransferFrame, &'static str> {
+    fn next_frame(&self, bytes: u64, checksum: u32) -> Result<(TransferFrame, u64), &'static str> {
         if bytes == 0 || bytes > self.available_bytes() || self.frames.len() >= 4096 {
             return Err("transfer window exhausted or frame invalid");
         }
-        let next = self
+        let next_sequence = self
             .next_sequence
             .checked_add(1)
             .ok_or("transfer sequence overflow")?;
-        let frame = TransferFrame {
-            sequence: self.next_sequence,
-            bytes,
-            checksum,
-        };
+        Ok((
+            TransferFrame {
+                sequence: self.next_sequence,
+                bytes,
+                checksum,
+            },
+            next_sequence,
+        ))
+    }
+
+    pub fn reserve(&mut self, bytes: u64, checksum: u32) -> Result<TransferFrame, &'static str> {
+        let (frame, next_sequence) = self.next_frame(bytes, checksum)?;
         self.frames.push_back(frame);
-        self.next_sequence = next;
+        self.next_sequence = next_sequence;
         self.in_flight += bytes;
         Ok(frame)
     }
@@ -95,6 +102,15 @@ impl TransferCreditWindow {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sequence_overflow_keeps_reservation_unchanged() {
+        let mut window = TransferCreditWindow::new(5).unwrap();
+        window.next_sequence = u64::MAX;
+        let before = window.clone();
+        assert!(window.reserve(1, 7).is_err());
+        assert_eq!(window, before);
+    }
     #[test]
     fn credits_are_only_returned_for_verified_prefix() {
         let mut window = TransferCreditWindow::new(10).unwrap();
