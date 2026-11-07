@@ -1,8 +1,8 @@
 //! Read typed batches from immutable wide MergeTree parts.
 //! This reader is deliberately separate from the optimized numeric-only scan.
 use crate::granules::{read_mark_bytes_cached, read_numeric_granule_cached};
-use crate::mark_validation::validate_wide_marks_reader;
 use crate::numeric::numeric_storage_type;
+use crate::marked_stream::open_validated_column;
 use crate::query_parts;
 use crate::scan_layout::ScanLayout;
 use crate::strings::read_legacy_strings_buffered;
@@ -10,7 +10,6 @@ use crate::{
     ArrayOffsetsEncoding, CompressedBlockReader, DecodedBlock, NumericColumn, PartError,
     PartMetadata, StringColumn, UuidValue, WideMark, inspect_part, read_array_offsets,
     read_numeric_array_column, read_numeric_column, read_part_row_count, read_uuid_values,
-    read_wide_marks,
 };
 use std::fs::File;
 use std::io::{self, BufRead, Read};
@@ -53,25 +52,9 @@ struct Stream {
 
 impl Stream {
     fn open(path: &Path, name: &str) -> Result<Self, PartError> {
-        let uncompressed_marks = path.join(format!("{name}.mrk2"));
-        let compressed_marks = path.join(format!("{name}.cmrk2"));
-        if uncompressed_marks.exists() && compressed_marks.exists() {
-            return Err(PartError::InvalidScan(format!(
-                "ambiguous mark files for {name}"
-            )));
-        }
-        let mark_path = if uncompressed_marks.exists() || !compressed_marks.exists() {
-            uncompressed_marks
-        } else {
-            compressed_marks
-        };
-        let marks = read_wide_marks(&mark_path)?;
-        let data_path = path.join(format!("{name}.bin"));
-        let mut reader = CompressedBlockReader::open(&data_path)?;
-        validate_wide_marks_reader(&marks, &mut reader)?;
-        reader.seek_to_block(0)?;
+        let (marks, reader) = open_validated_column(path, name)?;
         Ok(Self {
-            marks: marks.marks,
+            marks,
             reader,
             cached: None,
         })
