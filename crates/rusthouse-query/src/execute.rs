@@ -1366,54 +1366,98 @@ fn execute_constant_projection<W: Write>(
     Ok(())
 }
 
-fn execute_into<W: Write>(
-    query: &Select,
-    part: Option<&Path>,
-    output: &mut W,
-) -> Result<(), ExecutionError> {
-    if let Projection::Constants(columns) = &query.projection {
-        let headers = columns
-            .iter()
-            .map(crate::Constant::header)
-            .collect::<Vec<_>>();
-        let values = columns
-            .iter()
-            .map(|column| constant_cell(&column.value))
-            .collect::<Result<Vec<_>, _>>()?;
-        return execute_constant_projection(query, part, &headers, &values, output);
-    }
-    if let Projection::Literal(value) = query.projection {
-        return execute_constant_projection(
-            query,
-            part,
-            &[value.to_string()],
-            &[typed::Cell::Numeric(Number::Signed(i128::from(value)))],
-            output,
-        );
-    }
+#[cfg(test)]
+mod input_execution_strategy_tests {
+    use super::*;
 
-    match query.source.as_ref() {
-        Some(Source::Numbers(rows)) => return execute_numbers(query, 0, *rows, 1, part, output),
-        Some(Source::NumbersRange { start, count }) => {
-            return execute_numbers(query, *start, *count, 1, part, output);
-        }
-        Some(Source::NumbersStepped {
-            start,
-            length,
-            step,
-        }) => {
-            let rows = length / step + u64::from(length % step != 0);
-            return execute_numbers(query, *start, rows, *step, part, output);
+    #[test]
+    fn routes_constant_and_generated_sources_without_opening_parts() {
+        let constants = crate::parse_select("SELECT 1").unwrap();
+        assert_eq!(input_execution_strategy(&constants).unwrap(), InputExecutionStrategy::InlineProjection);
+
+        let numbers = crate::parse_select("SELECT number FROM numbers(3)").unwrap();
+        assert_eq!(input_execution_strategy(&numbers).unwrap(), InputExecutionStrategy::GeneratedNumbers { start: 0, count: 3, step: 1 });
+    }
+}
+
+/// The first routing decision is independent of storage metadata and hot loops.
+/// Keep inline SELECTs ahead of source validation for parser compatibility.
+#[derive(Debug, PartialEq, Eq)]
+enum InputExecutionStrategy {
+    InlineProjection,
+    GeneratedNumbers { start: u64, count: u64, step: u64 },
+    StoredPart,
+}
+
+fn input_execution_strategy(query: &Select) -> Result<InputExecutionStrategy, ExecutionError> {
+    if matches!(query.projection, Projection::Constants(_) | Projection::Literal(_)) {
+        return Ok(InputExecutionStrategy::InlineProjection);
+    }
+    Ok(match query.source.as_ref() {
+        Some(Source::Numbers(count)) => InputExecutionStrategy::GeneratedNumbers {
+            start: 0,
+            count: *count,
+            step: 1,
+        },
+        Some(Source::NumbersRange { start, count }) => InputExecutionStrategy::GeneratedNumbers {
+            start: *start,
+            count: *count,
+            step: 1,
+        },
+        Some(Source::NumbersStepped { start, length, step }) => {
+            let count = length / step + u64::from(length % step != 0);
+            InputExecutionStrategy::GeneratedNumbers {
+                start: *start,
+                count,
+                step: *step,
+            }
         }
         Some(Source::GenerateSeries { start, count, step }) => {
-            return execute_numbers(query, *start, *count, *step, part, output);
+            InputExecutionStrategy::GeneratedNumbers {
+                start: *start,
+                count: *count,
+                step: *step,
+            }
         }
-        Some(Source::Table(table)) if table == "part" => {}
+        Some(Source::Table(table)) if table == "part" => InputExecutionStrategy::StoredPart,
         _ => {
             return Err(ExecutionError::Invalid(
                 "only FROM part and FROM numbers(N) are supported".into(),
             ));
         }
+    })
+}
+
+fn execute_into<W: Write>(
+    query: &Select,
+    part: Option<&Path>,
+    output: &mut W,
+) -> Result<(), ExecutionError> {
+    match input_execution_strategy(query)? {
+        InputExecutionStrategy::InlineProjection => {
+            if let Projection::Constants(columns) = &query.projection {
+                let headers = columns.iter().map(crate::Constant::header).collect::<Vec<_>>();
+                let values = columns
+                    .iter()
+                    .map(|column| constant_cell(&column.value))
+                    .collect::<Result<Vec<_>, _>>()?;
+                return execute_constant_projection(query, part, &headers, &values, output);
+            }
+            let Projection::Literal(value) = query.projection else {
+                unreachable!("inline strategy requires a constant projection");
+            };
+            return execute_constant_projection(
+                query,
+                part,
+                &[value.to_string()],
+                &[typed::Cell::Numeric(Number::Signed(i128::from(value)))],
+                output,
+            );
+        }
+        InputExecutionStrategy::GeneratedNumbers { start, count, step } => {
+            return execute_numbers(query, start, count, step, part, output);
+        }
+        InputExecutionStrategy::StoredPart => {}
     }
     let part = part.ok_or_else(|| {
         ExecutionError::Invalid("pass --part <directory> for table queries".into())
