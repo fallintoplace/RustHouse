@@ -2,8 +2,8 @@
 
 mod csv;
 mod json_pretty;
-mod output_format;
 mod json_validate;
+mod output_format;
 mod tsv_escape;
 mod without_header;
 
