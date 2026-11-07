@@ -41,6 +41,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "BYTEHAMMINGDISTANCE"
                 | "CHR"
                 | "TOUNIXTIMESTAMP"
+                | "COUNTASCIIDIGITS"
                 | "STRINGBYTESUNIQ"
                 | "SOUNDEX"
                 | "REGEXP_COUNT"
