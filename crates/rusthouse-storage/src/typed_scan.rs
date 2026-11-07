@@ -199,69 +199,19 @@ enum StorageKind {
 
 impl StorageKind {
     fn from_data_type(data_type: &str) -> Result<Self, PartError> {
-        if let Some(value_type) = data_type
-            .strip_prefix("Map(String, ")
-            .and_then(|name| name.strip_suffix(')'))
-        {
-            if matches!(
-                value_type,
-                "String"
-                    | "UInt8"
-                    | "UInt16"
-                    | "UInt32"
-                    | "UInt64"
-                    | "UInt128"
-                    | "Int8"
-                    | "Int16"
-                    | "Int32"
-                    | "Int64"
-                    | "Int128"
-                    | "Float32"
-                    | "Float64"
-            ) {
-                return Ok(Self::StringMap(value_type.to_owned()));
-            }
-        }
-        if let Some(inner) = data_type
-            .strip_prefix("Array(")
-            .and_then(|type_name| type_name.strip_suffix(')'))
-        {
-            if matches!(
-                inner,
-                "UInt8"
-                    | "UInt16"
-                    | "UInt32"
-                    | "UInt64"
-                    | "UInt128"
-                    | "Int8"
-                    | "Int16"
-                    | "Int32"
-                    | "Int64"
-                    | "Int128"
-                    | "Float32"
-                    | "Float64"
-            ) {
-                return Ok(Self::NumericArray(data_type.to_owned()));
-            }
-        }
-        match data_type {
-            "String" => Ok(Self::String),
-            "UUID" => Ok(Self::Uuid),
-            "Nullable(String)" => Ok(Self::NullableString),
-            other if other.starts_with("Nullable(") && other.ends_with(')') => {
-                let inner = &other[9..other.len() - 1];
-                if numeric_storage_type(inner).is_none() {
-                    return Err(PartError::InvalidScan(format!(
-                        "unsupported typed scan type: {other}"
-                    )));
-                }
-                Ok(Self::NullableNumeric(inner.to_owned()))
-            }
-            other if numeric_storage_type(other).is_some() => Ok(Self::Numeric(other.to_owned())),
-            other => Err(PartError::InvalidScan(format!(
-                "unsupported typed scan type: {other}"
-            ))),
-        }
+        use crate::physical_type::PhysicalType;
+        let kind = PhysicalType::parse(data_type).ok_or_else(|| {
+            PartError::InvalidScan(format!("unsupported typed scan type: {data_type}"))
+        })?;
+        Ok(match kind {
+            PhysicalType::Numeric(_) => Self::Numeric(data_type.to_owned()),
+            PhysicalType::Text => Self::String,
+            PhysicalType::Uuid => Self::Uuid,
+            PhysicalType::NullableNumeric(inner) => Self::NullableNumeric(inner.to_owned()),
+            PhysicalType::NullableText => Self::NullableString,
+            PhysicalType::NumericArray(_) => Self::NumericArray(data_type.to_owned()),
+            PhysicalType::StringMap(value) => Self::StringMap(value.to_owned()),
+        })
     }
 
     fn needs_null_map(&self) -> bool {
