@@ -4,6 +4,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
     matches!(
             name.to_ascii_uppercase().as_str(),
             "CRC32"
+                | "COUNTWORDS"
                 | "MATCH"
                 | "CRC32IEEE"
                 | "ISIPADDRESSINRANGE"
