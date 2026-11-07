@@ -183,4 +183,3 @@ pub(super) fn projection_types(
     }
     Ok(Some(output))
 }
-
