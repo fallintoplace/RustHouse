@@ -1997,6 +1997,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "COMMONSUFFIXLENGTHUTF8" => {
+            let left = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "commonSuffixLengthUTF8 requires two arguments")?;
+            let right = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "commonSuffixLengthUTF8 requires two arguments")?;
+            match (left, right) {
+                (Some(left), Some(right)) => ConstantValue::Integer(i64::try_from(left.chars().rev().zip(right.chars().rev()).take_while(|(a, b)| a == b).count()).map_err(|_| ParseError("commonSuffixLengthUTF8 result exceeds Int64".into()))?),
+                _ => ConstantValue::Null,
+            }
+        }
         "STRCMP" => {
             let left = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "strcmp requires a second string")?;

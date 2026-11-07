@@ -139,6 +139,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "TRIM_WHITESPACE"
                 | "TRY_TO_INT64"
                 | "TOUINT8"
+                | "COMMONSUFFIXLENGTHUTF8"
                 | "STRCMP"
                 | "TOUINT16"
                 | "TOUINT32"
