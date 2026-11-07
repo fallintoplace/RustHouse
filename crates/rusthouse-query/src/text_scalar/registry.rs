@@ -260,6 +260,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "FORMATREADABLESIZE"
                 | "FORMATREADABLEDECIMALSIZE"
                 | "TODECIMALSTRING"
+                | "RETAINALNUMUTF8"
                 | "TOTYPENAME"
                 | "JSONEXTRACTFLOAT"
                 | "POSITION"
