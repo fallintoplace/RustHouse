@@ -2,7 +2,6 @@
 //! This reader is deliberately separate from the optimized numeric-only scan.
 use crate::granules::{read_mark_bytes_cached, read_numeric_granule_cached};
 use crate::mark_validation::validate_wide_marks_reader;
-use crate::numeric::numeric_storage_type;
 use crate::query_parts;
 use crate::scan_layout::ScanLayout;
 use crate::strings::read_legacy_strings_buffered;
