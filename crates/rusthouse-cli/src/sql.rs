@@ -47,8 +47,12 @@ pub(super) enum SqlOutputFormat {
 impl SqlOutputFormat {
     fn from_arg(value: Option<OsString>) -> Result<Self, String> {
         use rusthouse_format::StandardOutputFormat as Common;
-        let invalid = || "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-pretty, json-compact-each-row, json-seq, markdown, html, sql-values, or vertical".to_owned();
-        let name = value.and_then(|value| value.into_string().ok()).ok_or_else(invalid)?;
+        let invalid = || {
+            "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-pretty, json-compact-each-row, json-seq, markdown, html, sql-values, or vertical".to_owned()
+        };
+        let name = value
+            .and_then(|value| value.into_string().ok())
+            .ok_or_else(invalid)?;
         if let Some(common) = Common::parse(&name) {
             return Ok(match common {
                 Common::Tsv => Self::Tsv,
