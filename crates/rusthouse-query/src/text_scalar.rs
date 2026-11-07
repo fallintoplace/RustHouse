@@ -1176,6 +1176,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "WORDCOUNT" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "wordCount requires one argument")?;
+            match input {
+                Some(input) => {
+                    ConstantValue::Integer(input.split_whitespace().count() as i64)
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "LENGTHUTF8" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "lengthUTF8 requires one argument")?;
