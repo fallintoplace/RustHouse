@@ -356,6 +356,34 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "REGEXP_LIKE_CI" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "regexp_like_ci requires a pattern")?;
+            let pattern = text_arg(parser, depth + 1)?;
+            require(
+                parser,
+                Token::RParen,
+                "regexp_like_ci requires exactly two arguments",
+            )?;
+            match (input, pattern) {
+                (Some(input), Some(pattern)) => {
+                    if pattern.len() > 4096 {
+                        return Err(ParseError(
+                            "regexp_like_ci pattern exceeds 4096 bytes".into(),
+                        ));
+                    }
+                    let regex = regex::RegexBuilder::new(&pattern)
+                        .case_insensitive(true)
+                        .size_limit(2 * 1024 * 1024)
+                        .build()
+                        .map_err(|error| {
+                            ParseError(format!("invalid regexp_like_ci regex: {error}"))
+                        })?;
+                    ConstantValue::Integer(i64::from(regex.is_match(&input)))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "REGEXP_LIKE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "regexp_like requires a pattern")?;

@@ -30,6 +30,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "CHAR_LENGTH"
                 | "CHARACTER_LENGTH"
                 | "OCTET_LENGTH"
+                | "REGEXP_LIKE_CI"
                 | "REGEXP_LIKE"
                 | "TOSTARTOFFIFTEENMINUTES"
                 | "ASCII"
