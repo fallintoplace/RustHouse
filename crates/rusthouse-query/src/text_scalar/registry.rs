@@ -118,6 +118,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "FORMAT"
                 | "OVERLAYUTF8"
                 | "FORMATREADABLEQUANTITY"
+                | "URLHASQUERY"
                 | "QUERYSTRING"
                 | "SPLIT_PART"
                 | "SUBSTRING_INDEX"

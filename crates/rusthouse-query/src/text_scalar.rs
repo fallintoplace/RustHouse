@@ -2637,6 +2637,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "URLHASQUERY" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "urlHasQuery requires one argument")?;
+            match input {
+                Some(input) => {
+                    let before_fragment = input.split('#').next().unwrap_or("");
+                    ConstantValue::Integer(i64::from(before_fragment.contains('?')))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "QUERYSTRING" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "queryString requires one argument")?;
