@@ -1,4 +1,8 @@
 use rusthouse_query::{ColumnDef, Ddl, parse_ddl};
+use rusthouse_storage::{
+    MAX_SCHEMA_COLUMN_COUNT as MAX_CATALOG_COLUMNS, MAX_SCHEMA_FILE_BYTES as MAX_SCHEMA_BYTES,
+    valid_schema_identifier,
+};
 use std::fs::{self, OpenOptions};
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
@@ -56,9 +60,6 @@ mod windows_schema_identity {
 }
 
 static NEXT_TEMP: AtomicUsize = AtomicUsize::new(0);
-const MAX_SCHEMA_BYTES: u64 = 32 * 1024;
-const MAX_CATALOG_COLUMNS: usize = 128;
-const MAX_TABLE_NAME_BYTES: usize = 128;
 const MAX_CATALOG_DIRECTORY_ENTRIES: usize = 10_000;
 
 fn schema_path(catalog: &Path, name: &str) -> PathBuf {
@@ -256,11 +257,7 @@ fn show_tables_internal(
         let Some(name) = filename.strip_suffix(".schema") else {
             continue;
         };
-        let mut bytes = name.bytes();
-        if name.len() > MAX_TABLE_NAME_BYTES
-            || !matches!(bytes.next(), Some(b'a'..=b'z' | b'A'..=b'Z' | b'_'))
-            || !bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
-        {
+        if !valid_schema_identifier(name) {
             continue;
         }
         let matches = if let Some(pattern) = insensitive_pattern.as_deref() {
