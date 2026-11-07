@@ -24,6 +24,17 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
         return super::date_scalar::parse_after_open(parser, &name, depth);
     }
     let value = match name.as_str() {
+        "COUNTWORDS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "countWords requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Integer(
+                    i64::try_from(input.split_whitespace().count())
+                        .map_err(|_| ParseError("countWords result exceeds Int64".into()))?,
+                ),
+                None => ConstantValue::Null,
+            }
+        }
         "MATCH" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::Comma, "match requires a pattern")?;
