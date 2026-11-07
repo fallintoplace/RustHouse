@@ -1,7 +1,7 @@
-use rusthouse_format::write_markdown_header_separator as write_header_separator;
 #[cfg(test)]
 use rusthouse_format::decode_tsv_field;
 use rusthouse_format::decode_tsv_field_into;
+use rusthouse_format::write_markdown_header_separator as write_header_separator;
 #[cfg(test)]
 use std::borrow::Cow;
 use std::io::{self, Write};
@@ -143,8 +143,6 @@ fn write_markdown_row_into<W: Write>(
 fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> io::Result<()> {
     write_markdown_row_into(output, line, data_row, &mut Vec::new(), &mut Vec::new())
 }
-
-
 
 fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     let mut start = 0;
