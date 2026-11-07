@@ -153,6 +153,32 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "IPV4NETWORK" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "IPv4Network requires a prefix length")?;
+            let prefix = integer_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "IPv4Network requires two arguments")?;
+            match (input, prefix) {
+                (Some(input), Some(prefix)) => {
+                    let address = input
+                        .parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("invalid IPv4 address".into()))?;
+                    let prefix = u32::try_from(prefix)
+                        .ok()
+                        .filter(|prefix| *prefix <= 32)
+                        .ok_or_else(|| ParseError("invalid IPv4Network prefix length".into()))?;
+                    let mask = if prefix == 0 {
+                        0
+                    } else {
+                        u32::MAX << (32 - prefix)
+                    };
+                    ConstantValue::Text(
+                        std::net::Ipv4Addr::from(u32::from(address) & mask).to_string(),
+                    )
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "IPV4NUMTOSTRING" => {
             let value = integer_arg(parser, depth + 1)?;
             require(

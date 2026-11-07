@@ -19,6 +19,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "DOMAINWITHOUTWWW"
                 | "CUTURLPARAMETER"
                 | "JSONEXTRACTBOOL"
+                | "IPV4NETWORK"
                 | "IPV4NUMTOSTRING"
                 | "IPV4STRINGTONUM"
                 | "IPV4STRINGTONUMORNULL"
