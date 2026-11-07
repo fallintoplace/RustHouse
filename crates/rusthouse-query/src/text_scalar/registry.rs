@@ -172,6 +172,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "LEFTPAD"
                 | "LEFTPADUTF8"
                 | "COUNTSUBSTRINGSCASEINSENSITIVE"
+                | "ISHEX"
                 | "HEX_DECODE"
                 | "UNHEX"
                 | "UNBIN"
