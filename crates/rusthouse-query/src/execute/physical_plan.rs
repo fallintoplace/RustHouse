@@ -35,80 +35,80 @@ pub(super) struct NumericScanPlan {
 }
 
 fn deduplicate_scan_columns(projected: &[String]) -> (Vec<String>, Vec<usize>) {
-        let mut scan_columns = Vec::new();
-        let projected_indices = projected
-            .iter()
-            .map(|name| {
-                if let Some(index) = scan_columns.iter().position(|column| column == name) {
-                    index
-                } else {
-                    let index = scan_columns.len();
-                    scan_columns.push(name.clone());
-                    index
-                }
-            })
-            .collect::<Vec<_>>();
-    (scan_columns, projected_indices)
+    let mut scan_columns = Vec::new();
+    let projected_indices = projected
+        .iter()
+        .map(|name| {
+            if let Some(index) = scan_columns.iter().position(|column| column == name) {
+                index
+            } else {
+                let index = scan_columns.len();
+                scan_columns.push(name.clone());
+                index
+            }
+        })
+        .collect::<Vec<_>>();
+(scan_columns, projected_indices)
 }
 
 pub(super) fn prepare_numeric_scan(
     query: &Select,
     metadata: &rusthouse_storage::PartMetadata,
 ) -> Result<NumericScanPlan, ExecutionError> {
-        let projected = match &query.projection {
-            Projection::All => metadata
-                .columns
+    let projected = match &query.projection {
+        Projection::All => metadata
+            .columns
+            .iter()
+            .map(|column| column.name.clone())
+            .collect::<Vec<_>>(),
+        Projection::Columns(names) => names.clone(),
+        Projection::Count => Vec::new(),
+        Projection::Aggregate { .. }
+        | Projection::CountColumn { .. }
+        | Projection::CountDistinct { .. }
+        | Projection::ApproxDistinct { .. }
+        | Projection::Histogram { .. }
+        | Projection::ApproxDistinctState { .. }
+        | Projection::GroupedCount { .. }
+        | Projection::GroupedDistinctCount { .. }
+        | Projection::GroupedMultiDistinctCount { .. }
+        | Projection::GroupedMultiCount { .. }
+        | Projection::GroupedAggregate { .. }
+        | Projection::GroupedAggregates { .. }
+        | Projection::GroupedMultiAggregates { .. }
+        | Projection::MultipleAggregates(_)
+        | Projection::StringLength { .. }
+        | Projection::Literal(_)
+        | Projection::Constants(_) => unreachable!(),
+    };
+    if query.distinct
+        && query.order_terms().any(|order| {
+            !projected
                 .iter()
-                .map(|column| column.name.clone())
-                .collect::<Vec<_>>(),
-            Projection::Columns(names) => names.clone(),
-            Projection::Count => Vec::new(),
-            Projection::Aggregate { .. }
-            | Projection::CountColumn { .. }
-            | Projection::CountDistinct { .. }
-            | Projection::ApproxDistinct { .. }
-            | Projection::Histogram { .. }
-            | Projection::ApproxDistinctState { .. }
-            | Projection::GroupedCount { .. }
-            | Projection::GroupedDistinctCount { .. }
-            | Projection::GroupedMultiDistinctCount { .. }
-            | Projection::GroupedMultiCount { .. }
-            | Projection::GroupedAggregate { .. }
-            | Projection::GroupedAggregates { .. }
-            | Projection::GroupedMultiAggregates { .. }
-            | Projection::MultipleAggregates(_)
-            | Projection::StringLength { .. }
-            | Projection::Literal(_)
-            | Projection::Constants(_) => unreachable!(),
-        };
-        if query.distinct
-            && query.order_terms().any(|order| {
-                !projected
-                    .iter()
-                    .any(|column| column == query.order_source_column(&order.column))
-            })
-        {
-            return Err(ExecutionError::Invalid(
-                "DISTINCT ORDER BY column must appear in SELECT".into(),
-            ));
-        }
-        let (mut scan_columns, projected_indices) = deduplicate_scan_columns(&projected);
-        let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
-            let column = metadata
-                .columns
-                .iter()
-                .find(|column| column.name == column_name)
-                .ok_or_else(|| {
-                    ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
-                })?;
-            parse_numeric(&column.data_type, literal)
-        })?;
-        Ok(NumericScanPlan {
-            projected,
-            projected_indices,
-            scan_columns,
-            comparisons,
+                .any(|column| column == query.order_source_column(&order.column))
         })
+    {
+        return Err(ExecutionError::Invalid(
+            "DISTINCT ORDER BY column must appear in SELECT".into(),
+        ));
+    }
+    let (mut scan_columns, projected_indices) = deduplicate_scan_columns(&projected);
+    let comparisons = compile_part_where(query, &mut scan_columns, |column_name, literal| {
+        let column = metadata
+            .columns
+            .iter()
+            .find(|column| column.name == column_name)
+            .ok_or_else(|| {
+                ExecutionError::Invalid(format!("unknown WHERE column: {column_name}"))
+            })?;
+        parse_numeric(&column.data_type, literal)
+    })?;
+    Ok(NumericScanPlan {
+        projected,
+        projected_indices,
+        scan_columns,
+        comparisons,
+    })
 }
 
 #[cfg(test)]
