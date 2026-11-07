@@ -4077,6 +4077,16 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "STRIPNONASCII" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "stripNonASCII requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Text(
+                    input.chars().filter(|ch| ch.is_ascii()).collect::<String>(),
+                ),
+                None => ConstantValue::Null,
+            }
+        }
         "COLLAPSE_WHITESPACE" => {
             let input = text_arg(parser, depth + 1)?;
             require(
