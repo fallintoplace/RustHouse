@@ -10,8 +10,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn supports_retain_alnum_utf8() {
     for (sql, expected) in [
-        ("SELECT retainAlnumUTF8('Café-42_🦀')", ConstantValue::Text("Café42".into())),
-        ("SELECT retainAlnumUTF8('!*')", ConstantValue::Text("".into())),
+        (
+            "SELECT retainAlnumUTF8('Café-42_🦀')",
+            ConstantValue::Text("Café42".into()),
+        ),
+        (
+            "SELECT retainAlnumUTF8('!*')",
+            ConstantValue::Text("".into()),
+        ),
         ("SELECT retainAlnumUTF8('')", ConstantValue::Text("".into())),
         ("SELECT retainAlnumUTF8(NULL)", ConstantValue::Null),
     ] {
@@ -21,7 +27,10 @@ fn supports_retain_alnum_utf8() {
 
 #[test]
 fn rejects_retain_alnum_utf8_bad_arity() {
-    for sql in ["SELECT retainAlnumUTF8()", "SELECT retainAlnumUTF8('a','b')"] {
+    for sql in [
+        "SELECT retainAlnumUTF8()",
+        "SELECT retainAlnumUTF8('a','b')",
+    ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }
