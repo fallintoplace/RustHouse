@@ -39,6 +39,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "ISIPV6STRING"
                 | "HASSUBSEQUENCE"
                 | "HASSUBSEQUENCEUTF8"
+                | "COMMONPREFIXLENGTHUTF8"
                 | "BYTEHAMMINGDISTANCE"
                 | "CHR"
                 | "TOUNIXTIMESTAMP"
