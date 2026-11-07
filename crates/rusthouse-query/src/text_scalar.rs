@@ -813,6 +813,23 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 None => ConstantValue::Null,
             }
         }
+        "ISIPV4DOCUMENTATION" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "isIPv4Documentation requires one argument")?;
+            match input {
+                Some(input) => {
+                    let address = input
+                        .parse::<std::net::Ipv4Addr>()
+                        .map_err(|_| ParseError("invalid IPv4 address".into()))?;
+                    let octets = address.octets();
+                    ConstantValue::Integer(i64::from(matches!(
+                        octets,
+                        [192, 0, 2, _] | [198, 51, 100, _] | [203, 0, 113, _]
+                    )))
+                }
+                None => ConstantValue::Null,
+            }
+        }
         "ISIPV4PRIVATE" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "isIPv4Private requires one argument")?;
