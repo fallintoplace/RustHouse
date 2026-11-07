@@ -5768,6 +5768,39 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 }
             }
         }
+        "JSONEXTRACTUINT" => {
+            let input = text_arg(parser, depth + 1)?;
+            let path = if parser.take(Token::Comma) {
+                Some(text_arg(parser, depth + 1)?)
+            } else {
+                None
+            };
+            require(
+                parser,
+                Token::RParen,
+                "JSONExtractUInt requires one or two arguments",
+            )?;
+            match (input, path) {
+                (None, _) | (_, Some(None)) => ConstantValue::Null,
+                (Some(input), path) => {
+                    let json = crate::json::parse_json(&input)
+                        .map_err(|error| ParseError(format!("invalid JSON: {error}")))?;
+                    let node = match path {
+                        Some(Some(path)) => json.at_path(&path),
+                        None => Some(&json),
+                        Some(None) => unreachable!(),
+                    };
+                    let number = node
+                        .and_then(|value| value.raw().parse::<u64>().ok())
+                        .map_or(Ok(0), |value| {
+                            i64::try_from(value).map_err(|_| {
+                                ParseError("JSONExtractUInt exceeds Int64 constant range".into())
+                            })
+                        })?;
+                    ConstantValue::Integer(number)
+                }
+            }
+        }
         "JSONEXTRACTINT" => {
             let input = text_arg(parser, depth + 1)?;
             let path = if parser.take(Token::Comma) {

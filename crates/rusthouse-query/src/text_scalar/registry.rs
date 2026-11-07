@@ -116,6 +116,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "JSON_EXISTS"
                 | "JSONHAS"
                 | "JSONEXTRACTSTRING"
+                | "JSONEXTRACTUINT"
                 | "JSONEXTRACTINT"
                 | "JSONEXTRACTRAW"
                 | "SUBSTRING"
