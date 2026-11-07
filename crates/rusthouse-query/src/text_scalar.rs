@@ -3202,6 +3202,14 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 _ => ConstantValue::Null,
             }
         }
+        "RETAINDIGITS" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "retainDigits requires one argument")?;
+            match input {
+                Some(input) => ConstantValue::Text(input.chars().filter(|ch| ch.is_ascii_digit()).collect::<String>()),
+                None => ConstantValue::Null,
+            }
+        }
         "UNHEX" => {
             let input = text_arg(parser, depth + 1)?;
             require(parser, Token::RParen, "unhex requires one argument")?;
