@@ -54,6 +54,27 @@ fn acknowledged_weights(
     Ok((old_weight, new_weight))
 }
 
+fn validate_joint_commit_request(
+    old_members: &[Member],
+    old_policy: WeightedQuorumPolicy,
+    new_members: &[Member],
+    new_policy: WeightedQuorumPolicy,
+    proposed: SnapshotVersion,
+    acknowledgement_count: usize,
+) -> Result<(), &'static str> {
+    validate_membership(old_members)?;
+    validate_membership(new_members)?;
+    WeightedQuorumPolicy::new(old_members, old_policy.reads, old_policy.writes)?;
+    WeightedQuorumPolicy::new(new_members, new_policy.reads, new_policy.writes)?;
+    if proposed.epoch == 0
+        || proposed.generation == 0
+        || acknowledgement_count > old_members.len() + new_members.len()
+    {
+        return Err("invalid proposed snapshot or joint ACK count");
+    }
+    Ok(())
+}
+
 /// Verify every accepted acknowledgement refers to the exact proposed
 /// immutable generation and fingerprint, not only the generation number.
 /// Shared members contribute their own configured weight in each membership.
@@ -65,16 +86,14 @@ pub fn observe_joint_commit(
     proposed: SnapshotVersion,
     acknowledgements: &[SnapshotAck<'_>],
 ) -> Result<JointCommitObservation, &'static str> {
-    validate_membership(old_members)?;
-    validate_membership(new_members)?;
-    WeightedQuorumPolicy::new(old_members, old_policy.reads, old_policy.writes)?;
-    WeightedQuorumPolicy::new(new_members, new_policy.reads, new_policy.writes)?;
-    if proposed.epoch == 0
-        || proposed.generation == 0
-        || acknowledgements.len() > old_members.len() + new_members.len()
-    {
-        return Err("invalid proposed snapshot or joint ACK count");
-    }
+    validate_joint_commit_request(
+        old_members,
+        old_policy,
+        new_members,
+        new_policy,
+        proposed,
+        acknowledgements.len(),
+    )?;
     let (old_weight, new_weight) =
         acknowledged_weights(old_members, new_members, proposed, acknowledgements)?;
     let old_quorum = old_weight >= old_policy.writes;
