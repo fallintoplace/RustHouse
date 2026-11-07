@@ -13,6 +13,7 @@ mod reorder;
 mod row_filters;
 mod streaming;
 use super::{ExecutionError, typed};
+use crate::memory_budget::{checked_retained_bytes, RetainedBudgetError};
 use crate::{JoinColumn, JoinProjectionOrder, JoinSelect, JoinStep, JoinType};
 use rusthouse_storage::inspect_query_source;
 use std::collections::HashMap;
@@ -124,12 +125,14 @@ fn scalar_output_index(index: usize, projection_count: usize) -> Option<usize> {
 /// Hash table keys are owned again after the build-side rows are decoded.
 /// Include duplicate row index lists, which are separate from row retention.
 fn charge_hash_bytes(used: &mut usize, additional: usize) -> Result<(), ExecutionError> {
-    let next = used
-        .checked_add(additional)
-        .ok_or_else(|| invalid("JOIN hash memory estimate overflow"))?;
-    if next > MAX_CHAIN_HASH_BYTES {
-        return Err(invalid("JOIN hash keys exceed retained memory budget"));
-    }
+    let next = checked_retained_bytes(*used, additional, MAX_CHAIN_HASH_BYTES).map_err(
+        |error| match error {
+            RetainedBudgetError::Overflow => invalid("JOIN hash memory estimate overflow"),
+            RetainedBudgetError::LimitExceeded => {
+                invalid("JOIN hash keys exceed retained memory budget")
+            }
+        },
+    )?;
     *used = next;
     Ok(())
 }
