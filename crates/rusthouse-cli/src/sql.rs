@@ -46,30 +46,32 @@ pub(super) enum SqlOutputFormat {
 
 impl SqlOutputFormat {
     fn from_arg(value: Option<OsString>) -> Result<Self, String> {
-        match value.and_then(|value| value.into_string().ok()).as_deref() {
-            Some("tsv") => Ok(Self::Tsv),
-            Some("TabSeparatedWithNames") => Ok(Self::Tsv),
-            Some("tsv-no-header") => Ok(Self::TsvNoHeader),
-            Some("TabSeparated") => Ok(Self::TsvNoHeader),
-            Some("csv") => Ok(Self::Csv),
-            Some("CSVWithNames") => Ok(Self::Csv),
-            Some("csv-no-header") => Ok(Self::CsvNoHeader),
-            Some("CSV") => Ok(Self::CsvNoHeader),
-            Some("jsonl") => Ok(Self::Jsonl),
-            Some("JSONStringsEachRow") => Ok(Self::Jsonl),
-            Some("json") => Ok(Self::Json),
-            Some("json-pretty") => Ok(Self::JsonPretty),
-            Some("json-compact-each-row") => Ok(Self::JsonCompactEachRow),
-            Some("JSONCompactStringsEachRow") => Ok(Self::JsonCompactEachRow),
-            Some("json-seq") => Ok(Self::JsonSeq),
-            Some("markdown") => Ok(Self::Markdown),
-            Some("html") => Ok(Self::Html),
-            Some("sql-values") => Ok(Self::SqlValues),
-            Some("vertical") => Ok(Self::Vertical),
-            _ => Err(
-                "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-pretty, json-compact-each-row, json-seq, markdown, html, sql-values, or vertical"
-                    .into(),
-            ),
+        use rusthouse_format::StandardOutputFormat as Common;
+        let invalid = || {
+            "--format must be tsv, tsv-no-header, csv, csv-no-header, jsonl, json, json-pretty, json-compact-each-row, json-seq, markdown, html, sql-values, or vertical".to_owned()
+        };
+        let name = value
+            .and_then(|value| value.into_string().ok())
+            .ok_or_else(invalid)?;
+        if let Some(common) = Common::parse(&name) {
+            return Ok(match common {
+                Common::Tsv => Self::Tsv,
+                Common::TsvNoHeader => Self::TsvNoHeader,
+                Common::Csv => Self::Csv,
+                Common::CsvNoHeader => Self::CsvNoHeader,
+                Common::Jsonl => Self::Jsonl,
+                Common::Json => Self::Json,
+                Common::JsonPretty => Self::JsonPretty,
+                Common::JsonCompactEachRow => Self::JsonCompactEachRow,
+                Common::SqlValues => Self::SqlValues,
+                Common::Markdown => Self::Markdown,
+            });
+        }
+        match name.as_str() {
+            "json-seq" => Ok(Self::JsonSeq),
+            "html" => Ok(Self::Html),
+            "vertical" => Ok(Self::Vertical),
+            _ => Err(invalid()),
         }
     }
 }

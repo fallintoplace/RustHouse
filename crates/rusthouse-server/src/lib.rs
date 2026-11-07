@@ -157,42 +157,10 @@ fn schema_response(config: &Config, table: Option<&str>) -> Response {
     }
 }
 
-#[derive(Clone, Copy)]
-enum QueryFormat {
-    Tsv,
-    TsvNoHeader,
-    Csv,
-    CsvNoHeader,
-    Jsonl,
-    Json,
-    JsonPretty,
-    JsonCompactEachRow,
-    SqlValues,
-    Markdown,
-}
+type QueryFormat = rusthouse_format::StandardOutputFormat;
 
-impl QueryFormat {
-    fn parse(value: &str) -> Result<Self, &'static str> {
-        Ok(match value {
-            "tsv" => Self::Tsv,
-            "TabSeparatedWithNames" => Self::Tsv,
-            "tsv-no-header" => Self::TsvNoHeader,
-            "TabSeparated" => Self::TsvNoHeader,
-            "csv" => Self::Csv,
-            "CSVWithNames" => Self::Csv,
-            "csv-no-header" => Self::CsvNoHeader,
-            "CSV" => Self::CsvNoHeader,
-            "jsonl" => Self::Jsonl,
-            "JSONStringsEachRow" => Self::Jsonl,
-            "json" => Self::Json,
-            "json-pretty" => Self::JsonPretty,
-            "json-compact-each-row" => Self::JsonCompactEachRow,
-            "JSONCompactStringsEachRow" => Self::JsonCompactEachRow,
-            "sql-values" => Self::SqlValues,
-            "markdown" => Self::Markdown,
-            _ => return Err("unsupported query format"),
-        })
-    }
+fn parse_query_format(value: &str) -> Result<QueryFormat, &'static str> {
+    QueryFormat::parse(value).ok_or("unsupported query format")
 }
 
 type QueryParameters = (
@@ -225,13 +193,13 @@ fn query_parameters(target: &str) -> Result<QueryParameters, &'static str> {
                 if format.is_some() {
                     return Err("duplicate format parameter");
                 }
-                format = Some(QueryFormat::parse(&decode_url(value)?)?);
+                format = Some(parse_query_format(&decode_url(value)?)?);
             }
             "default_format" => {
                 if default_format.is_some() {
                     return Err("duplicate default_format parameter");
                 }
-                default_format = Some(QueryFormat::parse(&decode_url(value)?)?);
+                default_format = Some(parse_query_format(&decode_url(value)?)?);
             }
             _ => return Err("unsupported URL query parameter"),
         }
@@ -405,7 +373,7 @@ pub fn handle_request(method: &str, target: &str, body: &[u8], config: &Config) 
                 "SQL FORMAT cannot be combined with EXPLAIN or URL format\n",
             );
         }
-        match QueryFormat::parse(name) {
+        match parse_query_format(name) {
             Ok(value) => value,
             Err(message) => return Response::text("400 Bad Request", message),
         }
