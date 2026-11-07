@@ -1,3 +1,4 @@
+use rusthouse_format::write_markdown_header_separator as write_header_separator;
 use crate::tsv_escape::decode_tsv_field;
 use std::borrow::Cow;
 use std::io::{self, Write};
@@ -108,26 +109,7 @@ fn write_tsv_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool)
     output.write_all(b"\n")
 }
 
-fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Result<()> {
-    // Most query projections contain at most 64 columns. Frame the entire
-    // separator once instead of making a write call for every column.
-    if columns <= 64 {
-        let mut framed = [0u8; 1 + 64 * 6 + 1];
-        framed[0] = b'|';
-        let mut used = 1;
-        for _ in 0..columns {
-            framed[used..used + 6].copy_from_slice(b" --- |");
-            used += 6;
-        }
-        framed[used] = b'\n';
-        return output.write_all(&framed[..used + 1]);
-    }
-    output.write_all(b"|")?;
-    for _ in 0..columns {
-        output.write_all(b" --- |")?;
-    }
-    output.write_all(b"\n")
-}
+
 
 fn write_markdown_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     let mut start = 0;
