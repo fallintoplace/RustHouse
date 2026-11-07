@@ -12,6 +12,8 @@ mod multi_product;
 mod multi_sum;
 mod multi_sumsquares;
 mod query_policy;
+mod shard_decode;
+use self::shard_decode::{ShardScalarRow, decode_scalar_row};
 mod range_merge;
 mod rms_merge;
 mod sorted_merge;
@@ -720,17 +722,10 @@ fn sum_shard_counts(shards: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, MergeError> 
     let mut expected_header: Option<&[u8]> = None;
     let mut sum = 0u64;
     for (_, body) in shards {
-        if !body.ends_with(b"\n") {
-            return Err(MergeError::InvalidCount);
-        }
-        let end = body
-            .iter()
-            .position(|&b| b == b'\n')
-            .ok_or(MergeError::InvalidCount)?;
-        let header = &body[..=end];
-        if header.len() <= 1 {
-            return Err(MergeError::InvalidCount);
-        }
+        let ShardScalarRow {
+            header,
+            value,
+        } = decode_scalar_row(body, MergeError::InvalidCount)?;
         if let Some(expected) = expected_header {
             if expected != header {
                 return Err(MergeError::SchemaMismatch);
@@ -738,7 +733,6 @@ fn sum_shard_counts(shards: &[(usize, Vec<u8>)]) -> Result<Vec<u8>, MergeError> 
         } else {
             expected_header = Some(header);
         }
-        let value = &body[end + 1..body.len() - 1];
         if value.is_empty() || !value.iter().all(|b| b.is_ascii_digit()) {
             return Err(MergeError::InvalidCount);
         }
@@ -770,17 +764,10 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
         .starts_with("UInt");
 
     for (_, body) in shards {
-        if !body.ends_with(b"\n") {
-            return Err(MergeError::InvalidSum);
-        }
-        let end = body
-            .iter()
-            .position(|&byte| byte == b'\n')
-            .ok_or(MergeError::InvalidSum)?;
-        let header = &body[..=end];
-        if header.len() <= 1 || body.len() <= end + 1 {
-            return Err(MergeError::InvalidSum);
-        }
+        let ShardScalarRow {
+            header,
+            value,
+        } = decode_scalar_row(body, MergeError::InvalidSum)?;
         if let Some(expected) = expected_header {
             if expected != header {
                 return Err(MergeError::SchemaMismatch);
@@ -788,7 +775,6 @@ fn merge_integer_sums(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec<u8>
         } else {
             expected_header = Some(header);
         }
-        let value = &body[end + 1..body.len() - 1];
         if value == b"NULL" {
             continue;
         }
@@ -894,22 +880,14 @@ fn merge_integer_bitwise(
     let mut signed: Option<i128> = None;
     let mut unsigned_value: Option<u128> = None;
     for (_, body) in shards {
-        if !body.ends_with(b"\n") {
-            return Err(MergeError::InvalidBitwise);
-        }
-        let end = body
-            .iter()
-            .position(|&byte| byte == b'\n')
-            .ok_or(MergeError::InvalidBitwise)?;
-        let current_header = &body[..=end];
-        if current_header.len() <= 1 || body.len() <= end + 1 {
-            return Err(MergeError::InvalidBitwise);
-        }
+        let ShardScalarRow {
+            header: current_header,
+            value,
+        } = decode_scalar_row(body, MergeError::InvalidBitwise)?;
         if header.is_some_and(|expected| expected != current_header) {
             return Err(MergeError::SchemaMismatch);
         }
         header = Some(current_header);
-        let value = &body[end + 1..body.len() - 1];
         if value == b"NULL" {
             continue;
         }
@@ -965,22 +943,14 @@ fn merge_integer_products(shards: &[(usize, Vec<u8>)], kind: &str) -> Result<Vec
     let mut signed: Option<i128> = None;
     let mut unsigned_value: Option<u128> = None;
     for (_, body) in shards {
-        if !body.ends_with(b"\n") {
-            return Err(MergeError::InvalidProduct);
-        }
-        let end = body
-            .iter()
-            .position(|&byte| byte == b'\n')
-            .ok_or(MergeError::InvalidProduct)?;
-        let header = &body[..=end];
-        if header.len() <= 1 || body.len() <= end + 1 {
-            return Err(MergeError::InvalidProduct);
-        }
+        let ShardScalarRow {
+            header,
+            value,
+        } = decode_scalar_row(body, MergeError::InvalidProduct)?;
         if expected_header.is_some_and(|expected| expected != header) {
             return Err(MergeError::SchemaMismatch);
         }
         expected_header = Some(header);
-        let value = &body[end + 1..body.len() - 1];
         if value == b"NULL" {
             continue;
         }
@@ -1031,17 +1001,10 @@ fn merge_integer_extrema(
     let mut signed: Option<i128> = None;
     let mut unsigned_value: Option<u128> = None;
     for (_, body) in shards {
-        if !body.ends_with(b"\n") {
-            return Err(MergeError::InvalidExtremum);
-        }
-        let end = body
-            .iter()
-            .position(|&byte| byte == b'\n')
-            .ok_or(MergeError::InvalidExtremum)?;
-        let header = &body[..=end];
-        if header.len() <= 1 || body.len() <= end + 1 {
-            return Err(MergeError::InvalidExtremum);
-        }
+        let ShardScalarRow {
+            header,
+            value,
+        } = decode_scalar_row(body, MergeError::InvalidExtremum)?;
         if let Some(expected) = expected_header {
             if expected != header {
                 return Err(MergeError::SchemaMismatch);
@@ -1049,7 +1012,6 @@ fn merge_integer_extrema(
         } else {
             expected_header = Some(header);
         }
-        let value = &body[end + 1..body.len() - 1];
         if value == b"NULL" {
             continue;
         }
