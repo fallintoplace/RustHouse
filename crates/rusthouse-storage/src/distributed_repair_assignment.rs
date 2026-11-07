@@ -61,6 +61,17 @@ fn validate_matrix(costs: &[Vec<Option<u64>>]) -> Result<usize, &'static str> {
     Ok(workers)
 }
 
+fn best_completed_state(
+    best: &[Option<u64>],
+    task_count: usize,
+) -> Result<(usize, u64), &'static str> {
+    (0..best.len())
+        .filter(|&mask| mask.count_ones() as usize == task_count)
+        .filter_map(|mask| best[mask].map(|cost| (mask, cost)))
+        .min_by_key(|&(mask, cost)| (cost, mask))
+        .ok_or("no feasible bounded repair assignment")
+}
+
 /// None forbids an assignment. A worker can serve at most one task.
 /// Runs in O(workers * 2^workers) memory and O(tasks * workers * 2^workers)
 /// time, with an explicit 16-worker bound.
@@ -90,11 +101,7 @@ pub fn minimum_cost_assignment(
             consider_assignment(mask, worker, current, cost, &mut best, &mut predecessor);
         }
     }
-    let (mask, cost) = (0..states)
-        .filter(|&mask| mask.count_ones() as usize == costs.len())
-        .filter_map(|mask| best[mask].map(|cost| (mask, cost)))
-        .min_by_key(|&(mask, cost)| (cost, mask))
-        .ok_or("no feasible bounded repair assignment")?;
+    let (mask, cost) = best_completed_state(&best, costs.len())?;
     let chosen = reconstruct_workers(mask, &predecessor, costs.len())?;
     Ok(RepairAssignment {
         workers: chosen,
@@ -105,6 +112,13 @@ pub fn minimum_cost_assignment(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn equal_cost_assignments_choose_smallest_worker_mask() {
+        let costs = vec![vec![Some(1), Some(1)]];
+        let result = minimum_cost_assignment(&costs).unwrap();
+        assert_eq!(result.workers, [0]);
+    }
 
     #[test]
     fn dynamic_matching_beats_local_greedy_assignment() {
