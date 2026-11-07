@@ -20,6 +20,28 @@ fn exceeds_max_skew(physical_ms: u64, now_ms: u64, max_skew_ms: u64) -> bool {
     physical_ms > now_ms.saturating_add(max_skew_ms)
 }
 
+fn observed_timestamp(
+    local: HybridTimestamp,
+    remote: HybridTimestamp,
+    now_ms: u64,
+) -> Result<HybridTimestamp, &'static str> {
+    let physical = local.physical_ms.max(remote.physical_ms).max(now_ms);
+    let logical = if physical == local.physical_ms && physical == remote.physical_ms {
+        next_logical(local.logical.max(remote.logical))?
+    } else if physical == local.physical_ms {
+        next_logical(local.logical)?
+    } else if physical == remote.physical_ms {
+        next_logical(remote.logical)?
+    } else {
+        0
+    };
+    Ok(HybridTimestamp {
+        physical_ms: physical,
+        logical,
+        node: local.node,
+    })
+}
+
 impl HybridClock {
     pub fn new(node: u16, now_ms: u64) -> Self {
         Self {
@@ -82,21 +104,7 @@ impl HybridClock {
         if exceeds_max_skew(remote.physical_ms, now_ms, max_skew_ms) {
             return Err("remote hybrid clock exceeds allowed clock skew");
         }
-        let physical = self.current.physical_ms.max(remote.physical_ms).max(now_ms);
-        let logical = if physical == self.current.physical_ms && physical == remote.physical_ms {
-            next_logical(self.current.logical.max(remote.logical))?
-        } else if physical == self.current.physical_ms {
-            next_logical(self.current.logical)?
-        } else if physical == remote.physical_ms {
-            next_logical(remote.logical)?
-        } else {
-            0
-        };
-        let next = HybridTimestamp {
-            physical_ms: physical,
-            logical,
-            node: self.current.node,
-        };
+        let next = observed_timestamp(self.current, remote, now_ms)?;
         self.current = next;
         Ok(next)
     }
