@@ -10,8 +10,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn supports_is_uuid() {
     for (sql, expected) in [
-        ("SELECT isUUID('550e8400-e29b-41d4-a716-446655440000')", ConstantValue::Integer(1)),
-        ("SELECT isUUID('550e8400-e29b-41d4-a716-44665544000g')", ConstantValue::Integer(0)),
+        (
+            "SELECT isUUID('550e8400-e29b-41d4-a716-446655440000')",
+            ConstantValue::Integer(1),
+        ),
+        (
+            "SELECT isUUID('550e8400-e29b-41d4-a716-44665544000g')",
+            ConstantValue::Integer(0),
+        ),
         ("SELECT isUUID('')", ConstantValue::Integer(0)),
         ("SELECT isUUID(NULL)", ConstantValue::Null),
     ] {
