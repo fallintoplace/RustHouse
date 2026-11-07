@@ -231,23 +231,9 @@ fn parallel_ordered_numeric_topk(
     Ok(Some(SortedRows::merge_partials(partials)?))
 }
 
-// Charge each shared memory reservation atomically on all supported Rust versions.
+// Use the same checked atomic charge as query-scoped reservations.
 fn try_reserve_shared(budget: &AtomicUsize, amount: usize, limit: usize) -> bool {
-    let mut current = budget.load(AtomicOrdering::Acquire);
-    loop {
-        let Some(next) = current.checked_add(amount).filter(|&total| total <= limit) else {
-            return false;
-        };
-        match budget.compare_exchange_weak(
-            current,
-            next,
-            AtomicOrdering::AcqRel,
-            AtomicOrdering::Acquire,
-        ) {
-            Ok(_) => return true,
-            Err(observed) => current = observed,
-        }
-    }
+    crate::memory_budget::try_reserve_atomic(budget, amount, limit)
 }
 
 #[derive(Debug)]
