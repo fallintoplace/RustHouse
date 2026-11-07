@@ -103,6 +103,6 @@ mod tests {
         assert_eq!(timestamp, PhysicalType::Numeric("DateTime64(3)"));
         assert!(!timestamp.writable());
         assert!(PhysicalType::parse("Nullable(Date)").unwrap().writable());
-        assert!(!PhysicalType::parse("Nullable(UUID)").is_some());
+        assert!(PhysicalType::parse("Nullable(UUID)").is_none());
     }
 }
