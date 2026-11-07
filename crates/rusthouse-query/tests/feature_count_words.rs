@@ -10,8 +10,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn counts_unicode_whitespace_separated_words() {
     for (sql, expected) in [
-        ("SELECT countWords('hello  RustHouse')", ConstantValue::Integer(2)),
-        ("SELECT countWords('foo bar baz')", ConstantValue::Integer(3)),
+        (
+            "SELECT countWords('hello  RustHouse')",
+            ConstantValue::Integer(2),
+        ),
+        (
+            "SELECT countWords('foo bar baz')",
+            ConstantValue::Integer(3),
+        ),
         ("SELECT countWords('')", ConstantValue::Integer(0)),
         ("SELECT countWords('   ')", ConstantValue::Integer(0)),
         ("SELECT countWords(NULL)", ConstantValue::Null),
