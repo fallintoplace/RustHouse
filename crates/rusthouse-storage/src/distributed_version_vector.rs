@@ -87,15 +87,11 @@ impl VersionVector {
     pub fn relation(&self, other: &Self) -> CausalRelation {
         let mut smaller = false;
         let mut greater = false;
-        for (node, &count) in &self.counters {
+        for node in self.counters.keys().chain(other.counters.keys()) {
+            let local = self.counter(node);
             let remote = other.counter(node);
-            smaller |= count < remote;
-            greater |= count > remote;
-        }
-        for (node, &count) in &other.counters {
-            if !self.counters.contains_key(node) && count > 0 {
-                smaller = true;
-            }
+            smaller |= local < remote;
+            greater |= local > remote;
         }
         match (smaller, greater) {
             (false, false) => CausalRelation::Equal,
@@ -109,6 +105,15 @@ impl VersionVector {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn empty_vectors_compare_consistently_with_missing_members() {
+        let empty = VersionVector::default();
+        let populated = VersionVector::from_counters(&[("replica", 2)]).unwrap();
+        assert_eq!(empty.relation(&populated), CausalRelation::Before);
+        assert_eq!(populated.relation(&empty), CausalRelation::After);
+        assert_eq!(empty.relation(&empty), CausalRelation::Equal);
+    }
 
     #[test]
     fn independent_updates_are_concurrent_until_merged() {
