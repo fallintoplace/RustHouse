@@ -9,6 +9,7 @@ mod multi_count_column;
 mod multi_countif;
 mod multi_extrema;
 mod multi_product;
+mod plan;
 mod multi_sum;
 mod multi_sumsquares;
 mod query_policy;
@@ -2141,40 +2142,7 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
         Err(_) => return Response::text("400 Bad Request", "SQL must be UTF-8\n"),
     };
     let select = match parse_select(sql) {
-        Ok(select)
-            if is_safe_scan(&select)
-                || is_safe_count(&select)
-                || is_safe_distinct_scan(&select)
-                || is_safe_multi_grouped_distinct(&select)
-                || is_safe_grouped_distinct(&select)
-                || is_safe_count_distinct(&select)
-                || is_safe_uniq(&select)
-                || is_safe_sorted_scan(&select)
-                || is_safe_count_if(&select)
-                || is_safe_grouped_count(&select)
-                || is_safe_grouped_multi_count(&select)
-                || is_safe_grouped_multi_count_column(&select)
-                || is_safe_grouped_multi_bitwise(&select)
-                || is_safe_grouped_multi_product(&select)
-                || is_safe_grouped_multi_sumsquares(&select)
-                || is_safe_grouped_multi_countif(&select)
-                || is_safe_grouped_multi_extremum(&select)
-                || is_safe_grouped_multi_sum(&select)
-                || is_safe_grouped_sum(&select)
-                || is_safe_grouped_extremum(&select)
-                || is_safe_grouped_product(&select)
-                || is_safe_grouped_bitwise(&select)
-                || is_safe_sum(&select)
-                || is_safe_sum_squares(&select)
-                || is_safe_product(&select)
-                || is_safe_rms(&select)
-                || is_safe_avg(&select)
-                || is_safe_range(&select)
-                || is_safe_bitwise(&select)
-                || is_safe_extremum(&select) =>
-        {
-            select
-        }
+        Ok(select) if plan::is_supported_distributed_select(&select) => select,
         _ => {
             return Response::text(
                 "400 Bad Request",
@@ -2219,90 +2187,9 @@ pub fn handle(method: &str, body: &[u8], cluster: &Cluster, max_rows: usize) -> 
     let avg_query = is_safe_avg(&select);
     let range_query = is_safe_range(&select);
     let uniq_query = is_safe_uniq(&select);
-    let shard_sql = if sorted_query {
-        match sorted_scan_sql(sql, &select) {
-            Some(query) => query,
-            None => return Response::text("400 Bad Request", "unsupported distributed sort\n"),
-        }
-    } else if multi_grouped_distinct_query {
-        match multi_grouped_distinct_shard_sql(sql, &select) {
-            Some(query) => query,
-            None => return Response::text("400 Bad Request", "unsupported grouped DISTINCT\n"),
-        }
-    } else if grouped_distinct_query {
-        match grouped_distinct_shard_sql(sql, &select) {
-            Some(query) => query,
-            None => return Response::text("400 Bad Request", "unsupported grouped DISTINCT\n"),
-        }
-    } else if distinct_rows_query {
-        match unpaged_scan_sql(sql, &select) {
-            Some(query) => query,
-            None => {
-                return Response::text(
-                    "400 Bad Request",
-                    "unsupported distributed DISTINCT pagination\n",
-                );
-            }
-        }
-    } else if is_safe_scan(&select) {
-        match bounded_scan_sql(sql, &select) {
-            Some(query) => query,
-            None => {
-                return Response::text("400 Bad Request", "unsupported distributed pagination\n");
-            }
-        }
-    } else if grouped_sum_query
-        || grouped_extremum_query
-        || grouped_product_query
-        || grouped_bitwise_query
-    {
-        match grouped_count_shard_sql(sql, &select) {
-            Some(query) => query,
-            None => {
-                return Response::text("400 Bad Request", "unsupported global grouped aggregate\n");
-            }
-        }
-    } else if grouped_count_query {
-        match grouped_count_shard_sql(sql, &select) {
-            Some(query) => query,
-            None => {
-                return Response::text("400 Bad Request", "unsupported global grouped query\n");
-            }
-        }
-    } else if rms_query {
-        match rms_shard_sql(sql, &select) {
-            Some(query) => query,
-            None => return Response::text("400 Bad Request", "unsupported distributed RMS\n"),
-        }
-    } else if avg_query {
-        match avg_shard_sql(sql, &select) {
-            Some(query) => query,
-            None => return Response::text("400 Bad Request", "unsupported distributed AVG\n"),
-        }
-    } else if range_query {
-        match range_shard_sql(sql, &select) {
-            Some(query) => query,
-            None => return Response::text("400 Bad Request", "unsupported distributed RANGE\n"),
-        }
-    } else if uniq_query {
-        match uniq_state_shard_sql(sql, &select) {
-            Some(query) => query,
-            None => {
-                return Response::text("400 Bad Request", "unsupported distributed uniq query\n");
-            }
-        }
-    } else if distinct_count_column.is_some() {
-        match distinct_shard_sql(sql, &select) {
-            Some(query) => query,
-            None => {
-                return Response::text(
-                    "400 Bad Request",
-                    "unsupported distributed DISTINCT query\n",
-                );
-            }
-        }
-    } else {
-        sql.to_owned()
+    let shard_sql = match plan::rewrite_shard_sql(sql, &select) {
+        Ok(query) => query,
+        Err(message) => return Response::text("400 Bad Request", message),
     };
     let bitwise_function = match &select.projection {
         Projection::Aggregate {
