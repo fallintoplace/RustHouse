@@ -2,6 +2,7 @@
 //! The executor consumes one conjunctive branch plus optional OR branches.
 
 mod normalization;
+pub(super) use self::normalization::combine_and;
 use self::normalization::*;
 
 use crate::lexer::Token;
