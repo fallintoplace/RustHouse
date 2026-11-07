@@ -2,7 +2,8 @@
 //! The caller holds the database write lock. A generation becomes visible
 //! only when its fully synced pointer is atomically replaced.
 
-use super::{NEXT_STAGE, crash_if_requested, data_path};
+use super::{NEXT_STAGE, data_path};
+use super::super::crash_if_requested;
 use std::fs::{self, OpenOptions};
 use std::io::{self, Write};
 use std::path::Path;
