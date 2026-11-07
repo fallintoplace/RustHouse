@@ -18,6 +18,7 @@ use rusthouse_storage::{
 use std::cmp::Ordering;
 use std::collections::{BinaryHeap, HashMap, HashSet, hash_map::Entry};
 use std::io::Write;
+use crate::memory_budget::{checked_retained_bytes, RetainedBudgetError};
 use std::path::Path;
 
 const MAX_BUFFERED_ROWS: usize = 200_000;
@@ -35,14 +36,16 @@ fn charge_grouped_text(used: &mut usize, key_bytes: usize) -> Result<(), Executi
             )
         })
         .ok_or_else(|| ExecutionError::Invalid("grouped String key memory overflow".into()))?;
-    let next = used
-        .checked_add(increment)
-        .ok_or_else(|| ExecutionError::Invalid("grouped String key memory overflow".into()))?;
-    if next > MAX_GROUPED_TEXT_BYTES {
-        return Err(ExecutionError::Invalid(
-            "GROUP BY String keys exceed 64 MiB retained budget".into(),
-        ));
-    }
+    let next = checked_retained_bytes(*used, increment, MAX_GROUPED_TEXT_BYTES).map_err(
+        |error| match error {
+            RetainedBudgetError::Overflow => {
+                ExecutionError::Invalid("grouped String key memory overflow".into())
+            }
+            RetainedBudgetError::LimitExceeded => {
+                ExecutionError::Invalid("GROUP BY String keys exceed 64 MiB retained budget".into())
+            }
+        },
+    )?;
     *used = next;
     Ok(())
 }
@@ -71,10 +74,8 @@ fn charge_select_distinct_key(
                 .ok_or_else(|| ExecutionError::Invalid("DISTINCT memory overflow".into()))
         },
     )?;
-    *retained_bytes = retained_bytes
-        .checked_add(bytes)
-        .filter(|&total| total <= MAX_SELECT_DISTINCT_KEY_BYTES)
-        .ok_or_else(|| {
+    *retained_bytes = checked_retained_bytes(*retained_bytes, bytes, MAX_SELECT_DISTINCT_KEY_BYTES)
+        .map_err(|_| {
             ExecutionError::Invalid("SELECT DISTINCT exceeds 64 MiB retained key budget".into())
         })?;
     Ok(())
