@@ -20,6 +20,23 @@ fn supported_inner_select(inner: &Select) -> bool {
         && inner.having.is_none()
 }
 
+fn closing_exists_index(tokens: &[Token], start: usize) -> Result<usize, ParseError> {
+    let mut nesting = 1usize;
+    let mut end = start + 2;
+    while end < tokens.len() && nesting != 0 {
+        match tokens[end] {
+            Token::LParen => nesting += 1,
+            Token::RParen => nesting -= 1,
+            _ => {}
+        }
+        end += 1;
+    }
+    if nesting != 0 {
+        return Err(ParseError("EXISTS requires a closing ')'".into()));
+    }
+    Ok(end)
+}
+
 /// Recognize a conjunctive EXISTS in a WHERE clause.
 /// Other forms continue to use the regular parser and its diagnostics.
 pub fn parse_correlated_exists(sql: &str) -> Result<Option<CorrelatedExists>, ParseError> {
@@ -65,19 +82,7 @@ pub fn parse_correlated_exists(sql: &str) -> Result<Option<CorrelatedExists>, Pa
     if tokens.get(start + 1) != Some(&Token::LParen) {
         return Err(ParseError("EXISTS requires a parenthesized SELECT".into()));
     }
-    let mut nesting = 1usize;
-    let mut end = start + 2;
-    while end < tokens.len() && nesting != 0 {
-        match tokens[end] {
-            Token::LParen => nesting += 1,
-            Token::RParen => nesting -= 1,
-            _ => {}
-        }
-        end += 1;
-    }
-    if nesting != 0 {
-        return Err(ParseError("EXISTS requires a closing ')'".into()));
-    }
+    let end = closing_exists_index(&tokens, start)?;
     // Pulling EXISTS out of an OR changes SQL precedence. Refuse it explicitly.
     if tokens[where_start + 1..if first {
         operator_start
