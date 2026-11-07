@@ -14,6 +14,27 @@ pub struct MemoryReservation {
     bytes: usize,
 }
 
+/// Result of charging retained operator buffers, before updating counters.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(crate) enum RetainedBudgetError {
+    Overflow,
+    LimitExceeded,
+}
+
+/// Check a retained byte charge without modifying the counter on failure.
+/// Operators map these errors to their existing, operator-specific messages.
+pub(crate) fn checked_retained_bytes(
+    used: usize,
+    added: usize,
+    limit: usize,
+) -> Result<usize, RetainedBudgetError> {
+    let next = used.checked_add(added).ok_or(RetainedBudgetError::Overflow)?;
+    if next > limit {
+        return Err(RetainedBudgetError::LimitExceeded);
+    }
+    Ok(next)
+}
+
 impl QueryMemoryBudget {
     pub fn new(max_bytes: usize) -> Self {
         Self {
@@ -60,6 +81,20 @@ impl Drop for MemoryReservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn checked_retained_charges_keep_failed_counters_unchanged() {
+        assert_eq!(checked_retained_bytes(7, 3, 10), Ok(10));
+        assert_eq!(
+            checked_retained_bytes(7, 4, 10),
+            Err(RetainedBudgetError::LimitExceeded)
+        );
+        assert_eq!(
+            checked_retained_bytes(usize::MAX, 1, usize::MAX),
+            Err(RetainedBudgetError::Overflow)
+        );
+        assert_eq!(checked_retained_bytes(0, 0, 0), Ok(0));
+    }
 
     #[test]
     fn reservations_share_a_budget_and_release_on_drop() {
