@@ -10,10 +10,22 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn supports_common_prefix_utf8() {
     for (sql, expected) in [
-        ("SELECT commonPrefixLengthUTF8('aé🦀', 'aéx')", ConstantValue::Integer(2)),
-        ("SELECT commonPrefixLengthUTF8('one', 'two')", ConstantValue::Integer(0)),
-        ("SELECT commonPrefixLengthUTF8('', 'x')", ConstantValue::Integer(0)),
-        ("SELECT commonPrefixLengthUTF8(NULL, 'x')", ConstantValue::Null),
+        (
+            "SELECT commonPrefixLengthUTF8('aé🦀', 'aéx')",
+            ConstantValue::Integer(2),
+        ),
+        (
+            "SELECT commonPrefixLengthUTF8('one', 'two')",
+            ConstantValue::Integer(0),
+        ),
+        (
+            "SELECT commonPrefixLengthUTF8('', 'x')",
+            ConstantValue::Integer(0),
+        ),
+        (
+            "SELECT commonPrefixLengthUTF8(NULL, 'x')",
+            ConstantValue::Null,
+        ),
     ] {
         assert_eq!(value(sql), expected, "{sql}");
     }
@@ -21,7 +33,10 @@ fn supports_common_prefix_utf8() {
 
 #[test]
 fn rejects_invalid_common_prefix_utf8_arity() {
-    for sql in ["SELECT commonPrefixLengthUTF8('x')", "SELECT commonPrefixLengthUTF8('x','y','z')"] {
+    for sql in [
+        "SELECT commonPrefixLengthUTF8('x')",
+        "SELECT commonPrefixLengthUTF8('x','y','z')",
+    ] {
         assert!(parse_select(sql).is_err(), "{sql}");
     }
 }
