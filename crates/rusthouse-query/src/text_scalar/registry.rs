@@ -203,6 +203,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "POSITIONUTF8"
                 | "COUNT_SUBSTRING"
                 | "COUNTSUBSTRINGS"
+                | "URLHASPARAMETER"
                 | "EXTRACTURLPARAMETER"
                 | "NULLIF"
                 | "IF"

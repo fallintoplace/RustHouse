@@ -5689,6 +5689,26 @@ fn parse_at_depth(parser: &mut Parser, depth: usize) -> Result<ConstantValue, Pa
                 }
             }
         }
+        "URLHASPARAMETER" => {
+            let input = text_arg(parser, depth + 1)?;
+            require(parser, Token::Comma, "urlHasParameter requires a name")?;
+            let parameter = text_arg(parser, depth + 1)?;
+            require(parser, Token::RParen, "urlHasParameter requires two arguments")?;
+            match (input, parameter) {
+                (Some(input), Some(parameter)) => {
+                    let before_fragment = input.split('#').next().unwrap_or("");
+                    let found = !parameter.is_empty()
+                        && before_fragment.split_once('?').is_some_and(|(_, query)| {
+                            query.split('&').any(|pair| {
+                                pair.split_once('=').map_or(pair, |(name, _)| name)
+                                    == parameter
+                            })
+                        });
+                    ConstantValue::Integer(i64::from(found))
+                }
+                _ => ConstantValue::Null,
+            }
+        }
         "EXTRACTURLPARAMETER" => {
             let input = text_arg(parser, depth + 1)?;
             require(
