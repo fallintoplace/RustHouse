@@ -1,3 +1,4 @@
+use rusthouse_format::write_markdown_header_separator as write_header_separator;
 #[cfg(test)]
 use rusthouse_format::decode_tsv_field;
 use rusthouse_format::decode_tsv_field_into;
@@ -143,26 +144,7 @@ fn write_markdown_row<W: Write>(output: &mut W, line: &[u8], data_row: bool) -> 
     write_markdown_row_into(output, line, data_row, &mut Vec::new(), &mut Vec::new())
 }
 
-fn write_header_separator<W: Write>(output: &mut W, columns: usize) -> io::Result<()> {
-    // A typical header has up to 64 columns. Frame it once without a
-    // per-query heap allocation or one write per separator.
-    if columns <= 64 {
-        let mut framed = [0u8; 1 + 64 * 6 + 1];
-        framed[0] = b'|';
-        let mut used = 1;
-        for _ in 0..columns {
-            framed[used..used + 6].copy_from_slice(b" --- |");
-            used += 6;
-        }
-        framed[used] = b'\n';
-        return output.write_all(&framed[..used + 1]);
-    }
-    output.write_all(b"|")?;
-    for _ in 0..columns {
-        output.write_all(b" --- |")?;
-    }
-    output.write_all(b"\n")
-}
+
 
 fn write_cell<W: Write>(output: &mut W, field: &[u8]) -> io::Result<()> {
     let mut start = 0;
