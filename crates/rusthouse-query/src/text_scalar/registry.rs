@@ -265,6 +265,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "POSITION"
                 | "ENCODEURLFORMCOMPONENT"
                 | "ISIPV4PRIVATE"
+                | "ISIPV4SHARED"
                 | "ISIPV4LOOPBACK"
                 | "ISIPV4MULTICAST"
                 | "ISIPV4LINKLOCAL"
