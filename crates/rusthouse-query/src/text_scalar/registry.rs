@@ -46,6 +46,7 @@ pub(super) fn is_text_function(name: &str) -> bool {
                 | "TOUNIXTIMESTAMP"
                 | "COUNTASCIIDIGITS"
                 | "STRINGBYTESUNIQ"
+                | "COUNTLINES"
                 | "SOUNDEX"
                 | "REGEXP_COUNT"
                 | "BIT_LENGTH"
