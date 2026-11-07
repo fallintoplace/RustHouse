@@ -14,6 +14,26 @@ pub struct MemoryReservation {
     bytes: usize,
 }
 
+/// Atomically charge a bounded byte counter without overflowing.
+/// Callers own the matching release after a successful reservation.
+pub(crate) fn try_reserve_atomic(used: &AtomicUsize, bytes: usize, max_bytes: usize) -> bool {
+    let mut current = used.load(Ordering::Acquire);
+    loop {
+        let Some(next) = current.checked_add(bytes).filter(|&next| next <= max_bytes) else {
+            return false;
+        };
+        match used.compare_exchange_weak(
+            current,
+            next,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        ) {
+            Ok(_) => return true,
+            Err(observed) => current = observed,
+        }
+    }
+}
+
 impl QueryMemoryBudget {
     pub fn new(max_bytes: usize) -> Self {
         Self {
@@ -27,27 +47,13 @@ impl QueryMemoryBudget {
     }
 
     pub fn reserve(&self, bytes: usize) -> Result<MemoryReservation, &'static str> {
-        let mut current = self.used.load(Ordering::Acquire);
-        loop {
-            let next = current
-                .checked_add(bytes)
-                .filter(|&next| next <= self.max_bytes)
-                .ok_or("query memory budget exceeded")?;
-            match self.used.compare_exchange_weak(
-                current,
-                next,
-                Ordering::AcqRel,
-                Ordering::Acquire,
-            ) {
-                Ok(_) => {
-                    return Ok(MemoryReservation {
-                        budget: self.clone(),
-                        bytes,
-                    });
-                }
-                Err(observed) => current = observed,
-            }
+        if !try_reserve_atomic(&self.used, bytes, self.max_bytes) {
+            return Err("query memory budget exceeded");
         }
+        Ok(MemoryReservation {
+            budget: self.clone(),
+            bytes,
+        })
     }
 }
 
@@ -73,6 +79,20 @@ mod tests {
         assert_eq!(budget.used_bytes(), 3);
         drop(second);
         assert_eq!(budget.used_bytes(), 0);
+    }
+
+    #[test]
+    fn low_level_atomic_reservation_respects_capacity_and_overflow() {
+        let used = AtomicUsize::new(0);
+        assert!(try_reserve_atomic(&used, 7, 10));
+        assert!(!try_reserve_atomic(&used, 4, 10));
+        assert_eq!(used.load(Ordering::Acquire), 7);
+        assert!(try_reserve_atomic(&used, 3, 10));
+        assert!(!try_reserve_atomic(&used, 1, 10));
+        assert_eq!(used.load(Ordering::Acquire), 10);
+
+        let huge = AtomicUsize::new(usize::MAX);
+        assert!(!try_reserve_atomic(&huge, 1, usize::MAX));
     }
 
     #[test]
