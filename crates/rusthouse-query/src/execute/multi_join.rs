@@ -1085,6 +1085,173 @@ impl Write for SubqueryOutput {
     }
 }
 
+fn decode_in_subquery_values(
+    output: &[u8],
+    kind: &str,
+) -> Result<(Vec<String>, bool, usize), ExecutionError> {
+    let text =
+        std::str::from_utf8(output).map_err(|_| invalid("invalid JOIN IN subquery output"))?;
+    let mut lines = text.lines();
+    lines
+        .next()
+        .ok_or_else(|| invalid("missing JOIN IN subquery header"))?;
+    let mut values = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    let mut contains_null = false;
+    let mut row_count = 0;
+    for value in lines {
+        if value.contains('\t') {
+            return Err(invalid("JOIN IN subquery must return one column"));
+        }
+        row_count += 1;
+        if value == "\\N" {
+            contains_null = true;
+            continue;
+        }
+        let key = match kind {
+            "String" => String::from_utf8(
+                rusthouse_format::decode_tsv_field(value.as_bytes())
+                    .map_err(|_| invalid("invalid JOIN IN subquery text"))?,
+            )
+            .map_err(|_| invalid("invalid JOIN IN subquery text"))?,
+            "Date32" => {
+                typed::parse_literal(kind, value)
+                    .map_err(|_| invalid("invalid JOIN IN subquery Date32"))?;
+                value.to_owned()
+            }
+            _ => {
+                if value.is_empty()
+                    || !value
+                        .bytes()
+                        .enumerate()
+                        .all(|(index, byte)| byte.is_ascii_digit() || (index == 0 && byte == b'-'))
+                {
+                    return Err(invalid("invalid JOIN IN subquery integer"));
+                }
+                value.to_owned()
+            }
+        };
+        if seen.insert(key.clone()) {
+            if values.len() >= MAX_IN_SUBQUERY_KEYS {
+                return Err(invalid("JOIN IN subquery supports at most 100000 keys"));
+            }
+            values.push(key);
+        }
+    }
+    Ok((values, contains_null, row_count))
+}
+
+#[cfg(test)]
+mod in_subquery_value_tests {
+    use super::*;
+
+    #[test]
+    fn decodes_unique_non_null_values_for_date_keys() {
+        let (values, contains_null, row_count) = decode_in_subquery_values(
+            b"date_key\n2020-01-01\n2020-01-01\n\\N\n2020-01-02\n",
+            "Date32",
+        )
+        .unwrap();
+        assert_eq!(values, ["2020-01-01", "2020-01-02"]);
+        assert!(contains_null);
+        assert_eq!(row_count, 4);
+    }
+
+    #[test]
+    fn rejects_more_than_one_hundred_thousand_unique_keys() {
+        let mut output = Vec::with_capacity(700_000);
+        output.extend_from_slice(b"key\n");
+        for key in 0..=MAX_IN_SUBQUERY_KEYS {
+            writeln!(&mut output, "{key}").unwrap();
+        }
+        let error = decode_in_subquery_values(&output, "UInt64").unwrap_err();
+        assert!(error.to_string().contains("at most 100000 keys"), "{error}");
+    }
+
+    #[test]
+    fn rejects_invalid_date32_values_and_multiple_columns() {
+        assert!(decode_in_subquery_values(b"date_key\nnot-a-date\n", "Date32").is_err());
+        assert!(decode_in_subquery_values(b"a\tb\n1\t2\n", "UInt64").is_err());
+    }
+}
+
+fn bind_select_in_subquery(
+    query: &mut crate::Select,
+    source_path: &std::path::Path,
+) -> Result<(), ExecutionError> {
+    let Some(subquery) = query.in_subquery.as_ref() else {
+        return Ok(());
+    };
+    if !query.predicates.is_empty() || !query.or_predicates.is_empty() {
+        return Err(invalid(
+            "nested JOIN IN cannot be combined with other filters",
+        ));
+    }
+    let Some(crate::Source::Table(parent_table)) = &query.source else {
+        return Err(invalid("nested JOIN IN requires a stored table"));
+    };
+    let child = &subquery.inner;
+    let Some(crate::Source::Table(child_table)) = &child.source else {
+        return Err(invalid("nested JOIN IN requires a stored table"));
+    };
+    if !parent_table.eq_ignore_ascii_case(child_table)
+        || child.in_subquery.is_some()
+        || child.hidden_aggregate
+        || !matches!(&child.projection, crate::Projection::Columns(columns) if columns.len() == 1)
+        || child
+            .predicates
+            .iter()
+            .chain(child.or_predicates.iter().flatten())
+            .any(|predicate| matches!(predicate, crate::Predicate::ColumnComparison { .. }))
+    {
+        return Err(invalid("nested JOIN IN has an unsupported shape"));
+    }
+
+    let metadata = inspect_query_source(source_path)?;
+    let output_column = match &child.projection {
+        crate::Projection::Columns(columns) => &columns[0],
+        _ => unreachable!("the nested projection was checked above"),
+    };
+    let filter_column = metadata
+        .columns
+        .iter()
+        .find(|column| column.name.eq_ignore_ascii_case(&subquery.column))
+        .ok_or_else(|| invalid("nested JOIN IN filter column is missing"))?;
+    let output_column = metadata
+        .columns
+        .iter()
+        .find(|column| column.name.eq_ignore_ascii_case(output_column))
+        .ok_or_else(|| invalid("nested JOIN IN output column is missing"))?;
+    let kind = typed::base_type(&output_column.data_type);
+    if kind != typed::base_type(&filter_column.data_type)
+        || !(kind.starts_with("UInt")
+            || kind.starts_with("Int")
+            || matches!(kind, "String" | "Date32"))
+    {
+        return Err(invalid("nested JOIN IN requires matching scalar key types"));
+    }
+
+    let mut child = (**child).clone();
+    child.source = Some(crate::Source::Table("part".into()));
+    let mut output = SubqueryOutput(Vec::new());
+    super::execute(&child, Some(source_path), &mut output)?;
+    let (mut values, contains_null, row_count) = decode_in_subquery_values(&output.0, kind)?;
+    if subquery.scalar && row_count > 1 {
+        return Err(invalid(
+            "scalar JOIN IN subquery returned more than one row",
+        ));
+    }
+    if subquery.scalar && contains_null {
+        values.clear();
+    }
+    query.predicates.push(crate::Predicate::In {
+        column: subquery.column.clone(),
+        values,
+    });
+    query.in_subquery = None;
+    Ok(())
+}
+
 /// Evaluate an uncorrelated HAVING scalar while the caller holds the database read lock.
 pub fn bind_join_having_subquery(
     query: &mut JoinSelect,
@@ -1246,49 +1413,19 @@ pub fn bind_join_in_subquery(
             | "Int64"
             | "Int128"
     );
-    if kind != typed::base_type(&outer_type) || (!integer_key && kind != "String") {
+    if kind != typed::base_type(&outer_type)
+        || (!integer_key && !matches!(kind, "String" | "Date32"))
+    {
         return Err(invalid(
-            "JOIN IN subquery requires matching integer or String key types",
+            "JOIN IN subquery requires matching integer, Date32, or String key types",
         ));
     }
     let mut inner = (**inner).clone();
+    bind_select_in_subquery(&mut inner, inner_path)?;
     inner.source = Some(crate::Source::Table("part".into()));
     let mut output = SubqueryOutput(Vec::new());
     super::execute(&inner, Some(inner_path), &mut output)?;
-    let text =
-        std::str::from_utf8(&output.0).map_err(|_| invalid("invalid JOIN IN subquery output"))?;
-    let mut values = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    let mut contains_null = false;
-    for value in text.lines().skip(1) {
-        if value == "\\N" {
-            contains_null = true;
-            continue;
-        }
-        let key = if kind == "String" {
-            String::from_utf8(
-                rusthouse_format::decode_tsv_field(value.as_bytes())
-                    .map_err(|_| invalid("invalid JOIN IN subquery text"))?,
-            )
-            .map_err(|_| invalid("invalid JOIN IN subquery text"))?
-        } else {
-            if value.is_empty()
-                || !value
-                    .bytes()
-                    .enumerate()
-                    .all(|(i, byte)| byte.is_ascii_digit() || (i == 0 && byte == b'-'))
-            {
-                return Err(invalid("invalid JOIN IN subquery integer"));
-            }
-            value.to_owned()
-        };
-        if seen.insert(key.clone()) {
-            if values.len() >= MAX_IN_SUBQUERY_KEYS {
-                return Err(invalid("JOIN IN subquery supports at most 100000 keys"));
-            }
-            values.push(key);
-        }
-    }
+    let (values, contains_null, _) = decode_in_subquery_values(&output.0, kind)?;
     let name = subquery.column.name.clone();
     if subquery.negated {
         // An empty IN predicate is always false, while preserving the other

@@ -35,6 +35,7 @@ fn parses_scalar_and_table_queries() {
             source: None,
             predicates: Vec::new(),
             or_predicates: Vec::new(),
+            in_subquery: None,
             order_by: None,
             order_by_extra: Vec::new(),
             having: None,
@@ -60,6 +61,7 @@ fn parses_scalar_and_table_queries() {
             source: Some(Source::Table("part".into())),
             predicates: Vec::new(),
             or_predicates: Vec::new(),
+            in_subquery: None,
             order_by: None,
             order_by_extra: Vec::new(),
             having: None,
@@ -83,6 +85,47 @@ fn parses_scalar_and_table_queries() {
             .projection,
         Projection::Count
     );
+}
+
+#[test]
+fn parses_bounded_nested_in_inside_join_subqueries() {
+    let sql = "SELECT d_date FROM date_dim WHERE d_week_seq IN (SELECT d_week_seq FROM date_dim WHERE d_date IN ('2000-06-30', '2000-09-27'))";
+    let query = parse_join_in_subquery_select_tokens(tokenize(sql).unwrap()).unwrap();
+    let nested = query.in_subquery.unwrap();
+    assert_eq!(nested.column, "d_week_seq");
+    assert!(!nested.scalar);
+    assert_eq!(nested.inner.source, Some(Source::Table("date_dim".into())));
+    assert_eq!(
+        nested.inner.projection,
+        Projection::Columns(vec!["d_week_seq".into()])
+    );
+    assert!(nested.inner.in_subquery.is_none());
+    assert_eq!(nested.inner.predicates.len(), 1);
+    assert!(parse_select(sql).is_err());
+
+    let scalar = parse_join_in_subquery_select_tokens(tokenize(
+        "SELECT d_date FROM date_dim WHERE d_week_seq = (SELECT d_week_seq FROM date_dim WHERE d_date = '2000-06-30')",
+    )
+    .unwrap())
+    .unwrap();
+    let scalar = scalar.in_subquery.unwrap();
+    assert_eq!(scalar.column, "d_week_seq");
+    assert!(scalar.scalar);
+    assert!(parse_select(
+        "SELECT d_date FROM date_dim WHERE d_week_seq = (SELECT d_week_seq FROM date_dim WHERE d_date = '2000-06-30')"
+    )
+    .is_err());
+
+    for unsupported in [
+        "SELECT d_date FROM date_dim WHERE d_week_seq IN (SELECT d_week_seq FROM other_dim)",
+        "SELECT d_date FROM date_dim WHERE d_week_seq IN (SELECT d_week_seq FROM date_dim) AND d_date = '2000-06-30'",
+        "SELECT d_date FROM date_dim WHERE d_week_seq IN (SELECT d_week_seq FROM date_dim WHERE d_week_seq IN (SELECT d_week_seq FROM date_dim))",
+    ] {
+        assert!(
+            parse_join_in_subquery_select_tokens(tokenize(unsupported).unwrap()).is_err(),
+            "accepted unsupported nested IN query: {unsupported}"
+        );
+    }
 }
 
 #[test]

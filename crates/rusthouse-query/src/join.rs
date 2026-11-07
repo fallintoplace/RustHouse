@@ -1376,7 +1376,8 @@ fn parse_distinct_not_in(parser: &mut Parser) -> Result<Option<JoinedSubqueryFil
                 Token::Word(name) | Token::QuotedWord(name) => name.clone(),
                 _ => unreachable!(),
             };
-            let inner = crate::parse_select_tokens(piece[4..piece.len() - 1].to_vec())?;
+            let inner =
+                crate::parse_join_in_subquery_select_tokens(piece[4..piece.len() - 1].to_vec())?;
             if !matches!(&inner.source, Some(crate::Source::Table(_)))
                 || !matches!(&inner.projection, crate::Projection::Columns(columns) if columns.len() == 1)
                 || inner
@@ -2746,7 +2747,7 @@ fn parse_join_tokens_internal(
                             if depth != 0 {
                                 return Err(ParseError("JOIN IN subquery requires ')'".into()));
                             }
-                            let inner = crate::parse_select_tokens(
+                            let inner = crate::parse_join_in_subquery_select_tokens(
                                 parser.tokens[start..parser.index - 1].to_vec(),
                             )?;
                             let supported_projection = inner.hidden_aggregate

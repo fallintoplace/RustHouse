@@ -323,6 +323,7 @@ pub(super) fn run_cte_multi_join(
         let mut cte_output = Vec::new();
         match source.query() {
             CteSourceQuery::Join(query) => {
+                let mut query = query.as_ref().clone();
                 let tables = [&query.left, &query.right]
                     .into_iter()
                     .chain(query.steps.iter().map(|step| &step.table));
@@ -335,7 +336,8 @@ pub(super) fn run_cte_multi_join(
                             .unwrap_or_else(|| crate::database::select_source(database, table))
                     })
                     .collect::<Result<Vec<_>, String>>()?;
-                execute_selected_join(query, &paths, &mut cte_output)
+                bind_cte_join_in_subquery(database, &cte_paths, &mut query, &paths)?;
+                execute_selected_join(&query, &paths, &mut cte_output)
                     .map_err(|error| error.to_string())?;
             }
             CteSourceQuery::Union(query) => {
@@ -367,7 +369,7 @@ pub(super) fn run_cte_multi_join(
         temporary_parts.push(temporary);
     }
 
-    let query = plan.outer();
+    let mut query = plan.outer().clone();
     let tables = [&query.left, &query.right]
         .into_iter()
         .chain(query.steps.iter().map(|step| &step.table));
@@ -380,10 +382,11 @@ pub(super) fn run_cte_multi_join(
                 .unwrap_or_else(|| crate::database::select_source(database, table))
         })
         .collect::<Result<Vec<_>, String>>()?;
+    bind_cte_join_in_subquery(database, &cte_paths, &mut query, &paths)?;
 
     let mut output = open_output(output_path.as_deref())?;
     let result = execute_formatted_join(
-        |mut writer| execute_selected_join(query, &paths, &mut writer),
+        |mut writer| execute_selected_join(&query, &paths, &mut writer),
         format,
         output.as_mut(),
     );
@@ -401,6 +404,26 @@ pub(super) fn run_cte_multi_join(
     }
     drop(temporary_parts);
     result.map_err(|error| error.to_string())
+}
+
+fn bind_cte_join_in_subquery(
+    database: &Path,
+    cte_paths: &HashMap<String, PathBuf>,
+    query: &mut JoinSelect,
+    outer_paths: &[PathBuf],
+) -> Result<(), String> {
+    let Some(subquery) = query.in_subquery.as_ref() else {
+        return Ok(());
+    };
+    let Some(Source::Table(table)) = &subquery.inner.source else {
+        return Err("JOIN IN subquery requires a stored table".into());
+    };
+    let inner_path = cte_paths
+        .get(&table.to_ascii_lowercase())
+        .cloned()
+        .map(Ok)
+        .unwrap_or_else(|| crate::database::select_source(database, table))?;
+    bind_join_in_subquery(query, &inner_path, outer_paths).map_err(|error| error.to_string())
 }
 
 pub(super) fn run_derived_count(

@@ -1,7 +1,7 @@
-//! Rewrite bounded, uncorrelated scalar SELECTs into SQL literals.
+//! Rewrite bounded, uncorrelated scalar SELECTs and IN filters into SQL literals.
 //!
-//! This keeps simple scalar aggregates and one-row lookups on the normal
-//! SELECT path while leaving correlated and set-returning subqueries alone.
+//! This keeps simple scalar aggregates and small value sets on the normal
+//! query paths while leaving correlated and oversized subqueries alone.
 
 use rusthouse_query::{
     Projection, ScalarExpr, Select, Source, parse_scalar_expression, parse_select,
@@ -11,6 +11,7 @@ use std::path::Path;
 
 const MAX_SCALAR_SUBQUERIES: usize = 64;
 const MAX_SCALAR_OUTPUT_BYTES: usize = 8 * 1024 * 1024;
+const MAX_IN_SUBQUERY_VALUES: usize = 4_096;
 
 #[derive(Default)]
 struct BoundedOutput {
@@ -261,6 +262,10 @@ fn source_subquery(sql: &str, open: usize) -> bool {
     cursor > 0 && sql.as_bytes()[cursor - 1] == b',' && clause_at(sql, open) == Some(Clause::From)
 }
 
+fn in_filter_subquery(sql: &str, open: usize) -> bool {
+    previous_word(sql, open).is_some_and(|word| word.eq_ignore_ascii_case("IN"))
+}
+
 fn identifier_end(bytes: &[u8], start: usize) -> Option<usize> {
     let first = *bytes.get(start)?;
     if !(first.is_ascii_alphabetic() || matches!(first, b'_' | b'$')) {
@@ -482,16 +487,61 @@ fn decode_distinct_values(output: &[u8]) -> Option<Vec<String>> {
         .collect()
 }
 
+fn decode_in_values(output: &[u8]) -> Option<Vec<Option<String>>> {
+    if output.len() > MAX_SCALAR_OUTPUT_BYTES {
+        return None;
+    }
+    let text = std::str::from_utf8(output).ok()?;
+    let mut lines = text.split_terminator('\n');
+    let header = lines.next()?;
+    if header.contains('\t') {
+        return None;
+    }
+    lines
+        .map(|line| {
+            if line == r"\N" {
+                return Some(None);
+            }
+            let decoded = crate::tsv_escape::decode_tsv_field(line.as_bytes()).ok()?;
+            Some(Some(String::from_utf8(decoded).ok()?))
+        })
+        .collect()
+}
+
 fn literal_for_type(value: &str, data_type: &str) -> String {
     let base_type = data_type
         .strip_prefix("Nullable(")
         .and_then(|value| value.strip_suffix(')'))
         .unwrap_or(data_type);
-    if base_type.contains("String") || base_type.starts_with("FixedString") {
-        format!("'{}'", value.replace('\'', "''"))
+    if base_type.contains("String") || base_type.contains("FixedString") {
+        let mut literal = String::with_capacity(value.len() * 2 + 3);
+        literal.push_str("X'");
+        const HEX: &[u8; 16] = b"0123456789ABCDEF";
+        for byte in value.bytes() {
+            literal.push(HEX[(byte >> 4) as usize] as char);
+            literal.push(HEX[(byte & 0x0f) as usize] as char);
+        }
+        literal.push('\'');
+        literal
     } else {
         sql_literal(Some(value))
     }
+}
+
+fn render_in_values(values: &[Option<String>], data_type: &str) -> Option<String> {
+    if values.is_empty() || values.len() > MAX_IN_SUBQUERY_VALUES {
+        return None;
+    }
+    let values = values
+        .iter()
+        .map(|value| {
+            value
+                .as_deref()
+                .map(|value| literal_for_type(value, data_type))
+                .unwrap_or_else(|| "NULL".into())
+        })
+        .collect::<Vec<_>>();
+    Some(format!("({})", values.join(", ")))
 }
 
 fn correlated_count_candidate_query(query: &str, span: &CorrelatedCountSpan) -> Option<String> {
@@ -687,6 +737,39 @@ fn evaluate(query: &str, database: &Path) -> Option<Option<String>> {
     decode_single_value(&output.bytes)
 }
 
+fn evaluate_in_subquery(query: &str, database: &Path) -> Option<String> {
+    if has_qualified_column(query) {
+        return None;
+    }
+    let mut select = parse_select(&normalize_distinct_parentheses(query.trim())).ok()?;
+    let Projection::Columns(columns) = &select.projection else {
+        return None;
+    };
+    let [column] = columns.as_slice() else {
+        return None;
+    };
+    if select.having.is_some() || select.rename.is_some() || select.in_subquery.is_some() {
+        return None;
+    }
+    let Some(Source::Table(table)) = select.source.clone() else {
+        return None;
+    };
+    let column_type = crate::catalog::read_schema(database, &table)
+        .ok()?
+        .into_iter()
+        .find(|candidate| candidate.name.eq_ignore_ascii_case(column))?
+        .data_type;
+    let path = crate::database::select_source(database, &table).ok()?;
+    select.source = Some(Source::Table("part".into()));
+    select.limit = Some(select.limit.map_or(MAX_IN_SUBQUERY_VALUES + 1, |limit| {
+        limit.min(MAX_IN_SUBQUERY_VALUES + 1)
+    }));
+    let mut output = BoundedOutput::default();
+    rusthouse_query::execute(&select, Some(&path), &mut output).ok()?;
+    let values = decode_in_values(&output.bytes)?;
+    render_in_values(&values, &column_type)
+}
+
 fn replace_one(sql: &str, open: usize, close: usize, literal: &str) -> String {
     let mut result = String::with_capacity(sql.len() + literal.len());
     result.push_str(&sql[..open]);
@@ -712,10 +795,15 @@ fn find_replacement(sql: &str, database: &Path) -> Option<(usize, usize, String)
                 if body
                     .get(..6)
                     .is_some_and(|head| head.eq_ignore_ascii_case("SELECT"))
-                    && !source_subquery(sql, cursor)
                 {
-                    if let Some(value) = evaluate(body, database) {
-                        return Some((cursor, close, sql_literal(value.as_deref())));
+                    if in_filter_subquery(sql, cursor) {
+                        if let Some(literals) = evaluate_in_subquery(body, database) {
+                            return Some((cursor, close, literals));
+                        }
+                    } else if !source_subquery(sql, cursor) {
+                        if let Some(value) = evaluate(body, database) {
+                            return Some((cursor, close, sql_literal(value.as_deref())));
+                        }
                     }
                 }
                 cursor += 1;
@@ -820,10 +908,13 @@ pub(super) fn has_candidate(sql: &str) -> bool {
                 if body
                     .get(..6)
                     .is_some_and(|head| head.eq_ignore_ascii_case("SELECT"))
-                    && !source_subquery(sql, cursor)
-                    && !has_qualified_column(body)
                 {
-                    return true;
+                    if in_filter_subquery(sql, cursor) {
+                        return true;
+                    }
+                    if !source_subquery(sql, cursor) && !has_qualified_column(body) {
+                        return true;
+                    }
                 }
                 cursor += 1;
             }
@@ -1152,7 +1243,7 @@ mod tests {
         assert!(!has_candidate(
             "SELECT x FROM t WHERE x = (SELECT MAX(y) FROM u WHERE u.k = t.k)"
         ));
-        assert!(!has_candidate(
+        assert!(has_candidate(
             "SELECT x FROM t WHERE x IN (SELECT y FROM u)"
         ));
     }
@@ -1268,6 +1359,28 @@ mod tests {
         assert_eq!(sql_literal(Some("true")), "TRUE");
         assert_eq!(sql_literal(Some("O'Brien")), "'O''Brien'");
         assert_eq!(sql_literal(None), "NULL");
+    }
+
+    #[test]
+    fn renders_bounded_in_subquery_values_with_nulls_and_safe_text() {
+        let text_values = vec![Some("O'Brien\nnext".into()), None, Some("z".into())];
+        let rendered = render_in_values(&text_values, "Nullable(String)")
+            .expect("non-empty bounded value list");
+
+        assert_eq!(rendered, "(X'4F27427269656E0A6E657874', NULL, X'7A')");
+
+        let numbers = vec![Some("2".into()), None, Some("5".into())];
+        assert_eq!(
+            render_in_values(&numbers, "Nullable(UInt32)").as_deref(),
+            Some("(2, NULL, 5)")
+        );
+    }
+
+    #[test]
+    fn leaves_empty_or_oversized_in_subqueries_unexpanded() {
+        assert!(render_in_values(&[], "String").is_none());
+        let oversized = vec![Some("value".into()); MAX_IN_SUBQUERY_VALUES + 1];
+        assert!(render_in_values(&oversized, "String").is_none());
     }
 
     #[test]
