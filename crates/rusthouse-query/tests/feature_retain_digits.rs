@@ -10,8 +10,14 @@ fn value(sql: &str) -> ConstantValue {
 #[test]
 fn supports_retain_digits() {
     for (sql, expected) in [
-        ("SELECT retainDigits('ID: 00-42!')", ConstantValue::Text("0042".into())),
-        ("SELECT retainDigits('none')", ConstantValue::Text("".into())),
+        (
+            "SELECT retainDigits('ID: 00-42!')",
+            ConstantValue::Text("0042".into()),
+        ),
+        (
+            "SELECT retainDigits('none')",
+            ConstantValue::Text("".into()),
+        ),
         ("SELECT retainDigits('')", ConstantValue::Text("".into())),
         ("SELECT retainDigits(NULL)", ConstantValue::Null),
     ] {
