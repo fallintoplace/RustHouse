@@ -97,4 +97,3 @@ pub(super) fn parse_copy_path(parser: &mut Parser) -> Result<String, ParseError>
         _ => Err(ParseError("COPY requires a quoted local file path".into())),
     }
 }
-
